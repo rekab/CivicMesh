@@ -403,6 +403,17 @@ def get_vote_counts(cfg: DBConfig, *, message_id: int, log=None) -> tuple[int, i
         conn.close()
 
 
+def get_message(cfg: DBConfig, *, message_id: int, log=None) -> Optional[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_message id=%d", message_id)
+        row = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def get_user_vote(cfg: DBConfig, *, message_id: int, session_id: str, log=None) -> int:
     conn = _connect(cfg)
     try:

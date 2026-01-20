@@ -12,7 +12,6 @@ from database import (
     insert_message,
     mark_outbox_sent,
     search_messages,
-    update_vote,
 )
 from logger import setup_logging
 
@@ -65,19 +64,6 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client):
                             fingerprint=item.get("fingerprint"),
                             log=log,
                         )
-                        sid = item.get("session_id")
-                        if sid:
-                            try:
-                                update_vote(
-                                    db_cfg,
-                                    message_id=mid,
-                                    session_id=str(sid),
-                                    vote_type=1,
-                                    ts=_now_ts(),
-                                    log=log,
-                                )
-                            except Exception as e:
-                                log.error("outbox:auto_upvote_failed id=%s err=%s", item["id"], e, exc_info=True)
                         sent_ids.append(int(item["id"]))
                     except Exception as e:
                         log.error("outbox:send_failed id=%s err=%s", item["id"], e, exc_info=True)

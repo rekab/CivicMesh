@@ -10,11 +10,20 @@ function $(id) {
   return document.getElementById(id);
 }
 
-function fmtTime(ts) {
+function fmtShortTimestamp(ts) {
   try {
-    return new Date(ts * 1000).toLocaleString();
+    const d = new Date(ts * 1000);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    let hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, "0");
+    const ampm = hours >= 12 ? "pm" : "am";
+    hours = hours % 12;
+    if (hours === 0) hours = 12;
+    return `[${year}-${month}-${day} ${hours}:${minutes} ${ampm}]`;
   } catch {
-    return String(ts);
+    return `[${String(ts)}]`;
   }
 }
 
@@ -94,6 +103,9 @@ let state = {
   polling: null,
   maxChars: 100,
   maxNameChars: 10,
+  expandedMeta: new Set(),
+  postsRemaining: null,
+  windowSec: 3600,
 };
 
 function normalizeChannels(raw) {
@@ -183,50 +195,64 @@ function renderMessages(msgs) {
   wrap.innerHTML = "";
   for (const m of msgs) {
     const div = document.createElement("div");
-    div.className = "msg" + (m.pending ? " msg--pending" : "");
+    div.className = "msg msg--compact" + (m.pending ? " msg--pending" : "");
 
     const uv = Number(m.upvotes || 0);
-    const dv = Number(m.downvotes || 0);
     const my = Number(m.user_vote || 0);
     const metaId = `meta-${String(m.id).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const sid = getCookie("civicmesh_session") || "";
+    const canVote = !m.session_id || m.session_id !== sid;
 
     const upActive = my === 1 ? " active-up" : "";
-    const downActive = my === -1 ? " active-down" : "";
 
-    const actions = m.pending
-      ? `<div class="msg__actions"><span class="msg__meta">Queued for mesh broadcast</span></div>`
-      : `
-      <div class="msg__actions">
-        <button class="btn btn--vote${upActive}" data-id="${m.id}" data-v="1" data-my="${my}">▲ ${uv}</button>
-        <button class="btn btn--vote${downActive}" data-id="${m.id}" data-v="-1" data-my="${my}">▼ ${dv}</button>
-      </div>
-    `;
+    const badge = uv > 0 ? `<span class="msg__badge">★${uv}</span>` : "";
+    let actions = "";
+    if (m.pending) {
+      actions = `<span class="msg__meta">Queued for mesh broadcast</span>`;
+    } else if (canVote) {
+      actions = `<button class="btn btn--vote${upActive}" data-id="${m.id}" data-v="1" data-my="${my}" hidden>★</button>`;
+    }
 
     div.innerHTML = `
-      <div class="msg__top">
-        <div>
-          <span class="msg__who">${escapeHtml(m.sender || "unknown")}</span>
-          <span class="msg__meta"> · ${escapeHtml(sourceLabel(m.source))} · ${fmtTime(m.ts)}</span>
-          <button class="msg__meta-toggle" data-target="${metaId}" type="button">metadata</button>
-        </div>
-        <div class="msg__meta">${escapeHtml(m.channel)}</div>
+      <div class="msg__line">
+        <span class="msg__time">${fmtShortTimestamp(m.ts)}</span>
+        <span class="msg__who">&lt;${escapeHtml(m.sender || "unknown")}&gt;</span>
+        <span class="msg__body-inline">${escapeHtml(m.content)}</span>
+        ${badge}
+        ${actions}
       </div>
-      <div class="msg__body">${escapeHtml(m.content)}</div>
       <div id="${metaId}" class="msg__meta-panel" hidden>
-        <div><span class="msg__meta-key">session</span>${escapeHtml(m.session_id || "unknown")}</div>
-        <div><span class="msg__meta-key">fingerprint</span>${escapeHtml(m.fingerprint || "unknown")}</div>
         <div><span class="msg__meta-key">source</span>${escapeHtml(sourceLabel(m.source))}</div>
-        <div><span class="msg__meta-key">channel</span>${escapeHtml(m.channel)}</div>
-        <div><span class="msg__meta-key">timestamp</span>${fmtTime(m.ts)}</div>
+        <div><span class="msg__meta-key">user ID</span><span class="msg__meta-value">${escapeHtml(m.fingerprint || "unknown")}</span></div>
       </div>
-      ${actions}
     `;
 
+    if (state.expandedMeta.has(metaId)) {
+      const panel = div.querySelector(`#${metaId}`);
+      if (panel) panel.hidden = false;
+      const actionsEl = div.querySelector(".btn.btn--vote");
+      if (actionsEl) actionsEl.hidden = false;
+    }
+    div.addEventListener("click", () => {
+      const panel = div.querySelector(`#${metaId}`);
+      if (!panel) return;
+      panel.hidden = !panel.hidden;
+      if (panel.hidden) {
+        state.expandedMeta.delete(metaId);
+        const actionsEl = div.querySelector(".btn.btn--vote");
+        if (actionsEl) actionsEl.hidden = true;
+      } else {
+        state.expandedMeta.add(metaId);
+        const actionsEl = div.querySelector(".btn.btn--vote");
+        if (actionsEl) actionsEl.hidden = false;
+      }
+    });
     wrap.appendChild(div);
   }
 
   wrap.querySelectorAll("button[data-id][data-v]").forEach((b) => {
-    b.addEventListener("click", async () => {
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
       const id = Number(b.getAttribute("data-id"));
       const v = Number(b.getAttribute("data-v"));
       const current = Number(b.getAttribute("data-my") || "0");
@@ -235,15 +261,7 @@ function renderMessages(msgs) {
     });
   });
 
-  wrap.querySelectorAll("button.msg__meta-toggle").forEach((b) => {
-    b.addEventListener("click", () => {
-      const target = b.getAttribute("data-target");
-      if (!target) return;
-      const panel = document.getElementById(target);
-      if (!panel) return;
-      panel.hidden = !panel.hidden;
-    });
-  });
+  // No inline metadata toggle buttons; whole message toggles metadata panel.
 }
 
 function escapeHtml(s) {
@@ -264,16 +282,17 @@ function sourceLabel(source) {
 }
 
 async function refreshSession() {
-  const pill = $("sessionStatus");
-  const rate = $("rateLimit");
   const debug = $("debugBanner");
   try {
     const data = await fetchJSON(API.session, { method: "GET" });
-    pill.textContent = "Session: OK";
-    pill.className = "pill pill--ok";
-    rate.textContent = `Posts remaining this hour: ${data.posts_remaining}`;
+    setConnectionStatus(true);
+    state.postsRemaining = data.posts_remaining;
+    updateCharCount();
     if (debug) {
       debug.hidden = !data.debug_session;
+    }
+    if (typeof data.window_sec === "number" && data.window_sec > 0) {
+      state.windowSec = data.window_sec;
     }
     if (typeof data.message_max_chars === "number" && data.message_max_chars > 0) {
       state.maxChars = data.message_max_chars;
@@ -284,13 +303,11 @@ async function refreshSession() {
       applyNameMax();
     }
   } catch (e) {
-    pill.textContent = "Session: not validated";
-    pill.className = "pill pill--warn";
+    setConnectionStatus(false);
+    state.postsRemaining = null;
+    updateCharCount();
     if (debug) {
       debug.hidden = true;
-    }
-    if (e && e.status === 429 && e.data && typeof e.data.posts_remaining !== "undefined") {
-      rate.textContent = `Posts remaining this hour: ${e.data.posts_remaining}`;
     }
   }
 }
@@ -301,10 +318,16 @@ async function refreshMessages(scrollTop = false) {
   try {
     const url = `${API.messages}?channel=${encodeURIComponent(state.activeChannel)}&limit=80&offset=0`;
     const data = await fetchJSON(url, { method: "GET" });
-    renderMessages(data.messages || []);
-    if (scrollTop) window.scrollTo({ top: 0, behavior: "instant" });
+    renderMessages((data.messages || []).slice().reverse());
+    if (scrollTop) {
+      const wrap = $("messages");
+      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    }
   } catch (e) {
     $("postError").textContent = e.message || "Failed to load messages";
+    if (e && e.message && String(e.message).includes("Failed to fetch")) {
+      setConnectionStatus(false);
+    }
   }
 }
 
@@ -339,7 +362,7 @@ async function postMessage() {
     storeNameToCookie();
     $("content").value = "";
     await refreshSession();
-    await refreshMessages();
+    await refreshMessages(true);
   } catch (e) {
     if (e.status === 429 && e.data) {
       $("postError").textContent = `Rate limit exceeded. Posts remaining: ${e.data.posts_remaining ?? 0}`;
@@ -424,7 +447,9 @@ function updateCharCount() {
   const used = content.value.length;
   const max = state.maxChars;
   const ratio = max > 0 ? used / max : 0;
-  charCount.textContent = `${used}/${max}`;
+  const remaining = typeof state.postsRemaining === "number" ? state.postsRemaining : "…";
+  const until = formatNextHour();
+  charCount.textContent = `${used}/${max} · ${remaining} msgs left until ${until}`;
   charCount.classList.remove("hint--warn", "hint--bad");
   if (ratio >= 1) {
     charCount.classList.add("hint--bad");
@@ -446,4 +471,31 @@ function applyNameMax() {
   if (name) {
     name.setAttribute("maxlength", String(state.maxNameChars));
   }
+}
+
+function setConnectionStatus(connected) {
+  const pill = $("sessionStatus");
+  if (!pill) return;
+  if (connected) {
+    pill.textContent = "Connected";
+    pill.className = "pill pill--ok";
+  } else {
+    pill.textContent = "NOT connected";
+    pill.className = "pill pill--bad";
+  }
+}
+
+function formatNextHour() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setMinutes(0, 0, 0);
+  if (next <= now) {
+    next.setHours(next.getHours() + 1);
+  }
+  let hours = next.getHours();
+  const minutes = String(next.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "pm" : "am";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${hours}:${minutes} ${ampm}`;
 }
