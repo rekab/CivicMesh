@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Civic Mesh</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__title">Civic Mesh</div>
+        <div class="brand__subtitle">Emergency Hub Relay</div>
+      </div>
+      <div id="debugBanner" class="pill pill--warn pill--debug" hidden>Debug session: eth0 bypass enabled</div>
+      <div class="status">
+        <div id="rateLimit" class="pill">Posts remaining this hour: …</div>
+        <div id="sessionStatus" class="pill pill--warn">Session: …</div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel panel--left">
+        <div class="panel__header">
+          <span>Channels</span>
+          <button id="channelToggle" class="btn btn--ghost btn--small" type="button" aria-expanded="true">v</button>
+        </div>
+        <div id="channels" class="channels"></div>
+      </section>
+
+      <section class="panel panel--main">
+        <div class="panel__header">
+          <div class="panel__title" id="channelTitle">Loading…</div>
+          <button id="refreshBtn" class="btn btn--ghost">Refresh</button>
+        </div>
+
+        <div id="messages" class="messages"></div>
+
+        <div class="composer">
+          <div class="composer__row">
+            <input id="name" class="input" placeholder="Your name" maxlength="10" />
+          </div>
+          <div class="composer__row">
+            <textarea id="content" class="textarea" placeholder="Write a message…" maxlength="100"></textarea>
+          </div>
+          <div class="composer__row composer__row--actions">
+            <div class="composer__notes">
+              <div id="channelHint" class="hint" hidden>Select a channel to post.</div>
+              <div id="charCount" class="hint">0/…</div>
+              <div id="postError" class="error"></div>
+            </div>
+            <button id="postBtn" class="btn btn--primary" disabled>Post to Mesh</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

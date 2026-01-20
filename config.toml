@@ -1,0 +1,36 @@
+[hub]
+name = "Civic Mesh Hub"
+location = "Fremont, Seattle"
+
+[radio]
+serial_port = "/dev/ttyUSB0"
+
+[channels]
+names = ["#fremont", "#puget-sound"]
+
+[local]
+names = ["#local"]
+
+[wifi]
+ssid = "CivicMesh-Fremont"
+
+[web]
+port = 8080
+
+[limits]
+posts_per_hour = 10
+message_max_chars = 100
+name_max_chars = 10
+outbox_batch_interval_sec = 30
+outbox_batch_size = 5
+retention_bytes_per_channel = 10737418240  # 10GB
+
+[logging]
+log_level = "DEBUG"
+log_dir = "logs"
+enable_security_log = true
+
+[debug]
+# Allow traffic arriving on eth0 to bypass MAC validation and auto-create sessions for local testing.
+# Requires the client to set the civicmesh_session cookie (set by the web UI); only applies when ARP shows eth0.
+allow_eth0 = true
