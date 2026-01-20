@@ -267,7 +267,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # Captive portal: send everything else to index.html (unless it's a static file)
-        if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css"):
+        if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
             return super().do_GET()
 
         self.send_response(HTTPStatus.FOUND)

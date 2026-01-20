@@ -125,7 +125,12 @@ function setActiveChannel(name) {
   state.activeChannel = name;
   const ch = getChannel(name);
   const label = ch ? scopeLabel(ch.scope) : "Mesh";
-  $("channelTitle").textContent = `${label} · ${name}`;
+  const icon = ch && ch.scope === "mesh"
+    ? '<span class="channel__icon channel__icon--title" aria-hidden="true"></span>'
+    : '<span class="channel__pin channel__pin--title" aria-hidden="true">📍</span>';
+  $("channelTitle").innerHTML = ch
+    ? `${icon}${label} · ${escapeHtml(name)}`
+    : `${label} · ${escapeHtml(name)}`;
   updatePostButton(ch);
   renderChannels();
   refreshMessages(true);
@@ -159,7 +164,13 @@ function renderChannels() {
   for (const ch of state.channels) {
     const btn = document.createElement("div");
     btn.className = "channel" + (ch.name === state.activeChannel ? " channel--active" : "");
-    btn.innerHTML = `<div class="channel__name">${ch.name}</div><div class="channel__meta">${scopeLabel(ch.scope)}</div>`;
+    const listIcon = ch.scope === "mesh"
+      ? '<span class="channel__icon" aria-hidden="true"></span>'
+      : '<span class="channel__pin" aria-hidden="true">📍</span>';
+    const metaIcon = ch.scope === "mesh"
+      ? '<span class="channel__icon" aria-hidden="true"></span>'
+      : '<span class="channel__pin" aria-hidden="true">📍</span>';
+    btn.innerHTML = `<div class="channel__name">${listIcon}${ch.name}</div><div class="channel__meta">${metaIcon}${scopeLabel(ch.scope)}</div>`;
     btn.onclick = () => {
       setActiveChannel(ch.name);
     };
@@ -382,7 +393,11 @@ async function init() {
   state.activeChannel = state.channels[0] ? state.channels[0].name : null;
   if (state.activeChannel) {
     const ch = getChannel(state.activeChannel);
-    $("channelTitle").textContent = `${scopeLabel(ch ? ch.scope : "mesh")} · ${state.activeChannel}`;
+    const label = scopeLabel(ch ? ch.scope : "mesh");
+    const icon = ch && ch.scope === "mesh"
+      ? '<span class="channel__icon channel__icon--title" aria-hidden="true"></span>'
+      : '<span class="channel__pin channel__pin--title" aria-hidden="true">📍</span>';
+    $("channelTitle").innerHTML = `${icon}${label} · ${escapeHtml(state.activeChannel)}`;
     updatePostButton(ch);
   } else {
     $("channelTitle").textContent = "No channels configured";

@@ -86,6 +86,7 @@ body {
   text-transform: uppercase;
 }
 .panel__title { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 700; }
+.panel__title { display: inline-flex; align-items: center; gap: 6px; }
 
 .channels { display: flex; flex-direction: column; padding: 8px; gap: 6px; }
 body.channels-collapsed .panel--left .channels {
@@ -110,8 +111,19 @@ body.channels-collapsed .panel--left .panel__header {
   border-color: rgba(125, 211, 252, 0.45);
   background: rgba(125, 211, 252, 0.10);
 }
-.channel__name { font-weight: 650; }
-.channel__meta { color: var(--muted); font-size: 12px; }
+.channel__name { font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
+.channel__icon {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  background-color: currentColor;
+  mask: url("/mesh-icon.svg") no-repeat center / contain;
+  -webkit-mask: url("/mesh-icon.svg") no-repeat center / contain;
+}
+.channel__icon--title { width: 12px; height: 12px; }
+.channel__pin { font-size: 14px; line-height: 1; }
+.channel__pin--title { font-size: 12px; }
+.channel__meta { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
 
 .messages {
   padding: 10px;
