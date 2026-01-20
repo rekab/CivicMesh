@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "civic-mesh-hub-relay-bot"
+version = "0.1.0"
+description = "Civic Mesh Hub Relay Bot: WiFi captive-portal relay for MeshCore channels"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "meshcore",
+  "tomli; python_version < '3.11'",
+]
+
+[project.scripts]
+civicmesh-web = "web_server:run"
+civicmesh-mesh = "mesh_bot:main"
+civicmesh-admin = "admin:main"
+
+[tool.setuptools]
+py-modules = ["admin", "config", "database", "logger", "mesh_bot", "web_server"]
+
