@@ -20,13 +20,18 @@
     <main class="layout">
       <section class="panel panel--left">
         <div class="panel__header">
-          <span>Channels</span>
+          <span>MENU</span>
           <button id="channelToggle" class="btn btn--ghost btn--small" type="button" aria-expanded="true">v</button>
         </div>
+        <div id="welcomeBox" class="welcome">
+          <div class="welcome__title">Welcome</div>
+          <div class="welcome__body">Pick a channel below to join the conversation.</div>
+        </div>
+        <div class="menu-entry" id="helpToggle">❓ Help/About</div>
         <div id="channels" class="channels"></div>
       </section>
 
-      <section class="panel panel--main">
+      <section class="panel panel--main" hidden>
         <div class="panel__header">
           <div class="panel__title" id="channelTitle">Loading…</div>
           <button id="refreshBtn" class="btn btn--ghost">Refresh</button>
@@ -49,6 +54,19 @@
             </div>
             <button id="postBtn" class="btn btn--primary" disabled>Post to Mesh</button>
           </div>
+        </div>
+      </section>
+
+      <section class="panel panel--docs" hidden>
+        <div class="panel__header">
+          <div class="panel__title">Help &amp; About</div>
+          <button id="helpClose" class="btn btn--ghost">Close</button>
+        </div>
+        <div class="docs">
+          <p>CivicMesh is a WiFi hotspot <i>not</i> connected to the Internet. This is a local hub relay for community messages.</p>
+          <p>It connects to MeshCore, a volunteer-run mesh network. Small radios across the region relay messages between each other, with no cell towers, no ISPs, and no central owner.</p>
+          <p>Select a channel to view or post updates. On-site channels stay at this hotspot. Mesh channels relay to the wider network.</p>
+          <p>Messages are public. Be helpful. Be brief. Be kind.</p>
         </div>
       </section>
     </main>

@@ -145,6 +145,20 @@ function setActiveChannel(name) {
     : `${label} · ${escapeHtml(name)}`;
   updatePostButton(ch);
   renderChannels();
+  const welcome = $("welcomeBox");
+  if (welcome) welcome.hidden = true;
+  const chatPanel = document.querySelector(".panel--main");
+  if (chatPanel) chatPanel.hidden = false;
+  const docsPanel = document.querySelector(".panel--docs");
+  if (docsPanel) docsPanel.hidden = true;
+  const composer = document.querySelector(".composer");
+  if (composer) composer.hidden = false;
+  document.body.classList.add("channels-collapsed");
+  const toggle = $("channelToggle");
+  if (toggle) {
+    toggle.textContent = ">";
+    toggle.setAttribute("aria-expanded", "false");
+  }
   refreshMessages(true);
 }
 
@@ -404,6 +418,31 @@ async function init() {
       channelToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
     };
   }
+  const helpToggle = $("helpToggle");
+  const helpPanel = document.querySelector(".panel--docs");
+  const helpClose = $("helpClose");
+  if (helpToggle && helpPanel) {
+    helpToggle.onclick = () => {
+      helpPanel.hidden = false;
+      const chatPanel = document.querySelector(".panel--main");
+      if (chatPanel) chatPanel.hidden = true;
+      const composer = document.querySelector(".composer");
+      if (composer) composer.hidden = true;
+      const welcome = $("welcomeBox");
+      if (welcome) welcome.hidden = true;
+    };
+  }
+  if (helpClose && helpPanel) {
+    helpClose.onclick = () => {
+      helpPanel.hidden = true;
+      if (state.activeChannel) {
+        const chatPanel = document.querySelector(".panel--main");
+        if (chatPanel) chatPanel.hidden = false;
+        const composer = document.querySelector(".composer");
+        if (composer) composer.hidden = false;
+      }
+    };
+  }
   const content = $("content");
   if (content) {
     content.addEventListener("input", updateCharCount);
@@ -413,19 +452,15 @@ async function init() {
 
   const data = await fetchJSON(API.channels, { method: "GET" });
   state.channels = normalizeChannels(data.channel_details || data.channels || []);
-  state.activeChannel = state.channels[0] ? state.channels[0].name : null;
-  if (state.activeChannel) {
-    const ch = getChannel(state.activeChannel);
-    const label = scopeLabel(ch ? ch.scope : "mesh");
-    const icon = ch && ch.scope === "mesh"
-      ? '<span class="channel__icon channel__icon--title" aria-hidden="true"></span>'
-      : '<span class="channel__pin channel__pin--title" aria-hidden="true">📍</span>';
-    $("channelTitle").innerHTML = `${icon}${label} · ${escapeHtml(state.activeChannel)}`;
-    updatePostButton(ch);
-  } else {
-    $("channelTitle").textContent = "No channels configured";
-    updatePostButton(null);
-  }
+  state.activeChannel = null;
+  $("channelTitle").textContent = "";
+  updatePostButton(null);
+  const chatPanel = document.querySelector(".panel--main");
+  if (chatPanel) chatPanel.hidden = true;
+  const docsPanel = document.querySelector(".panel--docs");
+  if (docsPanel) docsPanel.hidden = true;
+  const composer = document.querySelector(".composer");
+  if (composer) composer.hidden = true;
   renderChannels();
   state.fingerprint = await computeFingerprint();
   await sendFingerprint(state.fingerprint);

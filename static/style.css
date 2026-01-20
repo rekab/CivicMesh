@@ -13,6 +13,7 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; overflow: hidden; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
@@ -100,6 +101,31 @@ body.channels-collapsed .panel--left .channels {
 body.channels-collapsed .panel--left .panel__header {
   justify-content: center;
 }
+.menu-entry {
+  margin: 0 8px 8px;
+  padding: 12px 10px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  cursor: pointer;
+}
+.menu-entry:hover { border: 1px solid rgba(125, 211, 252, 0.28); }
+body.channels-collapsed .panel--left .menu-entry {
+  display: none;
+}
+.welcome {
+  margin: 8px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 12px;
+}
+.welcome__title { font-weight: 700; color: var(--text); margin-bottom: 4px; }
+body.channels-collapsed .panel--left .welcome {
+  display: none;
+}
 .channel {
   display: flex;
   align-items: center;
@@ -142,6 +168,20 @@ body.channels-collapsed .panel--left .panel__header {
   flex: 1;
   background: #000;
   padding-bottom: 12px;
+}
+
+.panel--docs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.docs {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-y: auto;
 }
 
 .msg {
