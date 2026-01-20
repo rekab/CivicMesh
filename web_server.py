@@ -12,6 +12,7 @@ from config import load_config
 from database import (
     DBConfig,
     create_or_update_session,
+    get_message,
     get_messages,
     get_session,
     get_user_vote,
@@ -337,17 +338,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     fingerprint=fingerprint or None,
                     log=log,
                 )
-                try:
-                    update_vote(
-                        self.server.db_cfg,
-                        message_id=mid,
-                        session_id=sid,
-                        vote_type=1,
-                        ts=_now_ts(),
-                        log=log,
-                    )
-                except Exception as e:
-                    log.error("post:auto_upvote_failed id=%d err=%s", mid, e, exc_info=True)
                 record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=_now_ts(), log=log)
                 log.info("post:local id=%d channel=%s session=%s len=%d", mid, channel, sid, len(content))
                 _json(self, 200, {"ok": True, "message_id": mid, "local": True})
@@ -378,6 +368,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             vt = int(data.get("vote_type", 0))
             sid = sess["session_id"]
             try:
+                msg = get_message(self.server.db_cfg, message_id=mid, log=log)
+                if msg and msg.get("session_id") == sid and vt != 0:
+                    _json(self, 400, {"error": "cannot vote on your own post"})
+                    return
                 update_vote(self.server.db_cfg, message_id=mid, session_id=sid, vote_type=vt, ts=_now_ts(), log=log)
                 up, down = get_vote_counts(self.server.db_cfg, message_id=mid, log=log)
                 uv = get_user_vote(self.server.db_cfg, message_id=mid, session_id=sid, log=log)

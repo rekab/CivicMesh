@@ -9,13 +9,11 @@
   <body>
     <header class="topbar">
       <div class="brand">
-        <div class="brand__title">Civic Mesh</div>
-        <div class="brand__subtitle">Emergency Hub Relay</div>
+        <div class="brand__title">CivicMesh</div>
       </div>
-      <div id="debugBanner" class="pill pill--warn pill--debug" hidden>Debug session: eth0 bypass enabled</div>
+      <div id="debugBanner" class="pill pill--warn pill--debug" hidden>DEBUG</div>
       <div class="status">
-        <div id="rateLimit" class="pill">Posts remaining this hour: …</div>
-        <div id="sessionStatus" class="pill pill--warn">Session: …</div>
+        <div id="sessionStatus" class="pill pill--ok">Connected</div>
       </div>
     </header>
 
@@ -46,7 +44,7 @@
           <div class="composer__row composer__row--actions">
             <div class="composer__notes">
               <div id="channelHint" class="hint" hidden>Select a channel to post.</div>
-              <div id="charCount" class="hint">0/…</div>
+              <div id="charCount" class="hint">0/… · … msgs left</div>
               <div id="postError" class="error"></div>
             </div>
             <button id="postBtn" class="btn btn--primary" disabled>Post to Mesh</button>
