@@ -91,15 +91,32 @@ body {
   letter-spacing: 0.3px;
   text-transform: uppercase;
 }
+.panel__header--menu {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  display: block;
+}
+.menu-icon {
+  display: inline-block;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+  padding-right: 0.5em;
+}
+.panel__header--menu:hover {
+  border-bottom-color: rgba(125, 211, 252, 0.28);
+}
 .panel__title { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 700; }
 .panel__title { display: inline-flex; align-items: center; gap: 6px; }
 
 .channels { display: flex; flex-direction: column; padding: 8px; gap: 6px; }
 body.channels-collapsed .panel--left .channels {
   display: none;
-}
-body.channels-collapsed .panel--left .panel__header {
-  justify-content: center;
 }
 .menu-entry {
   margin: 0 8px 8px;
