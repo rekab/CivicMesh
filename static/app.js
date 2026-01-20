@@ -156,7 +156,6 @@ function setActiveChannel(name) {
   document.body.classList.add("channels-collapsed");
   const toggle = $("channelToggle");
   if (toggle) {
-    toggle.textContent = ">";
     toggle.setAttribute("aria-expanded", "false");
   }
   refreshMessages(true);
@@ -414,7 +413,6 @@ async function init() {
   if (channelToggle) {
     channelToggle.onclick = () => {
       const collapsed = document.body.classList.toggle("channels-collapsed");
-      channelToggle.textContent = collapsed ? ">" : "v";
       channelToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
     };
   }
