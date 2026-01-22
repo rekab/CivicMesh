@@ -145,6 +145,8 @@ function setActiveChannel(name) {
     : `${label} · ${escapeHtml(name)}`;
   updatePostButton(ch);
   renderChannels();
+  const helpToggle = $("helpToggle");
+  if (helpToggle) helpToggle.classList.remove("menu-entry--active");
   const welcome = $("welcomeBox");
   if (welcome) welcome.hidden = true;
   const chatPanel = document.querySelector(".panel--main");
@@ -428,6 +430,11 @@ async function init() {
       if (composer) composer.hidden = true;
       const welcome = $("welcomeBox");
       if (welcome) welcome.hidden = true;
+      state.activeChannel = null;
+      state.expandedMeta.clear();
+      updatePostButton(null);
+      renderChannels();
+      helpToggle.classList.add("menu-entry--active");
     };
   }
   if (helpClose && helpPanel) {
@@ -439,6 +446,7 @@ async function init() {
         const composer = document.querySelector(".composer");
         if (composer) composer.hidden = false;
       }
+      helpToggle.classList.remove("menu-entry--active");
     };
   }
   const content = $("content");
