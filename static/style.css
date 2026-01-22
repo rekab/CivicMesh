@@ -127,6 +127,10 @@ body.channels-collapsed .panel--left .channels {
   cursor: pointer;
 }
 .menu-entry:hover { border: 1px solid rgba(125, 211, 252, 0.28); }
+.menu-entry--active {
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  background: rgba(125, 211, 252, 0.12);
+}
 body.channels-collapsed .panel--left .menu-entry {
   display: none;
 }
