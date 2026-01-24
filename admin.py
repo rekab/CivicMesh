@@ -1,9 +1,160 @@
 import argparse
 import time
+from typing import Callable
 
 from config import load_config
-from database import DBConfig, init_db, pin_message, unpin_message
+from database import (
+    DBConfig,
+    cancel_outbox_message,
+    clear_pending_outbox,
+    get_outbox_message,
+    get_pending_outbox_filtered,
+    get_recent_messages_filtered,
+    init_db,
+    pin_message,
+    unpin_message,
+)
 from logger import setup_logging
+
+
+RECENT_ID_WIDTH = 5
+RECENT_TS_WIDTH = 19
+RECENT_CHANNEL_WIDTH = 12
+RECENT_SOURCE_WIDTH = 4
+RECENT_SENDER_WIDTH = 13
+RECENT_CONTENT_WIDTH = 50
+
+OUTBOX_ID_WIDTH = 5
+OUTBOX_TS_WIDTH = 19
+OUTBOX_CHANNEL_WIDTH = 12
+OUTBOX_SENDER_WIDTH = 13
+OUTBOX_CONTENT_WIDTH = 50
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return f"{text[: max_len - 3]}..."
+
+
+def _format_recent_messages(rows: list[dict[str, object]]) -> str:
+    header = (
+        f"{'ID':<{RECENT_ID_WIDTH}} "
+        f"{'TS':<{RECENT_TS_WIDTH}} "
+        f"{'CH':<{RECENT_CHANNEL_WIDTH}} "
+        f"{'SRC':<{RECENT_SOURCE_WIDTH}} "
+        f"{'SENDER':<{RECENT_SENDER_WIDTH}} "
+        "CONTENT"
+    )
+    lines = [header]
+    for row in rows:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(row["ts"])))
+        channel = _truncate(str(row["channel"]), RECENT_CHANNEL_WIDTH)
+        source = _truncate(str(row["source"]), RECENT_SOURCE_WIDTH)
+        sender = _truncate(str(row["sender"]), RECENT_SENDER_WIDTH)
+        content = _truncate(str(row["content"]), RECENT_CONTENT_WIDTH)
+        lines.append(
+            f"{row['id']:<{RECENT_ID_WIDTH}} "
+            f"{ts:<{RECENT_TS_WIDTH}} "
+            f"{channel:<{RECENT_CHANNEL_WIDTH}} "
+            f"{source:<{RECENT_SOURCE_WIDTH}} "
+            f"{sender:<{RECENT_SENDER_WIDTH}} "
+            f"{content}"
+        )
+    return "\n".join(lines)
+
+
+def _format_outbox_messages(rows: list[dict[str, object]]) -> str:
+    header = (
+        f"{'ID':<{OUTBOX_ID_WIDTH}} "
+        f"{'TS':<{OUTBOX_TS_WIDTH}} "
+        f"{'CH':<{OUTBOX_CHANNEL_WIDTH}} "
+        f"{'SENDER':<{OUTBOX_SENDER_WIDTH}} "
+        "CONTENT"
+    )
+    lines = [header]
+    for row in rows:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(row["ts"])))
+        channel = _truncate(str(row["channel"]), OUTBOX_CHANNEL_WIDTH)
+        sender = _truncate(str(row["sender"]), OUTBOX_SENDER_WIDTH)
+        content = _truncate(str(row["content"]), OUTBOX_CONTENT_WIDTH)
+        lines.append(
+            f"{row['id']:<{OUTBOX_ID_WIDTH}} "
+            f"{ts:<{OUTBOX_TS_WIDTH}} "
+            f"{channel:<{OUTBOX_CHANNEL_WIDTH}} "
+            f"{sender:<{OUTBOX_SENDER_WIDTH}} "
+            f"{content}"
+        )
+    return "\n".join(lines)
+
+
+def _confirm_outbox_cancel(
+    *,
+    ts: int,
+    sender: str,
+    content: str,
+    skip_confirmation: bool,
+    input_fn: Callable[[str], str],
+) -> bool:
+    ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    print(f"[{ts_str}] <{sender}> {content}")
+    if skip_confirmation:
+        return True
+    resp = input_fn("Cancel this outbox message? [y/N]: ").strip().lower()
+    return resp in ("y", "yes")
+
+
+def _handle_outbox_cancel(
+    db_cfg: DBConfig,
+    *,
+    outbox_id: int,
+    skip_confirmation: bool,
+    input_fn: Callable[[str], str],
+    log=None,
+) -> bool:
+    row = get_outbox_message(db_cfg, outbox_id=outbox_id, log=log)
+    if not row:
+        print("outbox id not found")
+        return False
+    if row.get("sent"):
+        print("outbox message already sent")
+        return False
+    if not _confirm_outbox_cancel(
+        ts=int(row["ts"]),
+        sender=str(row["sender"]),
+        content=str(row["content"]),
+        skip_confirmation=skip_confirmation,
+        input_fn=input_fn,
+    ):
+        print("canceled=0")
+        return False
+    canceled = cancel_outbox_message(db_cfg, outbox_id=outbox_id, log=log)
+    print(f"canceled={1 if canceled else 0} id={outbox_id}")
+    return canceled
+
+
+def _confirm_outbox_clear(*, skip_confirmation: bool, input_fn: Callable[[str], str]) -> bool:
+    if skip_confirmation:
+        return True
+    resp = input_fn("Cancel all pending outbox messages? [y/N]: ").strip().lower()
+    return resp in ("y", "yes")
+
+
+def _handle_outbox_clear(
+    db_cfg: DBConfig,
+    *,
+    skip_confirmation: bool,
+    input_fn: Callable[[str], str],
+    log=None,
+) -> int:
+    if not _confirm_outbox_clear(skip_confirmation=skip_confirmation, input_fn=input_fn):
+        print("cleared=0")
+        return 0
+    cleared = clear_pending_outbox(db_cfg, log=log)
+    print(f"cleared={cleared}")
+    return cleared
 
 
 def main():
@@ -22,6 +173,28 @@ def main():
 
     p_cleanup = sub.add_parser("cleanup")
     p_cleanup.add_argument("--channel", default=None)
+
+    p_messages = sub.add_parser("messages")
+    sub_messages = p_messages.add_subparsers(dest="messages_cmd", required=True)
+
+    p_recent = sub_messages.add_parser("recent")
+    p_recent.add_argument("--channel", default=None)
+    p_recent.add_argument("--source", choices=["mesh", "wifi"], default=None)
+    p_recent.add_argument("--limit", type=int, default=20)
+
+    p_outbox = sub.add_parser("outbox")
+    sub_outbox = p_outbox.add_subparsers(dest="outbox_cmd", required=True)
+
+    p_outbox_list = sub_outbox.add_parser("list")
+    p_outbox_list.add_argument("--channel", default=None)
+    p_outbox_list.add_argument("--limit", type=int, default=20)
+
+    p_outbox_cancel = sub_outbox.add_parser("cancel")
+    p_outbox_cancel.add_argument("outbox_id", type=int)
+    p_outbox_cancel.add_argument("--skip_confirmation", action="store_true")
+
+    p_outbox_clear = sub_outbox.add_parser("clear")
+    p_outbox_clear.add_argument("--skip_confirmation", action="store_true")
 
     args = ap.parse_args()
 
@@ -67,8 +240,43 @@ def main():
             total += d
         print(f"deleted={total}")
         return
+    if args.cmd == "messages" and args.messages_cmd == "recent":
+        rows = get_recent_messages_filtered(
+            db_cfg,
+            channel=args.channel,
+            source=args.source,
+            limit=args.limit,
+            log=log,
+        )
+        print(_format_recent_messages(rows))
+        return
+    if args.cmd == "outbox" and args.outbox_cmd == "list":
+        rows = get_pending_outbox_filtered(
+            db_cfg,
+            channel=args.channel,
+            limit=args.limit,
+            log=log,
+        )
+        print(_format_outbox_messages(rows))
+        return
+    if args.cmd == "outbox" and args.outbox_cmd == "cancel":
+        _handle_outbox_cancel(
+            db_cfg,
+            outbox_id=args.outbox_id,
+            skip_confirmation=args.skip_confirmation,
+            input_fn=input,
+            log=log,
+        )
+        return
+    if args.cmd == "outbox" and args.outbox_cmd == "clear":
+        _handle_outbox_clear(
+            db_cfg,
+            skip_confirmation=args.skip_confirmation,
+            input_fn=input,
+            log=log,
+        )
+        return
 
 
 if __name__ == "__main__":
     main()
-

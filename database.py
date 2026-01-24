@@ -133,6 +133,42 @@ def insert_message(
         conn.close()
 
 
+def get_recent_messages_filtered(
+    cfg: DBConfig,
+    *,
+    channel: Optional[str],
+    source: Optional[str],
+    limit: int = 20,
+    log=None,
+) -> list[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_recent_messages_filtered channel=%s source=%s limit=%d", channel, source, limit)
+
+        conditions = []
+        params: list[Any] = []
+        if channel:
+            conditions.append("channel=?")
+            params.append(channel)
+        if source:
+            conditions.append("source=?")
+            params.append(source)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            "SELECT * FROM messages"
+            f"{where} "
+            "ORDER BY ts DESC "
+            "LIMIT ?"
+        )
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_messages(
     cfg: DBConfig,
     *,
@@ -200,6 +236,71 @@ def get_pending_outbox(cfg: DBConfig, *, limit: int, log=None) -> list[dict[str,
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_outbox_message(cfg: DBConfig, *, outbox_id: int, log=None) -> Optional[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_outbox_message id=%d", outbox_id)
+        row = conn.execute(
+            "SELECT * FROM outbox WHERE id=?",
+            (outbox_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_pending_outbox_filtered(
+    cfg: DBConfig,
+    *,
+    channel: Optional[str],
+    limit: int = 20,
+    log=None,
+) -> list[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_pending_outbox_filtered channel=%s limit=%d", channel, limit)
+        if channel:
+            rows = conn.execute(
+                "SELECT * FROM outbox WHERE sent=0 AND channel=? ORDER BY ts ASC LIMIT ?",
+                (channel, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM outbox WHERE sent=0 ORDER BY ts ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def cancel_outbox_message(cfg: DBConfig, *, outbox_id: int, log=None) -> bool:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:cancel_outbox_message id=%d", outbox_id)
+        cur = conn.execute(
+            "DELETE FROM outbox WHERE id=? AND sent=0",
+            (outbox_id,),
+        )
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def clear_pending_outbox(cfg: DBConfig, *, log=None) -> int:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:clear_pending_outbox")
+        cur = conn.execute("DELETE FROM outbox WHERE sent=0")
+        return cur.rowcount
     finally:
         conn.close()
 

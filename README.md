@@ -159,6 +159,15 @@ python3 admin.py --config config.toml pin 123
 python3 admin.py --config config.toml unpin 123
 python3 admin.py --config config.toml stats
 python3 admin.py --config config.toml cleanup
+python3 admin.py --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
+```
+
+## Tests
+
+Run unit tests with:
+
+```bash
+python3 -m unittest
 ```
 
 ## Configuration
