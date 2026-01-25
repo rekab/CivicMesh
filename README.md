@@ -64,6 +64,21 @@ Two processes share state via SQLite:
 - `mesh_bot.py` (async): connects to Heltec via USB serial (MeshCore companion firmware), joins channels, logs messages, relays queued WiFi posts, handles DM searches
 - `web_server.py` (sync): captive portal HTTP server (no HTTPS), interactive web UI, queues posts, votes, and session state
 
+## Project Docs
+
+- Spec skeleton: `docs/spec_skeleton.md`
+- Invariants: `docs/invariants.md`
+- Open questions: `docs/open_questions.md`
+- Staged hardening plan: `docs/staged_plan.md`
+- Captive portal setup: `docs/captive_portal_setup.md`
+
+## Scope Notes (v0)
+
+- Public channels only; no accounts and no web-based admin controls.
+- HTTP-only captive portal for device compatibility.
+- `sent-to-radio` indicates the message was handed to the radio, not delivered to recipients.
+- Offline-first: UI loads without radio; cached messages remain readable.
+
 ## Configuration
 
 Edit `config.toml`.
