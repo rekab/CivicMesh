@@ -133,6 +133,32 @@ def insert_message(
         conn.close()
 
 
+def insert_session(
+    cfg: DBConfig,
+    *,
+    session_id: str,
+    name: Optional[str],
+    location: Optional[str],
+    mac_address: Optional[str],
+    fingerprint: Optional[str],
+    created_ts: Optional[int],
+    last_post_ts: Optional[int],
+    post_count_hour: int = 0,
+    log=None,
+) -> None:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:insert_session session_id=%s", session_id)
+        conn.execute(
+            "INSERT INTO sessions (session_id, name, location, mac_address, fingerprint, created_ts, last_post_ts, post_count_hour) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, name, location, mac_address, fingerprint, created_ts, last_post_ts, post_count_hour),
+        )
+    finally:
+        conn.close()
+
+
 def get_recent_messages_filtered(
     cfg: DBConfig,
     *,
@@ -165,6 +191,36 @@ def get_recent_messages_filtered(
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_recent_sessions(cfg: DBConfig, *, limit: int = 20, log=None) -> list[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_recent_sessions limit=%d", limit)
+        rows = conn.execute(
+            "SELECT * FROM sessions "
+            "ORDER BY (last_post_ts IS NULL) ASC, last_post_ts DESC, created_ts DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_session_by_id(cfg: DBConfig, *, session_id: str, log=None) -> Optional[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:get_session_by_id session_id=%s", session_id)
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
