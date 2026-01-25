@@ -164,13 +164,20 @@ def get_recent_messages_filtered(
     *,
     channel: Optional[str],
     source: Optional[str],
+    session_id: Optional[str] = None,
     limit: int = 20,
     log=None,
 ) -> list[dict[str, Any]]:
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("db:get_recent_messages_filtered channel=%s source=%s limit=%d", channel, source, limit)
+            log.debug(
+                "db:get_recent_messages_filtered channel=%s source=%s session_id=%s limit=%d",
+                channel,
+                source,
+                session_id,
+                limit,
+            )
 
         conditions = []
         params: list[Any] = []
@@ -180,6 +187,9 @@ def get_recent_messages_filtered(
         if source:
             conditions.append("source=?")
             params.append(source)
+        if session_id:
+            conditions.append("session_id=?")
+            params.append(session_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
