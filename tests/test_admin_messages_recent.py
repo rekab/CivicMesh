@@ -4,10 +4,8 @@ import unittest
 
 from admin import (
     RECENT_CHANNEL_WIDTH,
-    RECENT_CONTENT_WIDTH,
     RECENT_ID_WIDTH,
     RECENT_SENDER_WIDTH,
-    RECENT_SOURCE_WIDTH,
     RECENT_TS_WIDTH,
     _format_recent_messages,
     _truncate,
@@ -32,6 +30,7 @@ class AdminRecentMessagesTest(unittest.TestCase):
                 sender=sender,
                 content=content,
                 source="wifi",
+                session_id="sess-1",
             )
             insert_message(
                 db_cfg,
@@ -40,6 +39,7 @@ class AdminRecentMessagesTest(unittest.TestCase):
                 sender="KF7XYZ",
                 content="Copy that, heading over.",
                 source="mesh",
+                session_id="sess-2",
             )
             insert_message(
                 db_cfg,
@@ -48,23 +48,27 @@ class AdminRecentMessagesTest(unittest.TestCase):
                 sender="W7ABC",
                 content="Net check: Ross hub online?",
                 source="mesh",
+                session_id="sess-1",
             )
 
             rows = get_recent_messages_filtered(
                 db_cfg,
                 channel="#fremont",
                 source="wifi",
+                session_id="sess-1",
                 limit=20,
             )
             self.assertEqual([r["id"] for r in rows], [msg_id])
 
             output = _format_recent_messages(rows)
             lines = output.splitlines()
+            session_width = len("sess-1")
             expected_header = (
                 f"{'ID':<{RECENT_ID_WIDTH}} "
                 f"{'TS':<{RECENT_TS_WIDTH}} "
                 f"{'CH':<{RECENT_CHANNEL_WIDTH}} "
-                f"{'SRC':<{RECENT_SOURCE_WIDTH}} "
+                "SRC "
+                f"{'SESSION':<{session_width}} "
                 f"{'SENDER':<{RECENT_SENDER_WIDTH}} "
                 "CONTENT"
             )
@@ -73,8 +77,9 @@ class AdminRecentMessagesTest(unittest.TestCase):
             self.assertIn(ts_str, lines[1])
             self.assertIn("#fremont", lines[1])
             self.assertIn("wifi", lines[1])
-            self.assertIn(_truncate(sender, RECENT_SENDER_WIDTH), lines[1])
-            self.assertIn(_truncate(content, RECENT_CONTENT_WIDTH), lines[1])
+            self.assertIn("sess-1", lines[1])
+            self.assertIn(repr(sender), lines[1])
+            self.assertIn(repr(content), lines[1])
 
     def test_recent_messages_limit_sort(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -100,7 +105,7 @@ class AdminRecentMessagesTest(unittest.TestCase):
                 source="wifi",
             )
 
-            rows = get_recent_messages_filtered(db_cfg, channel=None, source=None, limit=1)
+            rows = get_recent_messages_filtered(db_cfg, channel=None, source=None, session_id=None, limit=1)
             self.assertEqual([r["id"] for r in rows], [newest_id])
             self.assertNotIn(older_id, [r["id"] for r in rows])
 

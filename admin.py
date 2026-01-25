@@ -22,9 +22,7 @@ from logger import setup_logging
 RECENT_ID_WIDTH = 5
 RECENT_TS_WIDTH = 19
 RECENT_CHANNEL_WIDTH = 12
-RECENT_SOURCE_WIDTH = 4
 RECENT_SENDER_WIDTH = 13
-RECENT_CONTENT_WIDTH = 50
 
 OUTBOX_ID_WIDTH = 5
 OUTBOX_TS_WIDTH = 19
@@ -47,27 +45,35 @@ def _truncate(text: str, max_len: int) -> str:
     return f"{text[: max_len - 3]}..."
 
 
+def log_safe(s: str) -> str:
+    return s.encode("unicode_escape", errors="backslashreplace").decode("ascii")
+
+
 def _format_recent_messages(rows: list[dict[str, object]]) -> str:
+    session_width = max(len("SESSION"), max((len(str(r.get("session_id", ""))) for r in rows), default=0))
     header = (
         f"{'ID':<{RECENT_ID_WIDTH}} "
         f"{'TS':<{RECENT_TS_WIDTH}} "
         f"{'CH':<{RECENT_CHANNEL_WIDTH}} "
-        f"{'SRC':<{RECENT_SOURCE_WIDTH}} "
+        "SRC "
+        f"{'SESSION':<{session_width}} "
         f"{'SENDER':<{RECENT_SENDER_WIDTH}} "
         "CONTENT"
     )
     lines = [header]
     for row in rows:
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(row["ts"])))
-        channel = _truncate(str(row["channel"]), RECENT_CHANNEL_WIDTH)
-        source = _truncate(str(row["source"]), RECENT_SOURCE_WIDTH)
-        sender = _truncate(str(row["sender"]), RECENT_SENDER_WIDTH)
-        content = _truncate(str(row["content"]), RECENT_CONTENT_WIDTH)
+        channel = str(row["channel"])
+        source = str(row["source"])
+        session_id = str(row.get("session_id") or "")
+        sender = log_safe(repr(str(row["sender"])))
+        content = log_safe(repr(str(row["content"])))
         lines.append(
             f"{row['id']:<{RECENT_ID_WIDTH}} "
             f"{ts:<{RECENT_TS_WIDTH}} "
             f"{channel:<{RECENT_CHANNEL_WIDTH}} "
-            f"{source:<{RECENT_SOURCE_WIDTH}} "
+            f"{source} "
+            f"{session_id:<{session_width}} "
             f"{sender:<{RECENT_SENDER_WIDTH}} "
             f"{content}"
         )
@@ -86,8 +92,8 @@ def _format_outbox_messages(rows: list[dict[str, object]]) -> str:
     for row in rows:
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(row["ts"])))
         channel = _truncate(str(row["channel"]), OUTBOX_CHANNEL_WIDTH)
-        sender = _truncate(str(row["sender"]), OUTBOX_SENDER_WIDTH)
-        content = _truncate(str(row["content"]), OUTBOX_CONTENT_WIDTH)
+        sender = _truncate(log_safe(str(row["sender"])), OUTBOX_SENDER_WIDTH)
+        content = _truncate(log_safe(str(row["content"])), OUTBOX_CONTENT_WIDTH)
         lines.append(
             f"{row['id']:<{OUTBOX_ID_WIDTH}} "
             f"{ts:<{OUTBOX_TS_WIDTH}} "
@@ -157,7 +163,9 @@ def _confirm_outbox_cancel(
     input_fn: Callable[[str], str],
 ) -> bool:
     ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-    print(f"[{ts_str}] <{sender}> {content}")
+    safe_sender = log_safe(sender)
+    safe_content = log_safe(content)
+    print(f"[{ts_str}] <{safe_sender}> {safe_content}")
     if skip_confirmation:
         return True
     resp = input_fn("Cancel this outbox message? [y/N]: ").strip().lower()
@@ -238,6 +246,7 @@ def main():
     p_recent = sub_messages.add_parser("recent")
     p_recent.add_argument("--channel", default=None)
     p_recent.add_argument("--source", choices=["mesh", "wifi"], default=None)
+    p_recent.add_argument("--session", default=None)
     p_recent.add_argument("--limit", type=int, default=20)
 
     p_outbox = sub.add_parser("outbox")
@@ -312,6 +321,7 @@ def main():
             db_cfg,
             channel=args.channel,
             source=args.source,
+            session_id=args.session,
             limit=args.limit,
             log=log,
         )
