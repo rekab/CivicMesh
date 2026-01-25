@@ -10,6 +10,8 @@ from database import (
     get_outbox_message,
     get_pending_outbox_filtered,
     get_recent_messages_filtered,
+    get_recent_sessions,
+    get_session_by_id,
     init_db,
     pin_message,
     unpin_message,
@@ -29,6 +31,12 @@ OUTBOX_TS_WIDTH = 19
 OUTBOX_CHANNEL_WIDTH = 12
 OUTBOX_SENDER_WIDTH = 13
 OUTBOX_CONTENT_WIDTH = 50
+
+SESSION_LAST_WIDTH = 16
+SESSION_NAME_WIDTH = 12
+SESSION_LOCATION_WIDTH = 12
+SESSION_MAC_WIDTH = 17
+SESSION_POSTS_WIDTH = 5
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -88,6 +96,56 @@ def _format_outbox_messages(rows: list[dict[str, object]]) -> str:
             f"{content}"
         )
     return "\n".join(lines)
+
+
+def _format_sessions(rows: list[dict[str, object]]) -> str:
+    session_width = max(len("SESSION"), max((len(str(r.get("session_id", ""))) for r in rows), default=0))
+    header = (
+        f"{'SESSION':<{session_width}} "
+        f"{'LAST':<{SESSION_LAST_WIDTH}} "
+        f"{'NAME':<{SESSION_NAME_WIDTH}} "
+        f"{'LOC':<{SESSION_LOCATION_WIDTH}} "
+        f"{'MAC':<{SESSION_MAC_WIDTH}} "
+        f"{'POSTS':<{SESSION_POSTS_WIDTH}}"
+    )
+    lines = [header]
+    for row in rows:
+        last_post_ts = row.get("last_post_ts")
+        if last_post_ts:
+            last_ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(last_post_ts)))
+        else:
+            last_ts = "-"
+        session_id = str(row["session_id"])
+        name = _truncate(str(row.get("name") or ""), SESSION_NAME_WIDTH)
+        location = _truncate(str(row.get("location") or ""), SESSION_LOCATION_WIDTH)
+        mac = _truncate(str(row.get("mac_address") or ""), SESSION_MAC_WIDTH)
+        posts = str(row.get("post_count_hour") or 0)
+        lines.append(
+            f"{session_id:<{session_width}} "
+            f"{last_ts:<{SESSION_LAST_WIDTH}} "
+            f"{name:<{SESSION_NAME_WIDTH}} "
+            f"{location:<{SESSION_LOCATION_WIDTH}} "
+            f"{mac:<{SESSION_MAC_WIDTH}} "
+            f"{posts:<{SESSION_POSTS_WIDTH}}"
+        )
+    return "\n".join(lines)
+
+
+def _format_session_detail(row: dict[str, object]) -> str:
+    name = str(row.get("name") or "")
+    location = str(row.get("location") or "")
+    mac = str(row.get("mac_address") or "")
+    fingerprint = str(row.get("fingerprint") or "")
+    posts = str(row.get("post_count_hour") or 0)
+    return "\n".join(
+        [
+            f"name={name}",
+            f"location={location}",
+            f"mac={mac}",
+            f"post_count_hour={posts}",
+            f"fingerprint={fingerprint}",
+        ]
+    )
 
 
 def _confirm_outbox_cancel(
@@ -196,6 +254,15 @@ def main():
     p_outbox_clear = sub_outbox.add_parser("clear")
     p_outbox_clear.add_argument("--skip_confirmation", action="store_true")
 
+    p_sessions = sub.add_parser("sessions")
+    sub_sessions = p_sessions.add_subparsers(dest="sessions_cmd", required=True)
+
+    p_sessions_list = sub_sessions.add_parser("list")
+    p_sessions_list.add_argument("--limit", type=int, default=20)
+
+    p_sessions_show = sub_sessions.add_parser("show")
+    p_sessions_show.add_argument("session_id")
+
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -275,6 +342,21 @@ def main():
             input_fn=input,
             log=log,
         )
+        return
+    if args.cmd == "sessions" and args.sessions_cmd == "list":
+        rows = get_recent_sessions(
+            db_cfg,
+            limit=args.limit,
+            log=log,
+        )
+        print(_format_sessions(rows))
+        return
+    if args.cmd == "sessions" and args.sessions_cmd == "show":
+        row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
+        if not row:
+            print("session not found")
+            return
+        print(_format_session_detail(row))
         return
 
 
