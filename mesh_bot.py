@@ -11,7 +11,6 @@ from database import (
     init_db,
     insert_message,
     mark_outbox_sent,
-    search_messages,
 )
 from logger import setup_logging
 
@@ -89,25 +88,6 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
             log.error("outbox:error %s", e, exc_info=True)
 
         await asyncio.sleep(interval)
-
-
-def _parse_search(text: str) -> dict:
-    # Advanced syntax:
-    # search [#channel] [sender:name] keyword...
-    parts = text.strip().split()
-    if not parts or parts[0].lower() != "search":
-        return {}
-    channel = None
-    sender = None
-    keywords: list[str] = []
-    for p in parts[1:]:
-        if p.startswith("#") and channel is None:
-            channel = p
-        elif p.lower().startswith("sender:") and sender is None:
-            sender = p.split(":", 1)[1]
-        else:
-            keywords.append(p)
-    return {"channel": channel, "sender": sender, "q": " ".join(keywords).strip()}
 
 
 async def main_async(config_path: str):
@@ -195,41 +175,7 @@ async def main_async(config_path: str):
                     except Exception as e:
                         log.error("mesh:rx_error %s", e, exc_info=True)
 
-                async def _handle_dm(event):
-                    try:
-                        msg = event.payload
-                        text = msg.get("text") or msg.get("content", "")
-                        sender_prefix = msg.get("pubkey_prefix", "")
-                        log.debug("mesh:dm from=%s len=%d", sender_prefix, len(text))
-                        q = _parse_search(text)
-                        if not q:
-                            reply = "Usage: search [#channel] [sender:name] keyword"
-                        else:
-                            results = search_messages(
-                                db_cfg,
-                                query=q["q"],
-                                channel=q.get("channel"),
-                                sender=q.get("sender"),
-                                limit=5,
-                                log=log,
-                            )
-                            if not results:
-                                reply = "No results."
-                            else:
-                                lines = [f'{r["channel"]} {r["sender"]} {r["ts"]}: {r["content"]}' for r in results]
-                                reply = "Results:\n" + "\n".join(lines)
-                        contact = mesh_client.get_contact_by_key_prefix(sender_prefix)
-                        if contact is None:
-                            log.error("mesh:dm_reply_missing_contact prefix=%s", sender_prefix)
-                            return
-                        result = await mesh_client.commands.send_msg(contact, reply)
-                        if result.type == EventType.ERROR:
-                            log.error("mesh:dm_reply_failed prefix=%s err=%s", sender_prefix, result.payload)
-                    except Exception as e:
-                        log.error("mesh:dm_error %s", e, exc_info=True)
-
                 mesh_client.subscribe(EventType.CHANNEL_MSG_RECV, _on_channel_message)
-                mesh_client.subscribe(EventType.CONTACT_MSG_RECV, lambda e: asyncio.create_task(_handle_dm(e)))
 
                 backoff = 1
                 return
