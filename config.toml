@@ -10,7 +10,7 @@ sf = 7
 cr = 5
 
 [channels]
-names = ["#fremont", "#puget-sound"]
+names = ["#civicmesh", "#puget-sound"]
 
 [local]
 names = ["#local"]
