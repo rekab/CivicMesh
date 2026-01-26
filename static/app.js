@@ -231,6 +231,7 @@ function renderMessages(msgs) {
     div.innerHTML = `
       <div class="msg__line">
         <span class="msg__time">${fmtShortTimestamp(m.ts)}</span>
+        ${sourceIcon(m.source)}
         <span class="msg__who">&lt;${escapeHtml(m.sender || "unknown")}&gt;</span>
         <span class="msg__body-inline">${escapeHtml(m.content)}</span>
         ${badge}
@@ -294,6 +295,12 @@ function sourceLabel(source) {
   if (source === "wifi") return "WiFi";
   if (source === "pending") return "Queued";
   return String(source || "");
+}
+
+function sourceIcon(source) {
+  if (source === "mesh") return '<span class="msg__icon msg__icon--mesh" aria-hidden="true"></span>';
+  if (source === "local" || source === "wifi") return '<span class="msg__icon msg__icon--local" aria-hidden="true">📍</span>';
+  return "";
 }
 
 async function refreshSession() {

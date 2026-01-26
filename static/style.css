@@ -215,6 +215,15 @@ body.channels-collapsed .panel--left .welcome {
 .msg__line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .msg__time { color: var(--muted); font-size: 12px; }
 .msg__badge { color: var(--muted); font-size: 12px; }
+.msg__icon { display: inline-flex; align-items: center; justify-content: center; }
+.msg__icon--mesh {
+  width: 12px;
+  height: 12px;
+  background-color: currentColor;
+  mask: url("/mesh-icon.svg") no-repeat center / contain;
+  -webkit-mask: url("/mesh-icon.svg") no-repeat center / contain;
+}
+.msg__icon--local { font-size: 12px; line-height: 1; }
 .msg__who { font-weight: 700; }
 .msg__body-inline { white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
 .msg__meta { color: var(--muted); font-size: 12px; }
