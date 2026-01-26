@@ -26,6 +26,10 @@ class HubConfig:
 @dataclass(frozen=True)
 class RadioConfig:
     serial_port: str
+    freq_mhz: float
+    bw_khz: float
+    sf: int
+    cr: int
 
 
 @dataclass(frozen=True)
@@ -112,7 +116,13 @@ def load_config(path: str) -> AppConfig:
             name=str(hub.get("name", "Civic Mesh Hub")),
             location=str(hub.get("location", "")),
         ),
-        radio=RadioConfig(serial_port=str(radio.get("serial_port", "/dev/ttyUSB0"))),
+        radio=RadioConfig(
+            serial_port=str(radio.get("serial_port", "/dev/ttyUSB0")),
+            freq_mhz=float(radio.get("freq_mhz", 910.525)),
+            bw_khz=float(radio.get("bw_khz", 62.5)),
+            sf=int(radio.get("sf", 7)),
+            cr=int(radio.get("cr", 5)),
+        ),
         channels=ChannelsConfig(names=[str(x) for x in (channels.get("names") or [])]),
         local=LocalConfig(names=[str(x) for x in local_names]),
         wifi=WifiConfig(ssid=str(wifi.get("ssid", "CivicMesh-Hub"))),
