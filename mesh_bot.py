@@ -1,7 +1,7 @@
 import argparse
 import asyncio
+import hashlib
 import time
-from typing import Optional
 
 from config import load_config
 from database import (
@@ -14,6 +14,11 @@ from database import (
     search_messages,
 )
 from logger import setup_logging
+
+EventType = None
+MeshCore = None
+
+DEFAULT_BAUDRATE = 115200
 
 
 def _now_ts() -> int:
@@ -35,7 +40,7 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
         await asyncio.sleep(3600)
 
 
-async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client):
+async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_idx: dict[str, int]):
     interval = cfg.limits.outbox_batch_interval_sec
     batch_size = cfg.limits.outbox_batch_size
 
@@ -46,13 +51,24 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client):
                 log.info("outbox:pending=%d", len(pending))
                 sent_ids: list[int] = []
                 for item in pending:
-                    # mesh_client API is placeholder; actual meshcore_py integration below
                     channel = item["channel"]
                     sender = item["sender"]
                     content = item["content"]
                     try:
                         log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
-                        await mesh_client.send_channel_message(channel, content)
+                        channel_idx = channel_name_to_idx.get(channel)
+                        if channel_idx is None:
+                            log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
+                            continue
+                        result = await mesh_client.commands.send_chan_msg(channel_idx, content)
+                        if result.type == EventType.ERROR:
+                            log.error(
+                                "outbox:send_failed id=%s channel=%s err=%s",
+                                item["id"],
+                                channel,
+                                result.payload,
+                            )
+                            continue
                         mid = insert_message(
                             db_cfg,
                             ts=item["ts"],
@@ -102,94 +118,118 @@ async def main_async(config_path: str):
     db_cfg = DBConfig(path=cfg.db_path)
     init_db(db_cfg, log=log)
 
-    # Lazy import so web_server can run without meshcore_py installed.
+    global EventType
+    global MeshCore
+
+    # Lazy import so web_server can run without meshcore installed.
     try:
-        import meshcore_py  # type: ignore
+        from meshcore import EventType, MeshCore  # type: ignore
     except Exception:
-        meshcore_py = None  # type: ignore
+        EventType = None  # type: ignore
+        MeshCore = None  # type: ignore
 
-    class _DummyMeshClient:
-        async def connect(self):  # pragma: no cover
-            raise RuntimeError("meshcore_py not installed")
-
-        async def join_channel(self, _name: str):  # pragma: no cover
-            return None
-
-        async def send_channel_message(self, _channel: str, _content: str):  # pragma: no cover
-            return None
-
-        def on_channel_message(self, _cb):  # pragma: no cover
-            return None
-
-        def on_direct_message(self, _cb):  # pragma: no cover
-            return None
-
-        async def send_direct_message(self, _to: str, _content: str):  # pragma: no cover
-            return None
-
-    mesh_client = _DummyMeshClient()
+    mesh_client = None
+    channel_name_to_idx = {name: idx for idx, name in enumerate(cfg.channels.names)}
 
     async def _connect_loop():
         nonlocal mesh_client
         backoff = 1
         while True:
             try:
-                if meshcore_py is None:
-                    raise RuntimeError("meshcore_py not available")
+                if MeshCore is None or EventType is None:
+                    raise RuntimeError("meshcore not available")
 
-                # NOTE: meshcore_py API may differ; this is a best-effort integration scaffold.
-                mesh_client = meshcore_py.Client(serial_port=cfg.radio.serial_port)
-                await mesh_client.connect()
-                log.info("mesh:connected port=%s", cfg.radio.serial_port)
+                mesh_client = await MeshCore.create_serial(cfg.radio.serial_port, DEFAULT_BAUDRATE)
+                log.info("mesh:connected port=%s baudrate=%d", cfg.radio.serial_port, DEFAULT_BAUDRATE)
 
-                for ch in cfg.channels.names:
-                    try:
-                        await mesh_client.join_channel(ch)
-                        log.info("mesh:joined channel=%s", ch)
-                    except Exception as e:
-                        log.error("mesh:join_failed channel=%s err=%s", ch, e, exc_info=True)
+                resp = await mesh_client.commands.set_radio(
+                    cfg.radio.freq_mhz,
+                    cfg.radio.bw_khz,
+                    cfg.radio.sf,
+                    cfg.radio.cr,
+                )
+                log.info(
+                    "mesh:set_radio event=%s type=%s payload=%s",
+                    resp,
+                    getattr(resp, "type", None),
+                    getattr(resp, "payload", None),
+                )
+                if resp.type == EventType.ERROR:
+                    log.error("mesh:set_radio_failed err=%s", resp.payload)
+
+                await mesh_client.commands.send_appstart()
+                radio_info = getattr(mesh_client, "self_info", {}) or {}
+                log.info(
+                    "mesh:radio_after freq=%s bw=%s sf=%s cr=%s",
+                    radio_info.get("radio_freq"),
+                    radio_info.get("radio_bw"),
+                    radio_info.get("radio_sf"),
+                    radio_info.get("radio_cr"),
+                )
+
+                for idx, name in enumerate(cfg.channels.names):
+                    secret_hex = hashlib.sha256(name.encode()).hexdigest()[:32]
+                    secret_bytes = bytes.fromhex(secret_hex)
+                    result = await mesh_client.commands.set_channel(idx, name, secret_bytes)
+                    if result.type == EventType.ERROR:
+                        log.error("mesh:set_channel_failed channel=%s err=%s", name, result.payload)
+                    else:
+                        log.info("mesh:channel_set idx=%d name=%s", idx, name)
+
+                await mesh_client.start_auto_message_fetching()
+                log.info("mesh:auto_fetch_started")
 
                 # Handlers
-                def _on_channel_message(msg):
+                def _on_channel_message(event):
                     try:
-                        ts = _now_ts()
-                        channel = getattr(msg, "channel", "") or getattr(msg, "room", "")
-                        sender = getattr(msg, "sender", "") or getattr(msg, "from", "")
-                        content = getattr(msg, "content", "") or getattr(msg, "text", "")
+                        msg = event.payload
+                        channel_idx = msg.get("channel_idx")
+                        if isinstance(channel_idx, int) and 0 <= channel_idx < len(cfg.channels.names):
+                            channel = cfg.channels.names[channel_idx]
+                        else:
+                            channel = f"#channel-{channel_idx}"
+                        sender = msg.get("sender", "") or msg.get("pubkey_prefix", "")
+                        content = msg.get("text") or msg.get("content", "")
                         log.debug("mesh:rx channel=%s sender=%s len=%d", channel, sender, len(content))
-                        insert_message(db_cfg, ts=ts, channel=channel, sender=sender, content=content, source="mesh", log=log)
+                        insert_message(db_cfg, ts=_now_ts(), channel=channel, sender=sender, content=content, source="mesh", log=log)
                     except Exception as e:
                         log.error("mesh:rx_error %s", e, exc_info=True)
 
-                async def _handle_dm(msg):
+                async def _handle_dm(event):
                     try:
-                        text = getattr(msg, "content", "") or getattr(msg, "text", "")
-                        sender = getattr(msg, "sender", "") or getattr(msg, "from", "")
-                        log.debug("mesh:dm from=%s len=%d", sender, len(text))
+                        msg = event.payload
+                        text = msg.get("text") or msg.get("content", "")
+                        sender_prefix = msg.get("pubkey_prefix", "")
+                        log.debug("mesh:dm from=%s len=%d", sender_prefix, len(text))
                         q = _parse_search(text)
                         if not q:
-                            await mesh_client.send_direct_message(sender, "Usage: search [#channel] [sender:name] keyword")
+                            reply = "Usage: search [#channel] [sender:name] keyword"
+                        else:
+                            results = search_messages(
+                                db_cfg,
+                                query=q["q"],
+                                channel=q.get("channel"),
+                                sender=q.get("sender"),
+                                limit=5,
+                                log=log,
+                            )
+                            if not results:
+                                reply = "No results."
+                            else:
+                                lines = [f'{r["channel"]} {r["sender"]} {r["ts"]}: {r["content"]}' for r in results]
+                                reply = "Results:\n" + "\n".join(lines)
+                        contact = mesh_client.get_contact_by_key_prefix(sender_prefix)
+                        if contact is None:
+                            log.error("mesh:dm_reply_missing_contact prefix=%s", sender_prefix)
                             return
-                        results = search_messages(
-                            db_cfg,
-                            query=q["q"],
-                            channel=q.get("channel"),
-                            sender=q.get("sender"),
-                            limit=5,
-                            log=log,
-                        )
-                        if not results:
-                            await mesh_client.send_direct_message(sender, "No results.")
-                            return
-                        lines = []
-                        for r in results:
-                            lines.append(f'{r["channel"]} {r["sender"]} {r["ts"]}: {r["content"]}')
-                        await mesh_client.send_direct_message(sender, "Results:\n" + "\n".join(lines))
+                        result = await mesh_client.commands.send_msg(contact, reply)
+                        if result.type == EventType.ERROR:
+                            log.error("mesh:dm_reply_failed prefix=%s err=%s", sender_prefix, result.payload)
                     except Exception as e:
                         log.error("mesh:dm_error %s", e, exc_info=True)
 
-                mesh_client.on_channel_message(_on_channel_message)
-                mesh_client.on_direct_message(lambda m: asyncio.create_task(_handle_dm(m)))
+                mesh_client.subscribe(EventType.CHANNEL_MSG_RECV, _on_channel_message)
+                mesh_client.subscribe(EventType.CONTACT_MSG_RECV, lambda e: asyncio.create_task(_handle_dm(e)))
 
                 backoff = 1
                 return
@@ -201,7 +241,7 @@ async def main_async(config_path: str):
     await _connect_loop()
 
     await asyncio.gather(
-        _outbox_task(cfg, db_cfg, log, mesh_client),
+        _outbox_task(cfg, db_cfg, log, mesh_client, channel_name_to_idx),
         _retention_task(cfg, db_cfg, log),
     )
 

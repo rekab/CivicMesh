@@ -4,6 +4,10 @@ location = "Fremont, Seattle"
 
 [radio]
 serial_port = "/dev/ttyUSB0"
+freq_mhz = 910.525
+bw_khz = 62.5
+sf = 7
+cr = 5
 
 [channels]
 names = ["#fremont", "#puget-sound"]
