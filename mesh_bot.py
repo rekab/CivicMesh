@@ -170,6 +170,12 @@ async def main_async(config_path: str):
                             channel = f"#channel-{channel_idx}"
                         sender = msg.get("sender", "") or msg.get("pubkey_prefix", "")
                         content = msg.get("text") or msg.get("content", "")
+                        if not sender and isinstance(content, str) and ": " in content:
+                            # Fallback for payloads that embed "Name: message" without sender metadata.
+                            name, rest = content.split(": ", 1)
+                            if name:
+                                sender = name
+                                content = rest
                         log.debug("mesh:rx channel=%s sender=%s len=%d", channel, sender, len(content))
                         insert_message(db_cfg, ts=_now_ts(), channel=channel, sender=sender, content=content, source="mesh", log=log)
                     except Exception as e:
