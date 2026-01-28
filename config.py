@@ -57,6 +57,7 @@ class LimitsConfig:
     posts_per_hour: int
     message_max_chars: int
     name_max_chars: int
+    name_pattern: str
     outbox_batch_interval_sec: int
     outbox_batch_size: int
     retention_bytes_per_channel: int
@@ -130,7 +131,8 @@ def load_config(path: str) -> AppConfig:
         limits=LimitsConfig(
             posts_per_hour=int(limits.get("posts_per_hour", 10)),
             message_max_chars=int(limits.get("message_max_chars", 200)),
-            name_max_chars=int(limits.get("name_max_chars", 10)),
+            name_max_chars=int(limits.get("name_max_chars", 12)),
+            name_pattern=str(limits.get("name_pattern", r"^[A-Za-z0-9_-]+$")),
             outbox_batch_interval_sec=int(limits.get("outbox_batch_interval_sec", 30)),
             outbox_batch_size=int(limits.get("outbox_batch_size", 5)),
             retention_bytes_per_channel=int(limits.get("retention_bytes_per_channel", 10 * 1024 * 1024 * 1024)),

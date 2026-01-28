@@ -2,6 +2,7 @@ import argparse
 import http.server
 import json
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -263,6 +264,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "fingerprint": sess.get("fingerprint") or "",
                     "message_max_chars": self.server.cfg.limits.message_max_chars,
                     "name_max_chars": self.server.cfg.limits.name_max_chars,
+                    "name_pattern": self.server.cfg.limits.name_pattern,
                 },
             )
             return
@@ -299,7 +301,14 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 400, {"error": "empty message"})
                 return
             if len(name) > self.server.cfg.limits.name_max_chars:
+                if sec:
+                    sec.error("InvalidName", ip=ip, mac=mac, msg="name too long", session_id=sid, name=name)
                 _json(self, 400, {"error": "name too long"})
+                return
+            if not re.match(self.server.cfg.limits.name_pattern, name):
+                if sec:
+                    sec.error("InvalidName", ip=ip, mac=mac, msg="name invalid characters", session_id=sid, name=name)
+                _json(self, 400, {"error": "name invalid"})
                 return
             if len(content) > self.server.cfg.limits.message_max_chars:
                 _json(self, 400, {"error": "message too long"})

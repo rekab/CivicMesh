@@ -102,7 +102,8 @@ let state = {
   fingerprint: "",
   polling: null,
   maxChars: 100,
-  maxNameChars: 10,
+  maxNameChars: 12,
+  namePattern: /^[A-Za-z0-9_-]+$/,
   expandedMeta: new Set(),
   postsRemaining: null,
   windowSec: 3600,
@@ -324,6 +325,13 @@ async function refreshSession() {
       state.maxNameChars = data.name_max_chars;
       applyNameMax();
     }
+    if (typeof data.name_pattern === "string" && data.name_pattern) {
+      try {
+        state.namePattern = new RegExp(data.name_pattern);
+      } catch {
+        // keep default
+      }
+    }
   } catch (e) {
     setConnectionStatus(false);
     state.postsRemaining = null;
@@ -362,6 +370,8 @@ async function postMessage() {
     $("postError").textContent = "Name is required to post.";
     return;
   }
+  validateNameLive();
+  if ($("postError").textContent) return;
   if (!channel) {
     $("postError").textContent = "Pick a channel to post.";
     return;
@@ -416,6 +426,7 @@ async function init() {
   loadNameFromCookie();
   $("name").addEventListener("change", storeNameToCookie);
   $("name").addEventListener("blur", storeNameToCookie);
+  $("name").addEventListener("input", validateNameLive);
   $("refreshBtn").onclick = () => refreshMessages(true);
   $("postBtn").onclick = () => postMessage();
   const channelToggle = $("channelToggle");
@@ -530,6 +541,28 @@ function setConnectionStatus(connected) {
   } else {
     pill.textContent = "NOT connected";
     pill.className = "pill pill--bad";
+  }
+}
+
+function validateNameLive() {
+  const nameEl = $("name");
+  const errorEl = $("postError");
+  if (!nameEl || !errorEl) return;
+  const name = nameEl.value.trim();
+  if (!name) {
+    if (errorEl.textContent.includes("Name")) errorEl.textContent = "";
+    return;
+  }
+  if (name.length > state.maxNameChars) {
+    errorEl.textContent = `Name is too long (${name.length}/${state.maxNameChars}).`;
+    return;
+  }
+  if (!state.namePattern.test(name)) {
+    errorEl.textContent = "Name can only use A-Z, a-z, 0-9, - or _.";
+    return;
+  }
+  if (errorEl.textContent.includes("Name")) {
+    errorEl.textContent = "";
   }
 }
 
