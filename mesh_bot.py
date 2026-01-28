@@ -54,12 +54,13 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                     sender = item["sender"]
                     content = item["content"]
                     try:
+                        outbound = f"<{sender}@{cfg.hub.name}> {content}"
                         log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
                         channel_idx = channel_name_to_idx.get(channel)
                         if channel_idx is None:
                             log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
                             continue
-                        result = await mesh_client.commands.send_chan_msg(channel_idx, content)
+                        result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
                         if result.type == EventType.ERROR:
                             log.error(
                                 "outbox:send_failed id=%s channel=%s err=%s",
