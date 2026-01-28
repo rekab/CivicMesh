@@ -90,7 +90,7 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
         await asyncio.sleep(interval)
 
 
-async def main_async(config_path: str):
+async def main_async(config_path: str, *, meshcore_debug: bool = False):
     cfg = load_config(config_path)
     log, sec = setup_logging("mesh_bot", cfg.logging)
     log.info("Civic Mesh mesh_bot starting")
@@ -119,7 +119,11 @@ async def main_async(config_path: str):
                 if MeshCore is None or EventType is None:
                     raise RuntimeError("meshcore not available")
 
-                mesh_client = await MeshCore.create_serial(cfg.radio.serial_port, DEFAULT_BAUDRATE)
+                mesh_client = await MeshCore.create_serial(
+                    cfg.radio.serial_port,
+                    DEFAULT_BAUDRATE,
+                    debug=meshcore_debug,
+                )
                 log.info("mesh:connected port=%s baudrate=%d", cfg.radio.serial_port, DEFAULT_BAUDRATE)
 
                 resp = await mesh_client.commands.set_radio(
@@ -201,8 +205,9 @@ async def main_async(config_path: str):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--meshcore-debug", action="store_true", help="Enable meshcore library debug logging")
     args = ap.parse_args()
-    asyncio.run(main_async(args.config))
+    asyncio.run(main_async(args.config, meshcore_debug=args.meshcore_debug))
 
 
 def main() -> None:
@@ -211,5 +216,6 @@ def main() -> None:
     """
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--meshcore-debug", action="store_true", help="Enable meshcore library debug logging")
     args = ap.parse_args()
-    asyncio.run(main_async(args.config))
+    asyncio.run(main_async(args.config, meshcore_debug=args.meshcore_debug))
