@@ -365,13 +365,16 @@ function renderAllMessages() {
 async function refreshLive(scrollBottom = false) {
   if (!state.activeChannel) return;
   $("postError").textContent = "";
+  const wrap = $("messages");
+  const wasNearBottom = wrap
+    ? wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 40
+    : false;
   try {
     const rows = await fetchMessagesPage(0, state.liveSize);
     state.live = rows.slice().reverse();
     renderAllMessages();
-    if (scrollBottom) {
-      const wrap = $("messages");
-      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    if (wrap && (scrollBottom || wasNearBottom)) {
+      wrap.scrollTop = wrap.scrollHeight;
     }
   } catch (e) {
     $("postError").textContent = e.message || "Failed to load messages";
