@@ -202,7 +202,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if sid:
                 for r in rows:
                     r["user_vote"] = get_user_vote(self.server.db_cfg, message_id=int(r["id"]), session_id=sid, log=log)
-            if channel in self.server.cfg.channels.names:
+            if channel in self.server.cfg.channels.names and offset == 0:
                 pending = get_pending_outbox_for_channel(
                     self.server.db_cfg,
                     channel=channel,

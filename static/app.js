@@ -107,6 +107,12 @@ let state = {
   expandedMeta: new Set(),
   postsRemaining: null,
   windowSec: 3600,
+  liveSize: 80,
+  pageSize: 80,
+  loadingOlder: false,
+  hasMore: true,
+  history: [],
+  live: [],
 };
 
 function normalizeChannels(raw) {
@@ -161,7 +167,11 @@ function setActiveChannel(name) {
   if (toggle) {
     toggle.setAttribute("aria-expanded", "false");
   }
-  refreshMessages(true);
+  state.history = [];
+  state.live = [];
+  state.hasMore = true;
+  state.loadingOlder = false;
+  refreshLive(true);
 }
 
 function updatePostButton(ch) {
@@ -342,14 +352,24 @@ async function refreshSession() {
   }
 }
 
-async function refreshMessages(scrollTop = false) {
+async function fetchMessagesPage(offset, limit) {
+  const url = `${API.messages}?channel=${encodeURIComponent(state.activeChannel)}&limit=${limit}&offset=${offset}`;
+  const data = await fetchJSON(url, { method: "GET" });
+  return data.messages || [];
+}
+
+function renderAllMessages() {
+  renderMessages(state.history.concat(state.live));
+}
+
+async function refreshLive(scrollBottom = false) {
   if (!state.activeChannel) return;
   $("postError").textContent = "";
   try {
-    const url = `${API.messages}?channel=${encodeURIComponent(state.activeChannel)}&limit=80&offset=0`;
-    const data = await fetchJSON(url, { method: "GET" });
-    renderMessages((data.messages || []).slice().reverse());
-    if (scrollTop) {
+    const rows = await fetchMessagesPage(0, state.liveSize);
+    state.live = rows.slice().reverse();
+    renderAllMessages();
+    if (scrollBottom) {
       const wrap = $("messages");
       if (wrap) wrap.scrollTop = wrap.scrollHeight;
     }
@@ -358,6 +378,32 @@ async function refreshMessages(scrollTop = false) {
     if (e && e.message && String(e.message).includes("Failed to fetch")) {
       setConnectionStatus(false);
     }
+  }
+}
+
+async function loadOlderMessages() {
+  if (!state.activeChannel || state.loadingOlder || !state.hasMore) return;
+  const wrap = $("messages");
+  const prevHeight = wrap ? wrap.scrollHeight : 0;
+  state.loadingOlder = true;
+  try {
+    const offset = state.liveSize + state.history.length;
+    const rows = await fetchMessagesPage(offset, state.pageSize);
+    const older = rows.slice().reverse();
+    if (older.length === 0) {
+      state.hasMore = false;
+    } else {
+      state.history = older.concat(state.history);
+    }
+    renderAllMessages();
+    if (wrap) {
+      const newHeight = wrap.scrollHeight;
+      wrap.scrollTop = newHeight - prevHeight + wrap.scrollTop;
+    }
+  } catch (e) {
+    $("postError").textContent = e.message || "Failed to load messages";
+  } finally {
+    state.loadingOlder = false;
   }
 }
 
@@ -394,7 +440,7 @@ async function postMessage() {
     storeNameToCookie();
     $("content").value = "";
     await refreshSession();
-    await refreshMessages(true);
+    await refreshLive(true);
   } catch (e) {
     if (e.status === 429 && e.data) {
       $("postError").textContent = `Rate limit exceeded. Posts remaining: ${e.data.posts_remaining ?? 0}`;
@@ -414,7 +460,7 @@ async function vote(messageId, voteType) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message_id: messageId, vote_type: voteType }),
     });
-    await refreshMessages();
+    await refreshLive();
   } catch (e) {
     $("postError").textContent = e.status === 403 ? "Vote blocked (session invalid)." : "Vote failed.";
     await refreshSession();
@@ -427,7 +473,7 @@ async function init() {
   $("name").addEventListener("change", storeNameToCookie);
   $("name").addEventListener("blur", storeNameToCookie);
   $("name").addEventListener("input", validateNameLive);
-  $("refreshBtn").onclick = () => refreshMessages(true);
+  $("refreshBtn").onclick = () => refreshLive(true);
   $("postBtn").onclick = () => postMessage();
   const channelToggle = $("channelToggle");
   if (channelToggle) {
@@ -479,6 +525,10 @@ async function init() {
   state.activeChannel = null;
   $("channelTitle").textContent = "";
   updatePostButton(null);
+  state.history = [];
+  state.live = [];
+  state.hasMore = true;
+  state.loadingOlder = false;
   const chatPanel = document.querySelector(".panel--main");
   if (chatPanel) chatPanel.hidden = true;
   const docsPanel = document.querySelector(".panel--docs");
@@ -489,12 +539,21 @@ async function init() {
   state.fingerprint = await computeFingerprint();
   await sendFingerprint(state.fingerprint);
   await refreshSession();
-  await refreshMessages(true);
+  await refreshLive(true);
+
+  const wrap = $("messages");
+  if (wrap) {
+    wrap.addEventListener("scroll", () => {
+      if (wrap.scrollTop <= 40) {
+        loadOlderMessages();
+      }
+    });
+  }
 
   // Poll
   state.polling = setInterval(() => {
     refreshSession();
-    refreshMessages();
+    refreshLive();
   }, 8000);
 }
 
