@@ -1,0 +1,30 @@
+Copyright 2025-2026 CivicMesh Contributors.
+
+This product bundles or depends on the following third-party components:
+
+- meshcore
+  License: MIT
+  Source: https://github.com/meshcore-dev/MeshCore
+  Copyright: Copyright (c) MeshCore Contributors
+
+- meshcore_py
+  License: MIT
+  Source: https://github.com/meshcore-dev/meshcore_py
+  Copyright: Copyright (c) MeshCore Contributors
+
+- pycryptodome (used by meshcore_py)
+  License: BSD-2-Clause AND Public Domain (dual license)
+  Source: https://github.com/Legrandin/pycryptodome
+  Copyright: Copyright (c) The individual contributors
+  Note: Code from PyCrypto is public domain; new contributions are BSD-2-Clause
+
+- tomli (only if Python <3.11)
+  License: MIT
+  Source: https://github.com/hukkin/tomli
+  Copyright: Copyright (c) 2021 Taneli Hukkinen
+  Note: Built into Python 3.11+ as 'tomllib' (PSF License)
+
+- SQLite
+  License: Public Domain
+  Source: https://www.sqlite.org/
+  Note: Explicitly dedicated to public domain
