@@ -26,8 +26,8 @@ posts_per_hour = 10
 message_max_chars = 100
 name_max_chars = 12
 name_pattern = "^[A-Za-z0-9_-]+$"
-outbox_batch_interval_sec = 30
-outbox_batch_size = 5
+outbox_max_delay_sec = 10
+outbox_idle_reset_sec = 60
 retention_bytes_per_channel = 10737418240  # 10GB
 
 [logging]

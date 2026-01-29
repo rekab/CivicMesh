@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import hashlib
 import time
+from typing import Optional
 
 from config import load_config
 from database import (
@@ -40,35 +41,56 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
 
 
 async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_idx: dict[str, int]):
-    interval = cfg.limits.outbox_batch_interval_sec
-    batch_size = cfg.limits.outbox_batch_size
+    # Backoff levels map to a delay sequence [0, 2, 5, max_delay_sec].
+    # The last entry is configurable so operators can cap the max pacing.
+    # We advance one level after each send attempt to avoid draining large
+    # backlogs too quickly on the mesh.
+    max_delay_sec = cfg.limits.outbox_max_delay_sec
+    delays = [0, 2, 5, max_delay_sec]
+    idle_reset_sec = cfg.limits.outbox_idle_reset_sec
+    last_send_time: Optional[float] = None
+    backoff_level = 0
 
     while True:
         try:
-            pending = get_pending_outbox(db_cfg, limit=batch_size, log=log)
-            if pending:
-                log.info("outbox:pending=%d", len(pending))
-                sent_ids: list[int] = []
-                for item in pending:
-                    channel = item["channel"]
-                    sender = item["sender"]
-                    content = item["content"]
-                    try:
-                        outbound = f"<{sender}@{cfg.hub.name}> {content}"
-                        log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
-                        channel_idx = channel_name_to_idx.get(channel)
-                        if channel_idx is None:
-                            log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
-                            continue
-                        result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
-                        if result.type == EventType.ERROR:
-                            log.error(
-                                "outbox:send_failed id=%s channel=%s err=%s",
-                                item["id"],
-                                channel,
-                                result.payload,
-                            )
-                            continue
+            now = time.time()
+            # If we've been idle long enough, reset the backoff so the next
+            # message can go out immediately.
+            if last_send_time is not None and now - last_send_time > idle_reset_sec:
+                backoff_level = 0
+
+            pending = get_pending_outbox(db_cfg, limit=1, log=log)
+            # Nothing pending: avoid hot loop but don't alter backoff state.
+            if not pending:
+                await asyncio.sleep(1)
+                continue
+
+            delay = delays[backoff_level]
+            # Enforce the current backoff delay since the last send attempt.
+            if last_send_time is not None and now - last_send_time < delay:
+                await asyncio.sleep(delay - (now - last_send_time))
+                continue
+
+            item = pending[0]
+            channel = item["channel"]
+            sender = item["sender"]
+            content = item["content"]
+            try:
+                outbound = f"<{sender}@{cfg.hub.name}> {content}"
+                log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
+                channel_idx = channel_name_to_idx.get(channel)
+                if channel_idx is None:
+                    log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
+                else:
+                    result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
+                    if result.type == EventType.ERROR:
+                        log.error(
+                            "outbox:send_failed id=%s channel=%s err=%s",
+                            item["id"],
+                            channel,
+                            result.payload,
+                        )
+                    else:
                         mid = insert_message(
                             db_cfg,
                             ts=item["ts"],
@@ -80,15 +102,15 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                             fingerprint=item.get("fingerprint"),
                             log=log,
                         )
-                        sent_ids.append(int(item["id"]))
-                    except Exception as e:
-                        log.error("outbox:send_failed id=%s err=%s", item["id"], e, exc_info=True)
-                if sent_ids:
-                    mark_outbox_sent(db_cfg, outbox_ids=sent_ids, log=log)
+                        mark_outbox_sent(db_cfg, outbox_ids=[int(item["id"])], log=log)
+            except Exception as e:
+                log.error("outbox:send_failed id=%s err=%s", item["id"], e, exc_info=True)
+            finally:
+                # Advance backoff after each attempt to avoid flooding on large backlogs.
+                last_send_time = time.time()
+                backoff_level = min(backoff_level + 1, 3)
         except Exception as e:
             log.error("outbox:error %s", e, exc_info=True)
-
-        await asyncio.sleep(interval)
 
 
 async def main_async(config_path: str, *, meshcore_debug: bool = False):
