@@ -247,6 +247,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 401, {"error": "no valid session", "mac_valid": False})
                 return
             sid = sess["session_id"]
+            # Web-server rate limit: governs ingest from WiFi clients into the DB/outbox.
+            # Mesh transmit rate limiting/backoff is handled separately in mesh_bot.py.
             count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=_now_ts(), log=log)
             limit = self.server.cfg.limits.posts_per_hour
             remaining = max(0, limit - count)
@@ -315,6 +317,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             sid = sess["session_id"]
+            # Web-server rate limit: throttles client posts before they hit the DB/outbox.
+            # Mesh-side send throttling/backoff (for radio transmission) is enforced in mesh_bot.py.
             count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=_now_ts(), log=log)
             limit = self.server.cfg.limits.posts_per_hour
             if count >= limit:
