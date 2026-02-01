@@ -175,6 +175,14 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         log = self.server.log
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        host = (self.headers.get("Host", "") or "").lower()
+
+        # Captive portal probes: return portal content (200) so OS opens login UI.
+        if path in ("/hotspot-detect.html", "/generate_204", "/ncsi.txt") or (
+            host.startswith("connectivitycheck.gstatic.com") or host.startswith("www.msftconnecttest.com")
+        ):
+            self.path = "/"
+            return super().do_GET()
 
         if path == "/api/channels":
             _json(
