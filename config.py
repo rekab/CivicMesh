@@ -43,11 +43,6 @@ class LocalConfig:
 
 
 @dataclass(frozen=True)
-class WifiConfig:
-    ssid: str
-
-
-@dataclass(frozen=True)
 class WebConfig:
     port: int
 
@@ -74,7 +69,6 @@ class AppConfig:
     radio: RadioConfig
     channels: ChannelsConfig
     local: LocalConfig
-    wifi: WifiConfig
     web: WebConfig
     limits: LimitsConfig
     logging: LoggingConfig
@@ -99,7 +93,6 @@ def load_config(path: str) -> AppConfig:
     radio = raw.get("radio", {})
     channels = raw.get("channels", {})
     local = raw.get("local", {})
-    wifi = raw.get("wifi", {})
     web = raw.get("web", {})
     limits = raw.get("limits", {})
     logging_raw = raw.get("logging", {})
@@ -126,7 +119,6 @@ def load_config(path: str) -> AppConfig:
         ),
         channels=ChannelsConfig(names=[str(x) for x in (channels.get("names") or [])]),
         local=LocalConfig(names=[str(x) for x in local_names]),
-        wifi=WifiConfig(ssid=str(wifi.get("ssid", "CivicMesh-Hub"))),
         web=WebConfig(port=int(web.get("port", 80))),
         limits=LimitsConfig(
             posts_per_hour=int(limits.get("posts_per_hour", 10)),

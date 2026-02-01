@@ -1,6 +1,6 @@
 [hub]
 name = "Civic Mesh Hub"
-location = "Fremont, Seattle"
+location = "Fremont, Seattle" # Used for session location metadata; changing it will only affect new/updated sessions.
 
 [radio]
 serial_port = "/dev/ttyUSB0"
@@ -14,9 +14,6 @@ names = ["#civicmesh", "#puget-sound"]
 
 [local]
 names = ["#local"]
-
-[wifi]
-ssid = "CivicMesh-Fremont"
 
 [web]
 port = 8080

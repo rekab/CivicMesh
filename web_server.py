@@ -333,7 +333,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 self.server.db_cfg,
                 session_id=sid,
                 name=name,
-                location=self.server.cfg.wifi.ssid,
+                location=self.server.cfg.hub.location,
                 mac_address=mac or sess.get("mac_address"),
                 fingerprint=fingerprint or None,
                 log=log,
