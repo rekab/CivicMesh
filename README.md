@@ -151,6 +151,8 @@ pip install .
    tail -f logs/security.log
    ```
 
+When deployed without internet access, administration and updates are performed over SSH on the WiFi AP using `apt-offline`.
+
 ## Run (dev)
 
 In two terminals:
