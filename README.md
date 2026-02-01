@@ -195,12 +195,6 @@ Set `serial_port` to match your USB device:
 - Usually `/dev/ttyUSB0` (first USB serial device)
 - Check with `ls -l /dev/ttyUSB*` after connecting Heltec V3
 
-### WiFi SSID
-
-SSID is fully configurable. As an example prefix, use `CivicMesh-`:
-- `CivicMesh-Fremont`
-- `CivicMesh-RossHub`
-
 ### Channels
 
 Configure which MeshCore channels the bot joins:
