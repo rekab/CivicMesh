@@ -217,6 +217,19 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Check: WiFi interface name safety
+# -----------------------------------------------------------------------------
+echo -n "Checking interface name safety... "
+if ! [[ "$IFACE" =~ ^[a-zA-Z0-9_.:-]+$ ]]; then
+    echo "FAILED"
+    echo "  Interface name contains unsafe characters: ${IFACE}"
+    echo "  Allowed pattern: ^[a-zA-Z0-9_.:-]+$"
+    VALIDATION_FAILED=true
+else
+    echo "OK"
+fi
+
+# -----------------------------------------------------------------------------
 # Check: WiFi interface exists
 # -----------------------------------------------------------------------------
 echo -n "Checking ${IFACE} interface... "
@@ -237,11 +250,19 @@ fi
 # -----------------------------------------------------------------------------
 echo -n "Checking WiFi radio... "
 if command -v rfkill &>/dev/null; then
-    if rfkill list wlan 2>/dev/null | grep -q "Hard blocked: yes"; then
+    # rfkill types vary by system ("wlan", "wifi", "Wireless LAN", etc.)
+    # Parse output looking for wireless entries
+    RFKILL_OUT=$(rfkill list 2>/dev/null || true)
+    if echo "$RFKILL_OUT" | grep -qiE "Wireless LAN|wlan|wifi"; then
+        :
+    else
+        RFKILL_OUT=$(rfkill list wifi 2>/dev/null || true)
+    fi
+    if echo "$RFKILL_OUT" | grep -q "Hard blocked: yes"; then
         echo "FAILED"
         echo "  WiFi is hardware-blocked (physical switch?)"
         VALIDATION_FAILED=true
-    elif rfkill list wlan 2>/dev/null | grep -q "Soft blocked: yes"; then
+    elif echo "$RFKILL_OUT" | grep -q "Soft blocked: yes"; then
         echo "SOFT-BLOCKED (will unblock)"
     else
         echo "OK"
@@ -456,10 +477,19 @@ fi
 # =============================================================================
 
 # Only attempt to unblock if rfkill is available AND wifi is soft-blocked
-if command -v rfkill &>/dev/null && rfkill list wlan 2>/dev/null | grep -q "Soft blocked: yes"; then
+if command -v rfkill &>/dev/null; then
+    RFKILL_OUT=$(rfkill list 2>/dev/null || true)
+    if echo "$RFKILL_OUT" | grep -qiE "Wireless LAN|wlan|wifi"; then
+        :
+    else
+        RFKILL_OUT=$(rfkill list wifi 2>/dev/null || true)
+    fi
+fi
+
+if command -v rfkill &>/dev/null && echo "$RFKILL_OUT" | grep -q "Soft blocked: yes"; then
     section "Unblocking WiFi"
     info "WiFi is soft-blocked, unblocking..."
-    rfkill unblock wlan
+    rfkill unblock wifi
     ok "WiFi unblocked"
 fi
 
@@ -510,7 +540,7 @@ systemctl restart NetworkManager
 sleep 2
 
 # Verify interface is now unmanaged
-if nmcli device status 2>/dev/null | grep -q "${IFACE}.*unmanaged"; then
+if nmcli -t -f DEVICE,STATE device 2>/dev/null | grep -q "^${IFACE}:unmanaged$"; then
     ok "${IFACE} is now unmanaged by NetworkManager"
 else
     warn "Could not verify ${IFACE} is unmanaged. Continuing anyway."
@@ -583,6 +613,9 @@ ssid=${SSID}
 hw_mode=g
 channel=${CHANNEL}
 
+# Enable 802.11n for better speeds (doesn't hurt on older hardware)
+ieee80211n=1
+
 # Disable WiFi Multimedia QoS (not needed for text-only portal)
 wmm_enabled=0
 
@@ -596,6 +629,9 @@ wpa=0
 # Country code is required for the radio to operate.
 # This sets allowed channels and transmit power limits.
 country_code=${COUNTRY_CODE}
+
+# Advertise country code in beacons (required by some adapters)
+ieee80211d=1
 EOF
 
 # Tell hostapd where to find its config file (Debian-specific requirement)
@@ -650,6 +686,10 @@ dhcp-option=option:router,${AP_IP}
 # Tell clients to use us as their DNS server
 dhcp-option=option:dns-server,${AP_IP}
 
+# We are the only DHCP server on this network; be authoritative
+# This reduces weirdness if a client thinks it's on a different LAN
+dhcp-authoritative
+
 # === DNS: Captive Portal Redirect ===
 # The magic line: resolve ALL DNS queries to our IP
 # The "/#/" syntax means "match any domain"
@@ -664,13 +704,52 @@ no-poll
 
 # No DNS cache needed (we return the same answer for everything)
 cache-size=0
+
+# === Debugging (uncomment if needed) ===
+# Log all DHCP transactions (disable in production to reduce log noise)
+#log-dhcp
 EOF
+
+# Ensure dnsmasq starts after the WiFi interface is ready
+info "Configuring dnsmasq service ordering..."
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+cat > /etc/systemd/system/dnsmasq.service.d/override.conf <<EOF
+[Unit]
+After=hostapd.service systemd-networkd.service
+Wants=hostapd.service systemd-networkd.service
+EOF
+systemctl daemon-reload
 
 # Enable dnsmasq
 info "Enabling dnsmasq service..."
 systemctl enable dnsmasq
 
 ok "dnsmasq configured"
+
+# =============================================================================
+# Disable IPv6 on AP Interface
+# =============================================================================
+
+section "Disabling IPv6 on ${IFACE}"
+
+# Phones increasingly try IPv6 first, which can cause confusing behavior when
+# we're only serving IPv4. Explicitly disable IPv6 on the AP interface.
+
+SYSCTL_CONF="/etc/sysctl.d/90-civicmesh-disable-ipv6.conf"
+
+backup_if_exists "$SYSCTL_CONF"
+
+info "Writing ${SYSCTL_CONF}"
+cat > "$SYSCTL_CONF" <<EOF
+# CivicMesh: Disable IPv6 on the WiFi AP interface
+# This reduces client weirdness since we only serve IPv4
+net.ipv6.conf.${IFACE}.disable_ipv6 = 1
+EOF
+
+# Apply immediately (will also apply on boot via sysctl.d)
+sysctl -w "net.ipv6.conf.${IFACE}.disable_ipv6=1" >/dev/null
+
+ok "IPv6 disabled on ${IFACE}"
 
 # =============================================================================
 # nftables Configuration (Firewall + Port Redirect)
@@ -708,10 +787,11 @@ cat > "$NFTABLES_CONF" <<EOF
 
 flush ruleset
 
-# === NAT Table: Port Redirection ===
+# === NAT Table: Port Redirection (IPv4 only) ===
+# Using 'ip' family, not 'inet', because NAT support for inet is inconsistent across kernels.
 # Redirect incoming port ${PUBLIC_PORT} to ${APP_PORT} on ${IFACE}
 # This allows the web server to run as an unprivileged user
-table inet nat {
+table ip nat {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
 
@@ -732,6 +812,10 @@ table inet filter {
         # Allow all loopback traffic (localhost)
         iifname "lo" accept
 
+        # Allow ICMP/ICMPv6 for diagnostics and to reduce client weirdness
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
         # === SSH: Allow on ALL interfaces ===
         # This is needed because:
         #   - Pi 4 (dev): SSH over eth0
@@ -746,6 +830,9 @@ table inet filter {
         # DNS: clients resolving domain names (UDP/TCP port 53)
         iifname "${IFACE}" udp dport 53 accept
         iifname "${IFACE}" tcp dport 53 accept
+
+        # Optional: allow HTTP on port 80 for clarity during troubleshooting
+        iifname "${IFACE}" tcp dport 80 accept
 
         # HTTP: the portal web server (after NAT redirect, so port ${APP_PORT})
         iifname "${IFACE}" tcp dport ${APP_PORT} accept
