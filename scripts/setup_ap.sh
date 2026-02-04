@@ -495,7 +495,8 @@ if command -v rfkill &>/dev/null; then
 Description=Unblock WiFi via rfkill at boot
 DefaultDependencies=no
 Before=hostapd.service
-After=systemd-rfkill.service
+After=systemd-rfkill.service dev-rfkill.device
+Requires=dev-rfkill.device
 
 [Service]
 Type=oneshot
