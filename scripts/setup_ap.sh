@@ -252,17 +252,11 @@ echo -n "Checking WiFi radio... "
 if command -v rfkill &>/dev/null; then
     # rfkill types vary by system ("wlan", "wifi", "Wireless LAN", etc.)
     # Parse output looking for wireless entries
-    RFKILL_OUT=$(rfkill list 2>/dev/null || true)
-    if echo "$RFKILL_OUT" | grep -qiE "Wireless LAN|wlan|wifi"; then
-        :
-    else
-        RFKILL_OUT=$(rfkill list wifi 2>/dev/null || true)
-    fi
-    if echo "$RFKILL_OUT" | grep -q "Hard blocked: yes"; then
+    if rfkill list | grep -A2 -i "wireless lan" | grep -qi "Hard blocked: yes"; then
         echo "FAILED"
         echo "  WiFi is hardware-blocked (physical switch?)"
         VALIDATION_FAILED=true
-    elif echo "$RFKILL_OUT" | grep -q "Soft blocked: yes"; then
+    elif rfkill list | grep -A2 -i "wireless lan" | grep -qi "Soft blocked: yes"; then
         echo "SOFT-BLOCKED (will unblock)"
     else
         echo "OK"
@@ -371,6 +365,7 @@ The following changes will be made:
     App listens on:     port ${APP_PORT}
 
   Files to be created/modified:
+    /etc/systemd/system/rfkill-unblock-wifi.service
     /etc/NetworkManager/conf.d/99-unmanaged-${IFACE}.conf
     /etc/systemd/network/20-${IFACE}-ap.network
     /etc/hostapd/hostapd.conf
@@ -379,7 +374,7 @@ The following changes will be made:
     /etc/nftables.conf
 
   Services to be enabled:
-    systemd-networkd, hostapd, dnsmasq, nftables
+    rfkill-unblock-wifi, systemd-networkd, hostapd, dnsmasq, nftables
 
   WARNING: /etc/nftables.conf will be REPLACED entirely.
     Any existing firewall rules will be backed up but not preserved.
@@ -473,24 +468,50 @@ EOF
 fi
 
 # =============================================================================
-# Unblock WiFi if Needed
+# Unblock WiFi (Now and Persistently at Boot)
 # =============================================================================
 
-# Only attempt to unblock if rfkill is available AND wifi is soft-blocked
-if command -v rfkill &>/dev/null; then
-    RFKILL_OUT=$(rfkill list 2>/dev/null || true)
-    if echo "$RFKILL_OUT" | grep -qiE "Wireless LAN|wlan|wifi"; then
-        :
-    else
-        RFKILL_OUT=$(rfkill list wifi 2>/dev/null || true)
-    fi
-fi
+section "Configuring WiFi rfkill unblock"
 
-if command -v rfkill &>/dev/null && echo "$RFKILL_OUT" | grep -q "Soft blocked: yes"; then
-    section "Unblocking WiFi"
-    info "WiFi is soft-blocked, unblocking..."
-    rfkill unblock wifi
-    ok "WiFi unblocked"
+# WiFi is often soft-blocked at boot. We need to:
+#   1. Unblock it now (if blocked)
+#   2. Create a systemd service to unblock it at every boot BEFORE hostapd starts
+#
+# Without this, hostapd fails with "rfkill: WLAN soft blocked"
+
+if command -v rfkill &>/dev/null; then
+    # Unblock now if needed
+    if rfkill list | grep -A2 -i "wireless lan" | grep -qi "Soft blocked: yes"; then
+        info "WiFi is currently soft-blocked, unblocking..."
+        rfkill unblock wifi
+    fi
+    
+    # Create a systemd service to unblock at boot
+    RFKILL_SERVICE="/etc/systemd/system/rfkill-unblock-wifi.service"
+    
+    info "Creating ${RFKILL_SERVICE} for persistent unblock at boot..."
+    cat > "$RFKILL_SERVICE" <<'EOF'
+[Unit]
+Description=Unblock WiFi via rfkill at boot
+DefaultDependencies=no
+Before=hostapd.service
+After=systemd-rfkill.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock wifi
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable rfkill-unblock-wifi.service
+    
+    ok "WiFi rfkill unblock configured (now and at boot)"
+else
+    info "rfkill not available, skipping unblock configuration"
 fi
 
 # =============================================================================
@@ -747,7 +768,7 @@ net.ipv6.conf.${IFACE}.disable_ipv6 = 1
 EOF
 
 # Apply immediately (will also apply on boot via sysctl.d)
-sysctl -w "net.ipv6.conf.${IFACE}.disable_ipv6=1" >/dev/null
+sysctl -w "net.ipv6.conf.${IFACE}.disable_ipv6=1" >/dev/null 2>&1 || true
 
 ok "IPv6 disabled on ${IFACE}"
 
@@ -877,6 +898,7 @@ Configuration files written:
   - ${NFTABLES_CONF}
 
 Services enabled:
+  - rfkill-unblock-wifi (ensures WiFi is unblocked at boot)
   - systemd-networkd (static IP for ${IFACE})
   - hostapd (WiFi access point)
   - dnsmasq (DHCP + DNS)
@@ -930,6 +952,7 @@ cat <<EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Verification commands (run after reboot):
+  systemctl status rfkill-unblock-wifi  # WiFi unblocked?
   systemctl status hostapd          # AP daemon running?
   systemctl status dnsmasq          # DHCP/DNS running?
   systemctl status nftables         # Firewall loaded?
@@ -937,6 +960,7 @@ Verification commands (run after reboot):
   cat /var/lib/misc/dnsmasq.leases  # Any connected clients?
 
 Troubleshooting:
+  rfkill list                       # WiFi blocked?
   journalctl -u hostapd -e          # AP errors
   journalctl -u dnsmasq -e          # DHCP/DNS errors
   sudo nft list ruleset             # Current firewall rules
