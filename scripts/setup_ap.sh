@@ -37,6 +37,8 @@ readonly DHCP_RANGE_END="${SUBNET}.150"
 readonly DHCP_LEASE_TIME="12h"
 readonly APP_PORT="8080"           # Port the app listens on (unprivileged)
 readonly PUBLIC_PORT="80"          # Port clients connect to (redirected to APP_PORT)
+readonly BACKUP_DIR="/var/backups/civicmesh"
+
 
 # Default values for arguments
 DEFAULT_CHANNEL=6
@@ -108,12 +110,7 @@ die() {
     if [[ "$CHANGES_STARTED" == "true" ]]; then
         echo ""
         echo "WARNING: Some changes may have been partially applied."
-        echo "Check the following files for .bak backups:"
-        echo "  /etc/NetworkManager/conf.d/"
-        echo "  /etc/systemd/network/"
-        echo "  /etc/hostapd/"
-        echo "  /etc/dnsmasq.d/"
-        echo "  /etc/nftables.conf"
+        echo "Check ${BACKUP_DIR} for .bak backups of modified files."
     fi
     exit 1
 }
@@ -122,7 +119,10 @@ die() {
 backup_if_exists() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$BACKUP_DIR"
+        local basename
+        basename=$(basename "$file")
+        local backup="${BACKUP_DIR}/${basename}.bak.$(date +%Y%m%d_%H%M%S)"
         info "Backing up existing ${file} to ${backup}"
         cp "$file" "$backup"
     fi
