@@ -175,14 +175,31 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         log = self.server.log
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        host = (self.headers.get("Host", "") or "").lower()
-
-        # Captive portal probes: return portal content (200) so OS opens login UI.
-        if path in ("/hotspot-detect.html", "/generate_204", "/ncsi.txt") or (
-            host.startswith("connectivitycheck.gstatic.com") or host.startswith("www.msftconnecttest.com")
-        ):
-            self.path = "/"
+        # Serve static assets regardless of Host.
+        if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
             return super().do_GET()
+
+        # Captive portal probes: respond with explicit probe results (no HTML portal).
+        if path in ("/generate_204", "/gen_204"):
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
+        if path in ("/ncsi.txt", "/connecttest.txt"):
+            body = b"Microsoft NCSI"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/hotspot-detect.html":
+            body = b"CivicMesh"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if path == "/api/channels":
             _json(
@@ -279,10 +296,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
 
-        # Captive portal: send everything else to index.html (unless it's a static file)
-        if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
-            return super().do_GET()
-
+        # Captive portal: send everything else to index.html (302, not 301)
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", "/")
         self.end_headers()
