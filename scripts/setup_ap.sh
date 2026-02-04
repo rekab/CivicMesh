@@ -868,6 +868,10 @@ table inet filter {
         # Security relies on SSH key authentication, not network restrictions.
         tcp dport 22 accept
 
+        # HTTP: the portal web server (after NAT redirect, so port ${APP_PORT})
+        tcp dport 80 accept
+        tcp dport ${APP_PORT} accept
+
         # === ${IFACE}: WiFi AP clients ===
         # DHCP: clients requesting IP addresses (UDP port 67)
         iifname "${IFACE}" udp dport 67 accept
@@ -876,11 +880,6 @@ table inet filter {
         iifname "${IFACE}" udp dport 53 accept
         iifname "${IFACE}" tcp dport 53 accept
 
-        # Optional: allow HTTP on port 80 for clarity during troubleshooting
-        iifname "${IFACE}" tcp dport 80 accept
-
-        # HTTP: the portal web server (after NAT redirect, so port ${APP_PORT})
-        iifname "${IFACE}" tcp dport ${APP_PORT} accept
 
         # Everything else is dropped (default policy)
     }
