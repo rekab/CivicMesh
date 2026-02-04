@@ -474,12 +474,29 @@ fi
 section "Configuring WiFi rfkill unblock"
 
 # WiFi is often soft-blocked at boot. We need to:
-#   1. Unblock it now (if blocked)
-#   2. Create a systemd service to unblock it at every boot BEFORE hostapd starts
+#   1. Disable systemd-rfkill (which restores "blocked" state and fights us)
+#   2. Unblock WiFi now (if blocked)
+#   3. Create a systemd service to unblock at every boot BEFORE hostapd starts
 #
 # Without this, hostapd fails with "rfkill: WLAN soft blocked"
+#
+# The systemd-rfkill problem:
+#   - systemd-rfkill.socket watches /dev/rfkill for any activity
+#   - When we run "rfkill unblock", it wakes up systemd-rfkill.service
+#   - That service restores the saved state (blocked), undoing our unblock
+#   - We can't win the ordering game, so we disable it entirely
+#   - A dedicated AP has no use for rfkill state persistence anyway
 
 if command -v rfkill &>/dev/null; then
+    # Disable systemd-rfkill entirely (service AND socket)
+    # The socket is the trigger - masking just the service isn't enough
+    info "Masking systemd-rfkill to prevent rfkill state persistence..."
+    systemctl mask systemd-rfkill.service systemd-rfkill.socket
+    
+    # Stop it if currently running
+    systemctl stop systemd-rfkill.service 2>/dev/null || true
+    systemctl stop systemd-rfkill.socket 2>/dev/null || true
+    
     # Unblock now if needed
     if rfkill list | grep -A2 -i "wireless lan" | grep -qi "Soft blocked: yes"; then
         info "WiFi is currently soft-blocked, unblocking..."
@@ -487,6 +504,7 @@ if command -v rfkill &>/dev/null; then
     fi
     
     # Create a systemd service to unblock at boot
+    # Now that systemd-rfkill is masked, we only need to wait for the device node
     RFKILL_SERVICE="/etc/systemd/system/rfkill-unblock-wifi.service"
     
     info "Creating ${RFKILL_SERVICE} for persistent unblock at boot..."
@@ -495,7 +513,7 @@ if command -v rfkill &>/dev/null; then
 Description=Unblock WiFi via rfkill at boot
 DefaultDependencies=no
 Before=hostapd.service
-After=systemd-rfkill.service dev-rfkill.device
+After=dev-rfkill.device
 Requires=dev-rfkill.device
 
 [Service]
@@ -510,7 +528,7 @@ EOF
     systemctl daemon-reload
     systemctl enable rfkill-unblock-wifi.service
     
-    ok "WiFi rfkill unblock configured (now and at boot)"
+    ok "WiFi rfkill unblock configured (systemd-rfkill disabled, unblock service enabled)"
 else
     info "rfkill not available, skipping unblock configuration"
 fi
