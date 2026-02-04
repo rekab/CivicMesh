@@ -497,10 +497,15 @@ if command -v rfkill &>/dev/null; then
     systemctl stop systemd-rfkill.service 2>/dev/null || true
     systemctl stop systemd-rfkill.socket 2>/dev/null || true
     
-    # Unblock now if needed
-    if rfkill list | grep -A2 -i "wireless lan" | grep -qi "Soft blocked: yes"; then
-        info "WiFi is currently soft-blocked, unblocking..."
-        rfkill unblock wifi
+    # Unblock now (idempotent - harmless if already unblocked)
+    info "Unblocking WiFi..."
+    rfkill unblock wifi
+
+    # Also tell NetworkManager to enable WiFi radio
+    # (NM has its own rfkill state file, separate from systemd-rfkill)
+    if command -v nmcli &>/dev/null; then
+	info "Enabling WiFi radio in NetworkManager..."
+	nmcli radio wifi on
     fi
     
     # Create a systemd service to unblock at boot
