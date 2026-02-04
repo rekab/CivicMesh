@@ -504,8 +504,8 @@ if command -v rfkill &>/dev/null; then
     # Also tell NetworkManager to enable WiFi radio
     # (NM has its own rfkill state file, separate from systemd-rfkill)
     if command -v nmcli &>/dev/null; then
-	info "Enabling WiFi radio in NetworkManager..."
-	nmcli radio wifi on
+        info "Enabling WiFi radio in NetworkManager..."
+        nmcli radio wifi on
     fi
     
     # Create a systemd service to unblock at boot
