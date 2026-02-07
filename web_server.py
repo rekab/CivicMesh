@@ -346,6 +346,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 403, {"error": "session invalid"})
                 return
 
+            sid = sess["session_id"]
             data = _read_json(self)
             channel = str(data.get("channel", ""))
             content = str(data.get("content", ""))
@@ -370,8 +371,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if len(content) > self.server.cfg.limits.message_max_chars:
                 _json(self, 400, {"error": "message too long"})
                 return
-
-            sid = sess["session_id"]
             # Web-server rate limit: throttles client posts before they hit the DB/outbox.
             # Mesh-side send throttling/backoff (for radio transmission) is enforced in mesh_bot.py.
             count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=_now_ts(), log=log)
