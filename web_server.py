@@ -15,6 +15,7 @@ from database import (
     create_or_update_session,
     get_message,
     get_messages,
+    get_status,
     get_session,
     get_user_vote,
     get_vote_counts,
@@ -287,6 +288,27 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         )
                     rows = pending_msgs + rows
             _json(self, 200, {"messages": rows})
+            return
+
+        if path == "/api/status":
+            row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
+            if not row:
+                _json(self, 200, {"radio": "unknown", "mesh_bot_seen": False})
+                return
+            now = _now_ts()
+            age = now - int(row.get("last_seen_ts") or 0)
+            connected = bool(row.get("radio_connected"))
+            online = connected and age <= 30
+            _json(
+                self,
+                200,
+                {
+                    "radio": "online" if online else "offline",
+                    "mesh_bot_seen": True,
+                    "last_seen_ts": int(row.get("last_seen_ts") or 0),
+                    "age_sec": int(age),
+                },
+            )
             return
 
         if path == "/api/votes":

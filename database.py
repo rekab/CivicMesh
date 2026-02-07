@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     post_count_hour INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS status (
+    process TEXT PRIMARY KEY,
+    last_seen_ts INTEGER NOT NULL,
+    radio_connected INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(pinned, pin_order);
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(sent, ts);
@@ -264,6 +270,41 @@ def get_messages(
             ).fetchall()
         )
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_status(
+    cfg: DBConfig,
+    *,
+    process: str,
+    radio_connected: bool,
+    now_ts: Optional[int] = None,
+    log=None,
+) -> None:
+    now_ts = int(now_ts or time.time())
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("status:upsert process=%s connected=%s ts=%d", process, bool(radio_connected), now_ts)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO status(process, last_seen_ts, radio_connected)
+            VALUES (?, ?, ?)
+            """,
+            (process, now_ts, 1 if radio_connected else 0),
+        )
+    finally:
+        conn.close()
+
+
+def get_status(cfg: DBConfig, *, process: str, log=None) -> Optional[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("status:get process=%s", process)
+        row = conn.execute("SELECT * FROM status WHERE process=?", (process,)).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

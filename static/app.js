@@ -4,6 +4,7 @@ const API = {
   post: "/api/post",
   vote: "/api/vote",
   session: "/api/session",
+  status: "/api/status",
 };
 
 function $(id) {
@@ -99,12 +100,14 @@ let state = {
   expandedMeta: new Set(),
   postsRemaining: null,
   windowSec: 3600,
+  radioStatus: "unknown",
   liveSize: 80,
   pageSize: 80,
   loadingOlder: false,
   hasMore: true,
   history: [],
   live: [],
+  meshChannelNames: new Set(),
 };
 
 function normalizeChannels(raw) {
@@ -211,6 +214,13 @@ function renderChannels() {
 function renderMessages(msgs) {
   const wrap = $("messages");
   wrap.innerHTML = "";
+  if (state.radioStatus !== "online" && state.meshChannelNames.has(state.activeChannel)) {
+    const banner = document.createElement("div");
+    banner.id = "radioStatusBanner";
+    banner.className = "radio-banner";
+    banner.textContent = "Radio offline — messages will queue but won't transmit yet.";
+    wrap.appendChild(banner);
+  }
   for (const m of msgs) {
     const div = document.createElement("div");
     div.className = "msg msg--compact" + (m.pending ? " msg--pending" : "");
@@ -352,6 +362,16 @@ async function fetchMessagesPage(offset, limit) {
 
 function renderAllMessages() {
   renderMessages(state.history.concat(state.live));
+}
+
+async function refreshRadioStatus() {
+  try {
+    const data = await fetchJSON(API.status, { method: "GET" });
+    state.radioStatus = data.radio || "unknown";
+  } catch {
+    state.radioStatus = "unknown";
+  }
+  renderAllMessages();
 }
 
 async function refreshLive(scrollBottom = false) {
@@ -516,6 +536,7 @@ async function init() {
 
   const data = await fetchJSON(API.channels, { method: "GET" });
   state.channels = normalizeChannels(data.channel_details || data.channels || []);
+  state.meshChannelNames = new Set(state.channels.filter((c) => c.scope === "mesh").map((c) => c.name));
   state.activeChannel = null;
   $("channelTitle").textContent = "";
   updatePostButton(null);
@@ -534,6 +555,7 @@ async function init() {
   await sendFingerprint(state.fingerprint);
   await refreshSession();
   await refreshLive(true);
+  await refreshRadioStatus();
 
   const wrap = $("messages");
   if (wrap) {
@@ -549,6 +571,9 @@ async function init() {
     refreshSession();
     refreshLive();
   }, 8000);
+  setInterval(() => {
+    refreshRadioStatus();
+  }, 15000);
 }
 
 window.addEventListener("load", init);

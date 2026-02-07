@@ -189,6 +189,7 @@ body.channels-collapsed .panel--left .welcome {
   flex: 1;
   background: #000;
   padding-bottom: 12px;
+  position: relative;
 }
 
 .panel--docs {
@@ -215,6 +216,20 @@ body.channels-collapsed .panel--left .welcome {
 .msg__line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .msg__time { color: var(--muted); font-size: 12px; }
 .msg__badge { color: var(--muted); font-size: 12px; }
+.radio-banner {
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 10px;
+  background: #33211b;
+  color: rgba(251, 191, 36, 0.95);
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  align-self: flex-end;
+  width: fit-content;
+}
 .msg__icon { display: inline-flex; align-items: center; justify-content: center; }
 .msg__icon--mesh {
   width: 12px;

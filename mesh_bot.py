@@ -12,6 +12,7 @@ from database import (
     init_db,
     insert_message,
     mark_outbox_sent,
+    upsert_status,
 )
 from logger import setup_logging
 
@@ -38,6 +39,15 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
+
+
+async def _heartbeat_task(cfg, db_cfg: DBConfig, log):
+    while True:
+        try:
+            upsert_status(db_cfg, process="mesh_bot", radio_connected=True, log=log)
+        except Exception as e:
+            log.error("heartbeat:upsert_failed err=%s", e, exc_info=True)
+        await asyncio.sleep(10)
 
 
 async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_idx: dict[str, int]):
@@ -185,6 +195,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
                 await mesh_client.start_auto_message_fetching()
                 log.info("mesh:auto_fetch_started")
+                upsert_status(db_cfg, process="mesh_bot", radio_connected=True, log=log)
 
                 # Handlers
                 def _on_channel_message(event):
@@ -213,6 +224,10 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 backoff = 1
                 return
             except Exception as e:
+                try:
+                    upsert_status(db_cfg, process="mesh_bot", radio_connected=False, log=log)
+                except Exception as se:
+                    log.error("heartbeat:down_failed err=%s", se, exc_info=True)
                 log.error("mesh:connect_failed err=%s backoff=%ds", e, backoff, exc_info=True)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
@@ -222,6 +237,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
     await asyncio.gather(
         _outbox_task(cfg, db_cfg, log, mesh_client, channel_name_to_idx),
         _retention_task(cfg, db_cfg, log),
+        _heartbeat_task(cfg, db_cfg, log),
     )
 
 
