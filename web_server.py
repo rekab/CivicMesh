@@ -85,9 +85,17 @@ def get_link_from_ip(client_ip: str) -> tuple[Optional[str], Optional[str]]:
 
 class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
     server_version = "CivicMeshWeb/0.1"
+    _set_cookie: Optional[str] = None
 
     def __init__(self, *args, directory=None, **kwargs):
         super().__init__(*args, directory=directory, **kwargs)
+
+    def end_headers(self) -> None:
+        cookie = getattr(self, "_set_cookie", None)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+            self._set_cookie = None
+        super().end_headers()
 
     def log_message(self, fmt: str, *args) -> None:
         # Redirect stdlib logging to our logger (set on server object)
@@ -102,6 +110,14 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
     def _get_session_id(self) -> Optional[str]:
         cookies = _parse_cookies(self.headers.get("Cookie", ""))
         return cookies.get("civicmesh_session")
+
+    def _ensure_session_cookie(self) -> str:
+        sid = self._get_session_id()
+        if sid:
+            return sid
+        sid = secrets.token_urlsafe(24)
+        self._set_cookie = f"civicmesh_session={sid}; Path=/; SameSite=Lax"
+        return sid
 
     def _channel_entries(self) -> list[dict[str, str]]:
         entries: list[dict[str, str]] = []
@@ -136,6 +152,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if not sid:
             if sec:
                 sec.error("CookieValidationFailed", ip=ip, mac=mac, msg="missing cookie", path=self.path, ua=self.headers.get("User-Agent", ""))
+            log.warning("session:missing_cookie ip=%s mac=%s path=%s ua=%s", ip, mac, self.path, self.headers.get("User-Agent", ""))
             return None, ip, mac
         sess = get_session(self.server.db_cfg, session_id=sid, log=log)
         if not sess:
@@ -152,6 +169,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if not sess:
                 if sec:
                     sec.error("CookieValidationFailed", ip=ip, mac=mac, msg="unknown session", session_id=sid, path=self.path, ua=self.headers.get("User-Agent", ""))
+                log.warning("session:unknown_session ip=%s mac=%s sid=%s path=%s ua=%s", ip, mac, sid, self.path, self.headers.get("User-Agent", ""))
                 return None, ip, mac
         stored_mac = (sess.get("mac_address") or "").lower()
         if stored_mac and mac and stored_mac != mac:
@@ -168,6 +186,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         path=self.path,
                         ua=self.headers.get("User-Agent", ""),
                     )
+                log.warning("session:mac_mismatch ip=%s mac=%s stored_mac=%s sid=%s path=%s ua=%s", ip, mac, stored_mac, sid, self.path, self.headers.get("User-Agent", ""))
                 return None, ip, mac
         return sess, ip, mac
 
@@ -175,6 +194,19 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         log = self.server.log
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/":
+            sid = self._ensure_session_cookie()
+            if not get_session(self.server.db_cfg, session_id=sid, log=log):
+                ip = self._client_ip()
+                mac, _ = get_link_from_ip(ip)
+                create_or_update_session(
+                    self.server.db_cfg,
+                    session_id=sid,
+                    name="",
+                    location=self.server.cfg.hub.location,
+                    mac_address=mac,
+                    log=log,
+                )
         # Serve static assets regardless of Host.
         if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
             return super().do_GET()
@@ -310,6 +342,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/post":
             sess, ip, mac = self._require_session()
             if not sess:
+                log.warning("post:session_invalid ip=%s mac=%s path=%s ua=%s", ip, mac, path, self.headers.get("User-Agent", ""))
                 _json(self, 403, {"error": "session invalid"})
                 return
 
