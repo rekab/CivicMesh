@@ -49,14 +49,6 @@ function storeNameToCookie() {
   }
 }
 
-function ensureSession() {
-  if (!getCookie("civicmesh_session")) {
-    // Generate client-side; server validates via DB + MAC
-    const sid = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + String(Date.now());
-    setCookie("civicmesh_session", sid);
-  }
-}
-
 async function sha1Hex(text) {
   if (!window.crypto || !window.crypto.subtle) return "";
   const data = new TextEncoder().encode(text);
@@ -471,7 +463,6 @@ async function vote(messageId, voteType) {
 }
 
 async function init() {
-  ensureSession();
   loadNameFromCookie();
   $("name").addEventListener("change", storeNameToCookie);
   $("name").addEventListener("blur", storeNameToCookie);
