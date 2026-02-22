@@ -183,6 +183,10 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                     radio_info.get("radio_sf"),
                     radio_info.get("radio_cr"),
                 )
+                channel_info = await mesh_client.commands.get_channel(0)
+                log.info("mesh:get_channel idx=0 event=%s payload=%s", channel_info.type, channel_info.payload)
+                stats_core = await mesh_client.commands.get_stats_core()
+                log.info("mesh:get_stats_core event=%s payload=%s", stats_core.type, stats_core.payload)
 
                 for idx, name in enumerate(cfg.channels.names):
                     secret_hex = hashlib.sha256(name.encode()).hexdigest()[:32]
