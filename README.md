@@ -101,6 +101,17 @@ pip install -U pip
 pip install .
 ```
 
+## Host Setup (deployment)
+
+Configure the WiFi AP and captive portal networking:
+
+```bash
+sudo ./scripts/setup_ap.sh --ssid "CivicMesh-Dev"
+# optional: --iface wlp2s0
+```
+
+Reboot when prompted by the script.
+
 ## Deployment
 
 1. **Copy files to Raspberry Pi** (via scp, rsync, or git clone)
@@ -126,14 +137,21 @@ pip install .
    - Set hub name and location
    - Configure channels to join
 
-5. **Install systemd services:**
+5. **Configure the WiFi AP and captive portal networking:**
+   ```bash
+   sudo ./scripts/setup_ap.sh --ssid "CivicMesh-Dev"
+   # optional: --iface wlp2s0
+   ```
+   Reboot when prompted by the script.
+
+6. **Install systemd services:**
    ```bash
    sudo cp systemd/*.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable mesh-bot.service web-server.service
    ```
 
-6. **Start services:**
+7. **Start services:**
    ```bash
    sudo systemctl start mesh-bot.service web-server.service
    ```
@@ -151,7 +169,7 @@ pip install .
    tail -f logs/security.log
    ```
 
-When deployed without internet access, administration and updates are performed over SSH on the WiFi AP using `apt-offline`.
+When deployed without internet access, administration and updates are performed over SSH on the WiFi AP using `apt-offline`. The AP also advertises DHCP Option 114 pointing to `/api/captive-portal` so clients can discover the Captive Portal API early in the connection flow.
 
 ## Run (dev)
 
