@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     content TEXT NOT NULL,
     session_id TEXT NOT NULL,
     fingerprint TEXT,
-    sent INTEGER DEFAULT 0
+    sent INTEGER DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'queued'
 );
 
 CREATE TABLE IF NOT EXISTS votes (
@@ -110,6 +112,47 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add outbox.fingerprint")
             conn.execute("ALTER TABLE outbox ADD COLUMN fingerprint TEXT")
+        if "retry_count" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.retry_count")
+            conn.execute("ALTER TABLE outbox ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE outbox SET retry_count=0 WHERE retry_count IS NULL")
+        if "status" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.status")
+            conn.execute("ALTER TABLE outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+        # Align status with existing sent flags or clean up bad values.
+        conn.execute(
+            """
+            UPDATE outbox
+            SET status = CASE
+                WHEN sent=1 THEN 'sent'
+                WHEN sent=0 THEN 'queued'
+                ELSE 'queued'
+            END
+            WHERE status IS NULL OR status NOT IN ('queued', 'sent', 'failed')
+            """
+        )
+        # If old rows were never marked sent, reconcile using the messages table.
+        conn.execute(
+            """
+            UPDATE outbox
+            SET status='sent', sent=1
+            WHERE status='queued'
+              AND EXISTS (
+                SELECT 1
+                FROM messages m
+                WHERE m.ts = outbox.ts
+                  AND m.channel = outbox.channel
+                  AND m.sender = outbox.sender
+                  AND m.content = outbox.content
+                  AND m.source = 'wifi'
+              )
+            """
+        )
+        outbox_cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbox)").fetchall()]
+        if "status" in outbox_cols:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, ts)")
     finally:
         conn.close()
 
@@ -339,7 +382,7 @@ def get_pending_outbox(cfg: DBConfig, *, limit: int, log=None) -> list[dict[str,
         if log:
             log.debug("db:get_pending_outbox limit=%d", limit)
         rows = conn.execute(
-            "SELECT * FROM outbox WHERE sent=0 ORDER BY ts ASC LIMIT ?",
+            "SELECT * FROM outbox WHERE status='queued' ORDER BY ts ASC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -374,12 +417,12 @@ def get_pending_outbox_filtered(
             log.debug("db:get_pending_outbox_filtered channel=%s limit=%d", channel, limit)
         if channel:
             rows = conn.execute(
-                "SELECT * FROM outbox WHERE sent=0 AND channel=? ORDER BY ts ASC LIMIT ?",
+                "SELECT * FROM outbox WHERE status='queued' AND channel=? ORDER BY ts ASC LIMIT ?",
                 (channel, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM outbox WHERE sent=0 ORDER BY ts ASC LIMIT ?",
+                "SELECT * FROM outbox WHERE status='queued' ORDER BY ts ASC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -393,7 +436,7 @@ def cancel_outbox_message(cfg: DBConfig, *, outbox_id: int, log=None) -> bool:
         if log:
             log.debug("db:cancel_outbox_message id=%d", outbox_id)
         cur = conn.execute(
-            "DELETE FROM outbox WHERE id=? AND sent=0",
+            "DELETE FROM outbox WHERE id=? AND status='queued'",
             (outbox_id,),
         )
         return cur.rowcount > 0
@@ -406,7 +449,7 @@ def clear_pending_outbox(cfg: DBConfig, *, log=None) -> int:
     try:
         if log:
             log.debug("db:clear_pending_outbox")
-        cur = conn.execute("DELETE FROM outbox WHERE sent=0")
+        cur = conn.execute("DELETE FROM outbox WHERE status='queued'")
         return cur.rowcount
     finally:
         conn.close()
@@ -425,7 +468,7 @@ def get_pending_outbox_for_session(
         if log:
             log.debug("db:get_pending_outbox_for_session session=%s channel=%s limit=%d", session_id, channel, limit)
         rows = conn.execute(
-            "SELECT * FROM outbox WHERE sent=0 AND session_id=? AND channel=? ORDER BY ts DESC LIMIT ?",
+            "SELECT * FROM outbox WHERE status='queued' AND session_id=? AND channel=? ORDER BY ts DESC LIMIT ?",
             (session_id, channel, limit),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -445,7 +488,7 @@ def get_pending_outbox_for_channel(
         if log:
             log.debug("db:get_pending_outbox_for_channel channel=%s limit=%d", channel, limit)
         rows = conn.execute(
-            "SELECT * FROM outbox WHERE sent=0 AND channel=? ORDER BY ts DESC LIMIT ?",
+            "SELECT * FROM outbox WHERE status='queued' AND channel=? ORDER BY ts DESC LIMIT ?",
             (channel, limit),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -460,8 +503,45 @@ def mark_outbox_sent(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
     try:
         if log:
             log.debug("db:mark_outbox_sent count=%d", len(outbox_ids))
-        q = "UPDATE outbox SET sent=1 WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
+        q = "UPDATE outbox SET sent=1, status='sent' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
         conn.execute(q, outbox_ids)
+    finally:
+        conn.close()
+
+
+def mark_outbox_failed(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
+    """Mark outbox rows as permanently failed (will not be retried)."""
+    if not outbox_ids:
+        return
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:mark_outbox_failed count=%d", len(outbox_ids))
+        q = "UPDATE outbox SET status='failed' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
+        conn.execute(q, outbox_ids)
+        for oid in outbox_ids:
+            if log:
+                log.warning("outbox:marked_failed id=%d", oid)
+    finally:
+        conn.close()
+
+
+def increment_outbox_retry(cfg: DBConfig, *, outbox_id: int, log=None) -> int:
+    """Increment retry_count for an outbox row. Returns new count."""
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:increment_outbox_retry id=%d", outbox_id)
+        conn.execute(
+            "UPDATE outbox SET retry_count = retry_count + 1 WHERE id = ?",
+            (outbox_id,),
+        )
+        row = conn.execute(
+            "SELECT retry_count FROM outbox WHERE id = ?",
+            (outbox_id,),
+        ).fetchone()
+        count = row["retry_count"] if row else 0
+        return count
     finally:
         conn.close()
 

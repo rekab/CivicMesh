@@ -297,7 +297,7 @@ def main():
         try:
             msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             sess = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            out = conn.execute("SELECT COUNT(*) FROM outbox WHERE sent=0").fetchone()[0]
+            out = conn.execute("SELECT COUNT(*) FROM outbox WHERE status='queued'").fetchone()[0]
             votes = conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
         finally:
             conn.close()

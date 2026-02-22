@@ -53,6 +53,7 @@ class LimitsConfig:
     message_max_chars: int
     name_max_chars: int
     name_pattern: str
+    outbox_max_retries: int
     outbox_max_delay_sec: int
     outbox_idle_reset_sec: int
     retention_bytes_per_channel: int
@@ -125,6 +126,7 @@ def load_config(path: str) -> AppConfig:
             message_max_chars=int(limits.get("message_max_chars", 200)),
             name_max_chars=int(limits.get("name_max_chars", 12)),
             name_pattern=str(limits.get("name_pattern", r"^[A-Za-z0-9_-]+$")),
+            outbox_max_retries=int(limits.get("outbox_max_retries", 3)),
             outbox_max_delay_sec=int(limits.get("outbox_max_delay_sec", 10)),
             outbox_idle_reset_sec=int(limits.get("outbox_idle_reset_sec", 60)),
             retention_bytes_per_channel=int(limits.get("retention_bytes_per_channel", 10 * 1024 * 1024 * 1024)),
