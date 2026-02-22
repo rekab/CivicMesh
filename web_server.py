@@ -112,6 +112,21 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         cookies = _parse_cookies(self.headers.get("Cookie", ""))
         return cookies.get("civicmesh_session")
 
+    def _is_portal_accepted(self, ip: str) -> bool:
+        now = _now_ts()
+        accepted = getattr(self.server, "portal_accepted", None) or {}
+        cutoff = now - 12 * 3600
+        expired = [k for k, v in accepted.items() if int(v or 0) < cutoff]
+        for k in expired:
+            accepted.pop(k, None)
+        ts = accepted.get(ip)
+        if ts is None:
+            return False
+        if int(ts) < cutoff:
+            accepted.pop(ip, None)
+            return False
+        return True
+
     def _ensure_session_cookie(self) -> str:
         sid = self._get_session_id()
         if sid:
@@ -175,6 +190,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         stored_mac = (sess.get("mac_address") or "").lower()
         if stored_mac and mac and stored_mac != mac:
             if not debug_eth0:
+                # MAC mismatch: the session cookie is valid but the device's MAC has
+                # changed. This happens routinely on modern Android, which rotates
+                # its per-SSID randomized MAC on reconnection. Since sessions carry
+                # no secrets or privilege (just a display name), we log the event
+                # for audit purposes but accept the session and update the stored MAC.
+                # Abuse prevention (spam) is handled by rate limiting, not MAC pinning.
                 if sec:
                     sec.error(
                         "MacMismatch",
@@ -188,50 +209,269 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         ua=self.headers.get("User-Agent", ""),
                     )
                 log.warning("session:mac_mismatch ip=%s mac=%s stored_mac=%s sid=%s path=%s ua=%s", ip, mac, stored_mac, sid, self.path, self.headers.get("User-Agent", ""))
-                return None, ip, mac
+                try:
+                    create_or_update_session(
+                        self.server.db_cfg,
+                        session_id=sid,
+                        name=sess.get("name") or "",
+                        location=sess.get("location") or self.server.cfg.hub.location,
+                        mac_address=mac,
+                        fingerprint=sess.get("fingerprint"),
+                        log=log,
+                    )
+                    log.info("session:mac_updated ip=%s old_mac=%s new_mac=%s sid=%s", ip, stored_mac, mac, sid)
+                except Exception as e:
+                    log.error("session:mac_update_failed sid=%s err=%s", sid, e, exc_info=True)
         return sess, ip, mac
 
     def do_GET(self):
         log = self.server.log
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/":
-            sid = self._ensure_session_cookie()
-            if not get_session(self.server.db_cfg, session_id=sid, log=log):
-                ip = self._client_ip()
-                mac, _ = get_link_from_ip(ip)
-                create_or_update_session(
-                    self.server.db_cfg,
-                    session_id=sid,
-                    name="",
-                    location=self.server.cfg.hub.location,
-                    mac_address=mac,
-                    log=log,
-                )
-        # Serve static assets regardless of Host.
-        if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
-            return super().do_GET()
+        host = (self.headers.get("Host", "") or "").split(":", 1)[0].lower()
 
-        # Captive portal probes: respond with explicit probe results (no HTML portal).
-        if path in ("/generate_204", "/gen_204"):
-            self.send_response(HTTPStatus.NO_CONTENT)
+        # Captive portal probe handling — stateful.
+        #
+        # Phones probe known URLs after connecting to WiFi to test for internet.
+        # We use these probes to drive captive portal detection:
+        #
+        #   New client (IP not in portal_accepted):
+        #     Probes get 302 → trampoline page. Phone detects captive portal,
+        #     opens mini-browser with our welcome page.
+        #
+        #   After client taps "Continue" on trampoline (/portal-accept):
+        #     IP is recorded in portal_accepted. Phone re-probes, gets the
+        #     success response it expects, concludes "internet works," and
+        #     promotes WiFi. Browser traffic now routes over WiFi instead of LTE.
+        #
+        # This fakes the standard captive portal lifecycle (sign-in → internet)
+        # on a network that intentionally has no internet.
+        if path in (
+            "/generate_204",
+            "/gen_204",
+            "/hotspot-detect.html",
+            "/library/test/success.html",
+            "/connecttest.txt",
+            "/ncsi.txt",
+        ):
+            ip = self._client_ip()
+            if self._is_portal_accepted(ip):
+                if path in ("/generate_204", "/gen_204"):
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.end_headers()
+                    return
+                if path in ("/hotspot-detect.html", "/library/test/success.html"):
+                    body = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if path == "/connecttest.txt":
+                    body = b"Microsoft Connect Test"
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if path == "/ncsi.txt":
+                    body = b"Microsoft NCSI"
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "http://civicmesh.local/welcome")
             self.end_headers()
             return
-        if path in ("/ncsi.txt", "/connecttest.txt"):
-            body = b"Microsoft NCSI"
+
+        if path == "/welcome":
+            hub_name = self.server.cfg.hub.name
+            url = "http://civicmesh.local/"
+            fallback_ip = "10.0.0.1"
+            html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{hub_name}</title>
+    <style>
+      :root {{
+        --bg: #f8f6f1;
+        --text: #1f2328;
+        --muted: #4b5563;
+        --accent: #0f4c81;
+        --border: #d0d7de;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: var(--bg);
+        color: var(--text);
+        padding: 20px;
+      }}
+      .wrap {{
+        max-width: 640px;
+        margin: 0 auto;
+      }}
+      h1 {{
+        font-size: 26px;
+        margin: 6px 0 12px;
+      }}
+      p {{
+        margin: 8px 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.4;
+      }}
+      .url {{
+        margin: 16px 0 10px;
+        padding: 14px 16px;
+        border: 2px solid var(--accent);
+        border-radius: 10px;
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--accent);
+        text-align: center;
+        background: #fff;
+      }}
+      .btn {{
+        display: inline-block;
+        margin-top: 8px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #fff;
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text);
+      }}
+      .hint {{
+        margin-top: 12px;
+        font-size: 14px;
+        color: var(--muted);
+      }}
+      noscript .js-only {{ display: none; }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>{hub_name}</h1>
+      <p>This is a neighborhood mesh radio chat board. No internet connection is needed.</p>
+      <div class="url">{url}</div>
+      <noscript>
+        <p class="hint">Open your browser and go to the address above.</p>
+      </noscript>
+      <div class="js-only">
+        <button id="copyBtn" class="btn" type="button">Copy link</button>
+        <span id="copyStatus" class="hint" style="margin-left:8px;"></span>
+        <a class="btn" href="/portal-accept" style="margin-left:8px; text-decoration:none;">Continue</a>
+      </div>
+      <p class="hint">Or open your browser and go to: <strong>{fallback_ip}</strong></p>
+    </div>
+    <script>
+      (function() {{
+        var url = "{url}";
+        var btn = document.getElementById("copyBtn");
+        var status = document.getElementById("copyStatus");
+        if (!btn) return;
+        btn.addEventListener("click", function() {{
+          function ok() {{ if (status) status.textContent = "Copied."; }}
+          function fail() {{ if (status) status.textContent = "Copy failed."; }}
+          if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(url).then(ok).catch(function() {{
+              fallbackCopy();
+            }});
+            return;
+          }}
+          function fallbackCopy() {{
+            try {{
+              var ta = document.createElement("textarea");
+              ta.value = url;
+              ta.setAttribute("readonly", "");
+              ta.style.position = "absolute";
+              ta.style.left = "-9999px";
+              document.body.appendChild(ta);
+              ta.select();
+              var success = document.execCommand("copy");
+              document.body.removeChild(ta);
+              success ? ok() : fail();
+            }} catch (e) {{
+              fail();
+            }}
+          }}
+          fallbackCopy();
+        }});
+      }})();
+    </script>
+  </body>
+</html>"""
+            body = html.encode("utf-8")
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-        if path == "/hotspot-detect.html":
-            body = b"CivicMesh"
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+
+        if path == "/portal-accept":
+            ip = self._client_ip()
+            accepted = getattr(self.server, "portal_accepted", None)
+            if accepted is None:
+                accepted = {}
+                self.server.portal_accepted = accepted
+            accepted[ip] = _now_ts()
+            log.info("portal:accepted ip=%s", ip)
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "http://civicmesh.local/")
             self.end_headers()
-            self.wfile.write(body)
+            return
+
+        # API routes are always served regardless of Host.
+        if path.startswith("/api/"):
+            pass
+        else:
+            client_ip = self._client_ip()
+            _mac, dev = get_link_from_ip(client_ip)
+            allow_any_host = bool(self.server.cfg.debug.allow_eth0 and dev == "eth0")
+            if path == "/":
+                if host != "civicmesh.local" and not allow_any_host:
+                    self.send_response(HTTPStatus.FOUND)
+                    self.send_header("Location", "http://civicmesh.local/")
+                    self.end_headers()
+                    return
+                sid = self._ensure_session_cookie()
+                if not get_session(self.server.db_cfg, session_id=sid, log=log):
+                    ip = client_ip
+                    mac, _ = get_link_from_ip(ip)
+                    create_or_update_session(
+                        self.server.db_cfg,
+                        session_id=sid,
+                        name="",
+                        location=self.server.cfg.hub.location,
+                        mac_address=mac,
+                        log=log,
+                    )
+            if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
+                if host != "civicmesh.local" and not allow_any_host:
+                    self.send_response(HTTPStatus.FOUND)
+                    self.send_header("Location", "http://civicmesh.local/")
+                    self.end_headers()
+                    return
+                return super().do_GET()
+            if host != "civicmesh.local" and not allow_any_host:
+                self.send_response(HTTPStatus.FOUND)
+                self.send_header("Location", "http://civicmesh.local/")
+                self.end_headers()
+                return
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/")
+            self.end_headers()
             return
 
         if path == "/api/channels":
@@ -243,6 +483,26 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "channel_details": self._channel_entries(),
                 },
             )
+            return
+
+        # RFC 8908 Captive Portal API (advertised via DHCP Option 114 / RFC 8910).
+        # Android 11+ shows a persistent "Tap to view website" notification when
+        # captive:false is paired with a venue-info-url. RFC requires HTTPS, but
+        # we serve HTTP on an offline .local domain; this is an intentional experiment.
+        # If ignored by the OS, captive-portal probe redirects remain the fallback.
+        if path == "/api/captive-portal":
+            body = json.dumps(
+                {
+                    "captive": False,
+                    "venue-info-url": "http://civicmesh.local/",
+                }
+            ).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/captive+json")
+            self.send_header("Cache-Control", "private")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/api/messages":
@@ -515,6 +775,7 @@ def run():
             self.db_cfg = db_cfg
             self.log = log
             self.sec = sec
+            self.portal_accepted = {}
 
     def _handler(*a, **kw):
         return CivicMeshHandler(*a, directory=static_dir, **kw)
