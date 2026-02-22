@@ -731,6 +731,16 @@ dhcp-option=option:router,${AP_IP}
 # Tell clients to use us as their DNS server
 dhcp-option=option:dns-server,${AP_IP}
 
+# RFC 8910: Advertise captive portal API URL to clients.
+# Android 11+ uses this to show a persistent "Tap to view website"
+# notification that opens the venue URL in the real browser.
+# Uses the IP address, not civicmesh.local, because the device hasn't
+# done DNS yet at DHCP time.
+# Note: RFC requires HTTPS but we serve HTTP (offline .local domain,
+# no certs possible). This is experimental — Android may ignore it,
+# in which case the captive portal probe redirect is the fallback.
+dhcp-option=114,http://${AP_IP}/api/captive-portal
+
 # We are the only DHCP server on this network; be authoritative
 # This reduces weirdness if a client thinks it's on a different LAN
 dhcp-authoritative
