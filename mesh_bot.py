@@ -10,7 +10,9 @@ from database import (
     cleanup_retention_bytes_per_channel,
     get_pending_outbox,
     init_db,
+    increment_outbox_retry,
     insert_message,
+    mark_outbox_failed,
     mark_outbox_sent,
     upsert_status,
 )
@@ -60,6 +62,12 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
     idle_reset_sec = cfg.limits.outbox_idle_reset_sec
     last_send_time: Optional[float] = None
     backoff_level = 0
+    # Retry cap prevents infinite resend loops when the radio acks are missing.
+    max_retries = getattr(cfg.limits, "outbox_max_retries", 3)
+    # If we see sustained send failures, pause longer to avoid poking a broken radio.
+    consecutive_errors = 0
+    consecutive_error_pause = 5
+    consecutive_error_cooldown = 30
 
     while True:
         try:
@@ -89,17 +97,40 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                 outbound = f"<{sender}@{cfg.hub.name}> {content}"
                 log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
                 channel_idx = channel_name_to_idx.get(channel)
+
                 if channel_idx is None:
+                    # Permanent failure: channel not in config. Will never succeed.
                     log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
+                    mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                    consecutive_errors = 0
                 else:
                     result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
                     if result.type == EventType.ERROR:
+                        new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
                         log.error(
-                            "outbox:send_failed id=%s channel=%s err=%s",
+                            "outbox:send_failed id=%s channel=%s attempt=%d/%d err=%s",
                             item["id"],
                             channel,
+                            new_count,
+                            max_retries,
                             result.payload,
                         )
+                        if new_count >= max_retries:
+                            mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                            log.warning(
+                                "outbox:giving_up id=%s channel=%s after %d attempts",
+                                item["id"],
+                                channel,
+                                new_count,
+                            )
+                        consecutive_errors += 1
+                        if consecutive_errors >= consecutive_error_pause:
+                            log.warning(
+                                "outbox:pausing consecutive_errors=%d cooldown=%ds",
+                                consecutive_errors,
+                                consecutive_error_cooldown,
+                            )
+                            await asyncio.sleep(consecutive_error_cooldown)
                     else:
                         mid = insert_message(
                             db_cfg,
@@ -113,8 +144,20 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                             log=log,
                         )
                         mark_outbox_sent(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                        consecutive_errors = 0
             except Exception as e:
-                log.error("outbox:send_failed id=%s err=%s", item["id"], e, exc_info=True)
+                log.error("outbox:send_exception id=%s err=%s", item["id"], e, exc_info=True)
+                new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
+                if new_count >= max_retries:
+                    mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                consecutive_errors += 1
+                if consecutive_errors >= consecutive_error_pause:
+                    log.warning(
+                        "outbox:pausing consecutive_errors=%d cooldown=%ds",
+                        consecutive_errors,
+                        consecutive_error_cooldown,
+                    )
+                    await asyncio.sleep(consecutive_error_cooldown)
             finally:
                 # Advance backoff after each attempt to avoid flooding on large backlogs.
                 last_send_time = time.time()
@@ -188,6 +231,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 stats_core = await mesh_client.commands.get_stats_core()
                 log.info("mesh:get_stats_core event=%s payload=%s", stats_core.type, stats_core.payload)
 
+                channels_ok = 0
                 for idx, name in enumerate(cfg.channels.names):
                     secret_hex = hashlib.sha256(name.encode()).hexdigest()[:32]
                     secret_bytes = bytes.fromhex(secret_hex)
@@ -196,6 +240,12 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                         log.error("mesh:set_channel_failed channel=%s err=%s", name, result.payload)
                     else:
                         log.info("mesh:channel_set idx=%d name=%s", idx, name)
+                        channels_ok += 1
+
+                if channels_ok == 0:
+                    raise RuntimeError(
+                        f"radio setup failed: 0/{len(cfg.channels.names)} channels configured"
+                    )
 
                 await mesh_client.start_auto_message_fetching()
                 log.info("mesh:auto_fetch_started")
@@ -225,6 +275,11 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
                 mesh_client.subscribe(EventType.CHANNEL_MSG_RECV, _on_channel_message)
 
+                log.info(
+                    "mesh:setup_complete channels_ok=%d/%d",
+                    channels_ok,
+                    len(cfg.channels.names),
+                )
                 backoff = 1
                 return
             except Exception as e:
