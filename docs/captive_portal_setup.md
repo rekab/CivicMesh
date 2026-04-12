@@ -13,6 +13,19 @@ It is written for offline deployment with no Ethernet uplink.
 - DHCP and DNS are served locally.
 - HTTP-only portal for captive portal compatibility.
 
+## Before You Begin
+
+Run `apt full-upgrade` and reboot before provisioning. Older Raspberry
+Pi OS kernels have a `brcmfmac` P2P crash triggered by nearby iOS
+devices. `apt upgrade` (without `full-upgrade`) is not sufficient on
+Raspberry Pi OS because it holds back kernel packages.
+
+```bash
+sudo apt update
+sudo apt full-upgrade
+sudo reboot
+```
+
 ## Packages
 Install the minimal packages:
 
@@ -158,6 +171,19 @@ python3 web_server.py --config config.toml
 - If DHCP fails: check dnsmasq logs and `wlan0` IP address.
 - If portal does not load: confirm web server is bound to `0.0.0.0:80`.
 - If DNS redirects fail: verify `address=/#/10.0.0.1` is active.
+- If iOS devices connect and get DHCP but Safari hangs loading the portal:
+  the app is probably redirecting to a `.local` hostname. iOS treats
+  `.local` as mDNS-only and bypasses unicast DNS, so the dnsmasq hijack
+  doesn't help. See `docs/ios-captive-portal-notes.md`.
+- If iOS devices connect and get DHCP but Safari hangs loading the portal:
+  the app is probably redirecting to a `.local` hostname. iOS treats
+  `.local` as mDNS-only and bypasses unicast DNS, so the dnsmasq hijack
+  doesn't help. See `docs/ios-captive-portal-notes.md`.
+- If iPad briefly connects and then disconnects, or if `dmesg` shows
+  kernel oopses in `brcmf_p2p_send_action_frame`: the Broadcom WiFi
+  driver has a known P2P crash triggered by iOS Wi-Fi Direct chatter.
+  Run `sudo apt full-upgrade` and reboot. See
+  `docs/ios-captive-portal-notes.md`.
 
 ## Planned Work: Headless Pi Zero 2W Setup
 This is a future stage to validate the setup on a fresh Pi Zero 2W without a monitor.
