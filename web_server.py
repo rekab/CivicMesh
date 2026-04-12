@@ -229,6 +229,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         host = (self.headers.get("Host", "") or "").split(":", 1)[0].lower()
+        portal_host = self.server.cfg.web.portal_host
+        portal_url = f"http://{portal_host}"
 
         # Captive portal probe handling — stateful.
         #
@@ -285,14 +287,13 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     self.wfile.write(body)
                     return
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "http://civicmesh.local/welcome")
+            self.send_header("Location", f"{portal_url}/welcome")
             self.end_headers()
             return
 
         if path == "/welcome":
             hub_name = self.server.cfg.hub.name
-            url = "http://civicmesh.local/"
-            fallback_ip = "10.0.0.1"
+            url = f"{portal_url}/"
             html = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -372,7 +373,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         <span id="copyStatus" class="hint" style="margin-left:8px;"></span>
         <a class="btn" href="/portal-accept" style="margin-left:8px; text-decoration:none;">Continue</a>
       </div>
-      <p class="hint">Or open your browser and go to: <strong>{fallback_ip}</strong></p>
     </div>
     <script>
       (function() {{
@@ -428,7 +428,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             accepted[ip] = _now_ts()
             log.info("portal:accepted ip=%s", ip)
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "http://civicmesh.local/")
+            self.send_header("Location", f"{portal_url}/")
             self.end_headers()
             return
 
@@ -440,9 +440,9 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             _mac, dev = get_link_from_ip(client_ip)
             allow_any_host = bool(self.server.cfg.debug.allow_eth0 and dev == "eth0")
             if path == "/":
-                if host != "civicmesh.local" and not allow_any_host:
+                if host != portal_host and not allow_any_host:
                     self.send_response(HTTPStatus.FOUND)
-                    self.send_header("Location", "http://civicmesh.local/")
+                    self.send_header("Location", f"{portal_url}/")
                     self.end_headers()
                     return
                 sid = self._ensure_session_cookie()
@@ -458,15 +458,15 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         log=log,
                     )
             if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
-                if host != "civicmesh.local" and not allow_any_host:
+                if host != portal_host and not allow_any_host:
                     self.send_response(HTTPStatus.FOUND)
-                    self.send_header("Location", "http://civicmesh.local/")
+                    self.send_header("Location", f"{portal_url}/")
                     self.end_headers()
                     return
                 return super().do_GET()
-            if host != "civicmesh.local" and not allow_any_host:
+            if host != portal_host and not allow_any_host:
                 self.send_response(HTTPStatus.FOUND)
-                self.send_header("Location", "http://civicmesh.local/")
+                self.send_header("Location", f"{portal_url}/")
                 self.end_headers()
                 return
             self.send_response(HTTPStatus.FOUND)
@@ -494,7 +494,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             body = json.dumps(
                 {
                     "captive": False,
-                    "venue-info-url": "http://civicmesh.local/",
+                    "venue-info-url": f"{portal_url}/",
                 }
             ).encode("utf-8")
             self.send_response(HTTPStatus.OK)

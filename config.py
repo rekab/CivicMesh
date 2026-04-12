@@ -45,6 +45,7 @@ class LocalConfig:
 @dataclass(frozen=True)
 class WebConfig:
     port: int
+    portal_host: str
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,10 @@ def load_config(path: str) -> AppConfig:
         ),
         channels=ChannelsConfig(names=[str(x) for x in (channels.get("names") or [])]),
         local=LocalConfig(names=[str(x) for x in local_names]),
-        web=WebConfig(port=int(web.get("port", 80))),
+        web=WebConfig(
+            port=int(web.get("port", 80)),
+            portal_host=str(web.get("portal_host", "10.0.0.1")),
+        ),
         limits=LimitsConfig(
             posts_per_hour=int(limits.get("posts_per_hour", 10)),
             message_max_chars=int(limits.get("message_max_chars", 200)),
