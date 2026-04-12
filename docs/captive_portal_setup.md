@@ -29,7 +29,8 @@ interface=wlan0
 ssid=CivicMesh-Example
 hw_mode=g
 channel=6
-wmm_enabled=0
+# WMM is required by 802.11n — iOS refuses to associate without it
+wmm_enabled=1
 auth_algs=1
 ignore_broadcast_ssid=0
 ```

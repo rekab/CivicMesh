@@ -661,8 +661,13 @@ channel=${CHANNEL}
 # Enable 802.11n for better speeds (doesn't hurt on older hardware)
 ieee80211n=1
 
-# Disable WiFi Multimedia QoS (not needed for text-only portal)
-wmm_enabled=0
+# WMM (WiFi Multimedia QoS) must be enabled.
+# 802.11n requires WMM per the spec. Disabling it causes iOS/iPadOS
+# devices to refuse association (they see 802.11n advertised without
+# the mandatory WMM capability and reject the network).
+# Android tolerates wmm_enabled=0 by falling back to 802.11g, but
+# iOS does not. Enabling WMM has negligible overhead on the Pi Zero 2W.
+wmm_enabled=1
 
 # === Security: Open Network ===
 # auth_algs=1 means "Open System" authentication (no challenge)
