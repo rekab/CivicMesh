@@ -15,3 +15,6 @@
 - Security log must not include full message content.
 - DB schema changes preserve existing data or include migration.
 - CPU/RAM usage remains suitable for Pi Zero 2W.
+- Portal hostnames must not use `.local` (iOS bypasses unicast DNS for `.local` names; see `docs/ios-captive-portal-notes.md`).
+- Portal hostnames must not use `.local` (iOS bypasses unicast DNS for `.local` names; see `docs/ios-captive-portal-notes.md`).
+- Provisioning must run `apt full-upgrade` and reboot before deployment (older kernels have a `brcmfmac` P2P crash triggered by nearby iOS devices; see `docs/ios-captive-portal-notes.md`).
