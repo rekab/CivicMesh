@@ -88,6 +88,15 @@ def _load_toml(path: str) -> dict[str, Any]:
     raise RuntimeError("No TOML parser available (need Python 3.11+ or install tomli)")
 
 
+def _validate_portal_host(raw: Any) -> str:
+    host = str(raw).strip().lower()
+    if "://" in host:
+        raise ValueError(f"portal_host must not include a scheme (got {raw!r})")
+    if "/" in host:
+        raise ValueError(f"portal_host must not contain '/' (got {raw!r})")
+    return host
+
+
 def load_config(path: str) -> AppConfig:
     raw = _load_toml(path)
 
@@ -123,7 +132,7 @@ def load_config(path: str) -> AppConfig:
         local=LocalConfig(names=[str(x) for x in local_names]),
         web=WebConfig(
             port=int(web.get("port", 80)),
-            portal_host=str(web.get("portal_host", "10.0.0.1")),
+            portal_host=_validate_portal_host(web.get("portal_host", "10.0.0.1")),
         ),
         limits=LimitsConfig(
             posts_per_hour=int(limits.get("posts_per_hour", 10)),

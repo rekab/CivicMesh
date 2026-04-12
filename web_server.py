@@ -373,6 +373,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         <span id="copyStatus" class="hint" style="margin-left:8px;"></span>
         <a class="btn" href="/portal-accept" style="margin-left:8px; text-decoration:none;">Continue</a>
       </div>
+      <p class="hint">For the full experience, open <strong>{portal_host}</strong> in Safari or Chrome.</p>
     </div>
     <script>
       (function() {{

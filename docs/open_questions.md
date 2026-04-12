@@ -38,3 +38,14 @@
 ## Does the brcmfmac P2P crash reproduce on Pi Zero 2W
 Does the brcmfmac P2P crash reproduce on Pi Zero 2W (BCM43436) as it does on 
 Pi 4 (BCM43455)? Needs explicit testing before deployment.
+
+## Redundant host-header check in do_GET
+- Where: `web_server.py` lines ~442-471
+- When `path == "/"`, the host-header check runs twice: once in the
+  `if path == "/"` block (line 443) and again in the
+  `if path == "/" or path.startswith("/static/")...` block (line 461).
+  The second check is unreachable for `/` because the first block already
+  returns on mismatch or falls through on match then hits the same condition.
+- Not a bug, just wasted work on every `/` request.
+- Fix: refactor into `if/elif/else` so `/` is handled once. Deferred from
+  the portal_host branch to keep that PR minimal.
