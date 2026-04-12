@@ -34,3 +34,7 @@
 - Why it matters: portal must open reliably on iOS/Android.
 - Assumption for v0: HTTP + common captive portal triggers are enough.
 - Validate: test on iOS and Android captive portal detection.
+
+## Does the brcmfmac P2P crash reproduce on Pi Zero 2W
+Does the brcmfmac P2P crash reproduce on Pi Zero 2W (BCM43436) as it does on 
+Pi 4 (BCM43455)? Needs explicit testing before deployment.
