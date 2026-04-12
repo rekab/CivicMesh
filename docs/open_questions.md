@@ -49,3 +49,15 @@ Pi 4 (BCM43455)? Needs explicit testing before deployment.
 - Not a bug, just wasted work on every `/` request.
 - Fix: refactor into `if/elif/else` so `/` is handled once. Deferred from
   the portal_host branch to keep that PR minimal.
+
+## Consider using a friendly hostname instead of raw IP for portal_host
+Current: `portal_host = "10.0.0.1"`. Works but ugly in the URL bar.
+
+Option: `portal_host = "civicmesh.internal"`. `.internal` was reserved
+by ICANN in 2024 for private networks. dnsmasq wildcard hijack already
+answers any name, so no server-side changes required. iOS does unicast
+DNS for non-`.local` names, so the resolution path works.
+
+Blocked by: nothing technical. Just want to verify the IP-based portal
+works end-to-end first before changing the variable. Revisit after
+merging fix-ios-wifi.
