@@ -17,6 +17,9 @@ names = ["#local"]
 
 [web]
 port = 8080
+# Hostname used for portal redirects and Host-header checks.
+# Do NOT use a .local hostname — iOS cannot resolve .local via unicast DNS.
+portal_host = "10.0.0.1"
 
 [limits]
 posts_per_hour = 10
