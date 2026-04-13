@@ -780,12 +780,25 @@ async function init() {
     showWelcome();
   }
 
-  // Re-layout on resize (e.g. rotating tablet)
+  // Re-layout on resize (e.g. rotating tablet, resizing window)
   window.addEventListener("resize", function() {
     if (isDesktop()) {
+      // Desktop: channels sidebar always visible alongside current content
       $("viewChannels").classList.add("active");
-      if (!state.activeChannel && !$("viewWelcome").classList.contains("active")) {
+      if (!state.activeChannel && !$("viewChat").classList.contains("active")) {
         $("viewWelcome").classList.add("active");
+      }
+    } else {
+      // Mobile: only one view at a time
+      if (state.activeChannel && $("viewChat").classList.contains("active")) {
+        $("viewChannels").classList.remove("active");
+        $("viewWelcome").classList.remove("active");
+      } else if ($("viewChannels").classList.contains("active")) {
+        $("viewChat").classList.remove("active");
+        $("viewWelcome").classList.remove("active");
+      } else {
+        $("viewChannels").classList.remove("active");
+        $("viewChat").classList.remove("active");
       }
     }
   });

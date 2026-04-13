@@ -687,9 +687,8 @@ body {
   /* Channel list is always visible as a sidebar on the left */
   #viewChannels {
     display: flex !important;
-    width: 320px;
+    flex: 0 0 320px;
     border-right: 1px solid var(--border);
-    flex-shrink: 0;
     order: -1;
   }
   .channels__brand {
