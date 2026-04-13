@@ -1,75 +1,185 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Civic Mesh</title>
-    <link rel="stylesheet" href="/style.css" />
-  </head>
-  <body>
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand__title">CivicMesh</div>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Civic Mesh</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="topbar__brand">
+      <svg class="topbar__logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <circle cx="12" cy="12" r="2.5"/>
+        <path d="M7.5 7.5a6.4 6.4 0 0 0 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <path d="M4.5 5a10.5 10.5 0 0 0 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <path d="M16.5 7.5a6.4 6.4 0 0 1 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        <path d="M19.5 5a10.5 10.5 0 0 1 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+      </svg>
+      CivicMesh
+    </div>
+    <div id="debugBanner" class="topbar__debug" hidden>DEBUG</div>
+    <div class="topbar__status">
+      <span id="statusDot" class="topbar__dot topbar__dot--ok"></span>
+      <span id="sessionStatus">Connected</span>
+    </div>
+  </div>
+
+  <!-- VIEW: Welcome / About -->
+  <div class="view" id="viewWelcome">
+    <div class="welcome">
+      <div class="welcome__hero">
+        <svg class="welcome__icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="12" cy="12" r="2.5"/>
+          <path d="M7.5 7.5a6.4 6.4 0 0 0 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M4.5 5a10.5 10.5 0 0 0 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M16.5 7.5a6.4 6.4 0 0 1 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M19.5 5a10.5 10.5 0 0 1 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        </svg>
+        <h1 class="welcome__title">Welcome to CivicMesh</h1>
+        <p class="welcome__subtitle">
+          A community message board powered by radio.
+          No internet needed. No accounts. Just people.
+        </p>
       </div>
-      <div id="debugBanner" class="pill pill--warn pill--debug" hidden>DEBUG</div>
-      <div class="status">
-        <div id="sessionStatus" class="pill pill--ok">Connected</div>
-      </div>
-    </header>
 
-    <main class="layout">
-      <section class="panel panel--left">
-        <button id="channelToggle" class="panel__header panel__header--menu" type="button" aria-expanded="true">
-          <span class="menu-icon" aria-hidden="true">☰</span>MENU
-        </button>
-        <div id="welcomeBox" class="welcome">
-          <div class="welcome__title">Welcome</div>
-          <div class="welcome__body">Pick a channel below to join the conversation.</div>
-        </div>
-        <div class="menu-entry" id="helpToggle">❓ Help/About</div>
-        <div id="channels" class="channels"></div>
-      </section>
+      <div class="welcome__content">
+        <div class="welcome__section">
+          <div class="welcome__section-title">How it works</div>
 
-      <section class="panel panel--main" hidden>
-        <div class="panel__header">
-          <div class="panel__title" id="channelTitle">Loading…</div>
-          <button id="refreshBtn" class="btn btn--ghost">Refresh</button>
-        </div>
-
-        <div id="messages" class="messages"></div>
-
-        <div class="composer">
-          <div class="composer__row">
-            <input id="name" class="input" placeholder="Your name" maxlength="10" />
-          </div>
-          <div class="composer__row">
-            <textarea id="content" class="textarea" placeholder="Write a message…" maxlength="100"></textarea>
-          </div>
-          <div class="composer__row composer__row--actions">
-            <div class="composer__notes">
-              <div id="channelHint" class="hint" hidden>Select a channel to post.</div>
-              <div id="charCount" class="hint">0/… · … msgs left</div>
-              <div id="postError" class="error"></div>
+          <div class="info-card info-card--mesh">
+            <div class="info-card__row">
+              <div class="info-card__icon info-card__icon--mesh">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="2.5"/>
+                  <path d="M7.5 7.5a6.4 6.4 0 0 0 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+                  <path d="M16.5 7.5a6.4 6.4 0 0 1 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+                </svg>
+              </div>
+              <div class="info-card__text">
+                <h3>Mesh Network</h3>
+                <p>Small radios across the region relay messages to each other. No cell towers, no ISPs, no central owner.</p>
+              </div>
             </div>
-            <button id="postBtn" class="btn btn--primary" disabled>Post to Mesh</button>
+          </div>
+
+          <div class="info-card info-card--local">
+            <div class="info-card__row">
+              <div class="info-card__icon info-card__icon--local">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
+              </div>
+              <div class="info-card__text">
+                <h3>This Hotspot</h3>
+                <p>You're connected via WiFi to a local hub. On-site channels stay here. Mesh channels reach the wider network.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="info-card info-card--community">
+            <div class="info-card__row">
+              <div class="info-card__icon info-card__icon--community">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div class="info-card__text">
+                <h3>Community First</h3>
+                <p>Messages are public. Be helpful. Be brief. Be kind.</p>
+              </div>
+            </div>
           </div>
         </div>
-      </section>
 
-      <section class="panel panel--docs" hidden>
-        <div class="panel__header">
-          <div class="panel__title">Help &amp; About</div>
-          <button id="helpClose" class="btn btn--ghost">Close</button>
-        </div>
-        <div class="docs">
-          <p>CivicMesh is a WiFi hotspot <i>not</i> connected to the Internet. This is a local hub relay for community messages.</p>
-          <p>It connects to MeshCore, a volunteer-run mesh network. Small radios across the region relay messages between each other, with no cell towers, no ISPs, and no central owner.</p>
-          <p>Select a channel to view or post updates. On-site channels stay at this hotspot. Mesh channels relay to the wider network.</p>
-          <p>Messages are public. Be helpful. Be brief. Be kind.</p>
-        </div>
-      </section>
-    </main>
+        <button class="welcome__start-btn" id="welcomeStartBtn">
+          View Channels
+        </button>
 
-    <script src="/app.js"></script>
-  </body>
+        <div class="welcome__motto">
+          Seattle Emergency Hubs &middot; CivicMesh
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: Channel List -->
+  <div class="view" id="viewChannels">
+    <div class="channels__brand">
+      <div class="channels__brand-name">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="color:#a5d6a7" aria-hidden="true">
+          <circle cx="12" cy="12" r="2.5"/>
+          <path d="M7.5 7.5a6.4 6.4 0 0 0 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M4.5 5a10.5 10.5 0 0 0 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M16.5 7.5a6.4 6.4 0 0 1 0 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M19.5 5a10.5 10.5 0 0 1 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+        </svg>
+        CivicMesh
+      </div>
+      <div class="channels__brand-status">
+        <span class="topbar__dot topbar__dot--ok"></span> Connected
+      </div>
+    </div>
+    <div class="channels">
+      <div class="channels__header">Channels</div>
+      <div id="channelList" class="channels__list"></div>
+      <div class="channels__info-link" id="aboutLink">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+        About CivicMesh
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW: Chat / Messages -->
+  <div class="view" id="viewChat">
+    <div class="chat">
+      <div class="chat__header">
+        <button class="chat__back" id="chatBackBtn" aria-label="Back to channels">&larr;</button>
+        <div class="chat__channel-info">
+          <div class="chat__channel-name" id="chatChannelName">Loading&hellip;</div>
+          <div class="chat__channel-scope" id="chatChannelScope"></div>
+        </div>
+      </div>
+
+      <div id="radioStatusBanner" class="radio-banner" hidden>
+        Radio offline &mdash; messages will queue but won't transmit yet.
+      </div>
+
+      <div id="messages" class="chat__messages"></div>
+    </div>
+
+    <button class="fab" id="fabBtn" aria-label="Write a message">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+
+</div>
+
+<!-- Compose Modal -->
+<div class="compose-overlay" id="composeOverlay"></div>
+<div class="compose-modal" id="composeModal">
+  <div class="compose-modal__handle"></div>
+  <div class="compose-modal__title" id="composeTitle">Post</div>
+  <div class="compose-modal__subtitle" id="composeSubtitle"></div>
+
+  <div class="compose-field">
+    <label for="name">Your name</label>
+    <input type="text" id="name" placeholder="e.g. Fremont-Jo" maxlength="12" />
+  </div>
+
+  <div class="compose-field">
+    <label for="content">Message</label>
+    <textarea id="content" placeholder="What would you like to share?" maxlength="100"></textarea>
+    <div class="compose-field__hint" id="charCount">0/100 &middot; &hellip; msgs left</div>
+    <div class="compose-field__error" id="postError"></div>
+  </div>
+
+  <div class="compose-modal__actions">
+    <button class="compose-modal__cancel" id="composeCancelBtn">Cancel</button>
+    <button class="compose-modal__send" id="postBtn" disabled>Post to Mesh</button>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
 </html>
