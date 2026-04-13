@@ -46,6 +46,7 @@ class LocalConfig:
 class WebConfig:
     port: int
     portal_host: str
+    portal_aliases: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,11 @@ def load_config(path: str) -> AppConfig:
         web=WebConfig(
             port=int(web.get("port", 80)),
             portal_host=_validate_portal_host(web.get("portal_host", "10.0.0.1")),
+            portal_aliases=tuple(
+                _validate_portal_host(a)
+                for a in web.get("portal_aliases", [])
+                if str(a).strip()
+            ),
         ),
         limits=LimitsConfig(
             posts_per_hour=int(limits.get("posts_per_hour", 10)),

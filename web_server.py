@@ -1,4 +1,5 @@
 import argparse
+import html as html_mod
 import http.server
 import json
 import os
@@ -231,6 +232,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         host = (self.headers.get("Host", "") or "").split(":", 1)[0].lower()
         portal_host = self.server.cfg.web.portal_host
         portal_url = f"http://{portal_host}"
+        accepted_hosts = {portal_host, *self.server.cfg.web.portal_aliases}
 
         # Captive portal probe handling — stateful.
         #
@@ -294,6 +296,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/welcome":
             hub_name = self.server.cfg.hub.name
             url = f"{portal_url}/"
+            portal_aliases = self.server.cfg.web.portal_aliases
+            alias_hint = ""
+            if portal_aliases:
+                alias_hint = f'<p class="hint">Bookmark this page: <strong>{html_mod.escape(portal_aliases[0])}</strong></p>'
             html = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -374,6 +380,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         <a class="btn" href="/portal-accept" style="margin-left:8px; text-decoration:none;">Continue</a>
       </div>
       <p class="hint">For the full experience, open <strong>{portal_host}</strong> in Safari or Chrome.</p>
+      {alias_hint}
     </div>
     <script>
       (function() {{
@@ -441,7 +448,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             _mac, dev = get_link_from_ip(client_ip)
             allow_any_host = bool(self.server.cfg.debug.allow_eth0 and dev == "eth0")
             if path == "/":
-                if host != portal_host and not allow_any_host:
+                if host not in accepted_hosts and not allow_any_host:
                     self.send_response(HTTPStatus.FOUND)
                     self.send_header("Location", f"{portal_url}/")
                     self.end_headers()
@@ -459,13 +466,13 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         log=log,
                     )
             if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
-                if host != portal_host and not allow_any_host:
+                if host not in accepted_hosts and not allow_any_host:
                     self.send_response(HTTPStatus.FOUND)
                     self.send_header("Location", f"{portal_url}/")
                     self.end_headers()
                     return
                 return super().do_GET()
-            if host != portal_host and not allow_any_host:
+            if host not in accepted_hosts and not allow_any_host:
                 self.send_response(HTTPStatus.FOUND)
                 self.send_header("Location", f"{portal_url}/")
                 self.end_headers()
