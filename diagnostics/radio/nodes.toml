@@ -21,4 +21,4 @@ repo_path = "/home/james/code/CivicMesh"
 [test]
 channel = "#civicmesh"
 message_prefix = "[RTTEST]"
-min_send_spacing_s = 3.0
+min_send_spacing_s = 5.0
