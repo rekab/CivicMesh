@@ -21,7 +21,7 @@ from diagnostics.radio.harness.logger import (
     write_manifest,
     write_summary,
 )
-from diagnostics.radio.harness.preflight import preflight
+from diagnostics.radio.harness.preflight import check_version_consistency, preflight
 from diagnostics.radio.harness.verdict import (
     classify_send,
     event_type_counts,
@@ -63,6 +63,9 @@ async def run(
         preflight(nodes_cfg.node(sender), nodes_cfg.test.channel),
         preflight(nodes_cfg.node(receiver), nodes_cfg.test.channel),
     )
+    version_warn = check_version_consistency(pre_results)
+    if version_warn:
+        console_log("mac", version_warn)
     if any(not pr.ok for pr in pre_results):
         console_log("mac", f"⚠️ preflight failed — aborting {test_name}")
         return _write_preflight_failure(test_name, run_dir, runs_dir, pre_results, nodes_cfg, marker, run_id, sender, receiver)

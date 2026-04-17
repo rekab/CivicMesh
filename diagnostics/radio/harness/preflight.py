@@ -96,9 +96,13 @@ checks['serial_readable'] = os.access(serial_port, os.R_OK)
 try:
     import meshcore  # type: ignore
     checks['meshcore'] = 'ok'
-    checks['meshcore_version'] = getattr(meshcore, '__version__', 'unknown')
 except Exception as e:
     checks['meshcore'] = 'error: ' + repr(e)
+try:
+    from importlib.metadata import version as _pkg_version
+    checks['meshcore_version'] = _pkg_version('meshcore')
+except Exception as e:
+    checks['meshcore_version'] = 'error: ' + repr(e)
 
 try:
     try:
@@ -154,10 +158,13 @@ class PreflightResult:
     channel_idx: int | None = None
     raw_checks: dict[str, Any] = field(default_factory=dict)
     chronyc_offset_ms: float | None = None
+    meshcore_version: str | None = None
 
     def summary_line(self) -> str:
         status = "OK" if self.ok else "FAIL"
         bits = [f"{self.node_name}: {status}"]
+        if self.meshcore_version:
+            bits.append(f"meshcore={self.meshcore_version}")
         if self.failures:
             bits.append(" / ".join(self.failures))
         if self.annotations:
@@ -207,6 +214,9 @@ async def preflight(node: NodeConfig, channel_name: str) -> PreflightResult:
         return result
 
     result.raw_checks = checks
+    mv = checks.get("meshcore_version")
+    if isinstance(mv, str) and not mv.startswith("error:"):
+        result.meshcore_version = mv
 
     pids = checks.get("mesh_bot_pids") or ""
     if isinstance(pids, str) and pids.strip():
@@ -248,3 +258,16 @@ async def preflight(node: NodeConfig, channel_name: str) -> PreflightResult:
     status = "OK" if result.ok else "FAIL"
     console_log(f"mac→{node.name}", f"preflight: {status}  ({result.summary_line()})")
     return result
+
+
+def check_version_consistency(pre_results) -> str | None:
+    """Return a warning string if nodes have different meshcore versions,
+    else None. Unknown versions are ignored."""
+    versions = {
+        pr.node_name: pr.meshcore_version
+        for pr in pre_results
+        if pr.meshcore_version
+    }
+    if len(set(versions.values())) > 1:
+        return f"⚠️ meshcore version mismatch: {versions} — results may conflate library-side behavior across versions"
+    return None

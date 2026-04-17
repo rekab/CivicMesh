@@ -24,7 +24,7 @@ from diagnostics.radio.harness.logger import (
     write_manifest,
     write_summary,
 )
-from diagnostics.radio.harness.preflight import preflight
+from diagnostics.radio.harness.preflight import check_version_consistency, preflight
 from diagnostics.radio.harness.verdict import (
     classify_send,
     event_type_counts,
@@ -61,6 +61,9 @@ async def run(
     pre_results = await asyncio.gather(
         *[preflight(nc, nodes_cfg.test.channel) for nc in nodes_cfg.nodes.values()]
     )
+    version_warn = check_version_consistency(pre_results)
+    if version_warn:
+        console_log("mac", version_warn)
     if any(not pr.ok for pr in pre_results):
         console_log("mac", f"⚠️ preflight failed — aborting {TEST_NAME}")
         lines = [f"# {TEST_NAME} — PREFLIGHT FAILED", ""]

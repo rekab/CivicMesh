@@ -143,8 +143,8 @@ def emit(event_type, payload=None, **extra):
 
 def _try_meshcore_version():
     try:
-        import meshcore  # type: ignore
-        return getattr(meshcore, "__version__", "unknown")
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("meshcore")
     except Exception as e:
         return f"error: {e!r}"
 
