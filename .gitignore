@@ -11,3 +11,7 @@ __pycache__/
 build/
 *.egg-info/
 *.pyc
+
+# CivicMesh radio diagnostics — harness source is tracked, runs are not.
+diagnostics/radio/runs/*
+!diagnostics/radio/runs/.gitkeep
