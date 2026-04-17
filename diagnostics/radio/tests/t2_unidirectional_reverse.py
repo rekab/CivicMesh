@@ -13,7 +13,8 @@ SENDER = "zero2w"
 RECEIVER = "pi4"
 
 
-async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = None) -> dict:
+async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = None,
+              *, do_set_channel: bool = True) -> dict:
     return await t1_unidirectional.run(
         nodes_cfg,
         runs_dir,
@@ -21,4 +22,5 @@ async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = Non
         sender=SENDER,
         receiver=RECEIVER,
         test_name=TEST_NAME,
+        do_set_channel=do_set_channel,
     )

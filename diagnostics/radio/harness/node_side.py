@@ -23,6 +23,7 @@ os.dup2(2, 1)
 
 import asyncio  # noqa: E402
 import base64  # noqa: E402
+import hashlib  # noqa: E402
 import io  # noqa: E402
 import itertools  # noqa: E402
 import json  # noqa: E402
@@ -64,6 +65,7 @@ CONFIG_PATH = PARAMS["config_path"]
 SEND_SPACING_S = float(PARAMS.get("send_spacing_s", 3.0))
 ITERATIONS = int(PARAMS.get("iterations", 1))
 STALL_THRESHOLD_S = float(PARAMS.get("stall_threshold_s", 30.0))
+DO_SET_CHANNEL = bool(PARAMS.get("do_set_channel", True))
 
 _TMP_PATH = f"/tmp/civicmesh_harness_{RUN_ID}.jsonl"
 _TMP_FILE = open(_TMP_PATH, "wb")
@@ -329,6 +331,55 @@ async def main():
     # Used to confirm radio params without ever calling set_radio.
     self_info = getattr(mc, "self_info", None)
     emit("SELF_INFO", _json_safe(self_info or {}))
+
+    # Probe the firmware's CURRENT channel config before we do anything
+    # that might mutate it. The CHANNEL_QUERY_PRE event lets us tell
+    # whether the two nodes already have matching secrets.
+    try:
+        ch_info = await mc.commands.get_channel(channel_idx)
+        emit("CHANNEL_QUERY_PRE", {
+            "channel_idx": channel_idx,
+            "type": getattr(getattr(ch_info, "type", None), "name", None),
+            "payload": _json_safe(getattr(ch_info, "payload", None)),
+        })
+    except Exception as e:
+        emit("CHANNEL_QUERY_PRE_ERROR", {"err": repr(e), "channel_idx": channel_idx})
+
+    # Mirror mesh_bot.py's startup set_channel. Without this, the radio
+    # may have a different channel secret persisted in flash and packets
+    # won't decode on the other side even though they hit the airwaves.
+    # The secret derivation matches mesh_bot.py:274-277 exactly.
+    if DO_SET_CHANNEL:
+        secret_bytes = hashlib.sha256(CHANNEL_NAME.encode()).digest()[:16]
+        emit("SET_CHANNEL_PRE", {
+            "channel_idx": channel_idx,
+            "channel_name": CHANNEL_NAME,
+            "secret_hex": secret_bytes.hex(),
+        })
+        try:
+            r = await mc.commands.set_channel(channel_idx, CHANNEL_NAME, secret_bytes)
+            emit("SET_CHANNEL_RESULT", {
+                "channel_idx": channel_idx,
+                "type": getattr(getattr(r, "type", None), "name", None),
+                "payload": _json_safe(getattr(r, "payload", None)),
+            })
+        except Exception as e:
+            emit("SET_CHANNEL_ERROR", {
+                "err": repr(e),
+                "tb": traceback.format_exc(limit=6),
+            })
+        # Re-query so we can confirm the secret is now what we expect.
+        try:
+            ch_info_post = await mc.commands.get_channel(channel_idx)
+            emit("CHANNEL_QUERY_POST", {
+                "channel_idx": channel_idx,
+                "type": getattr(getattr(ch_info_post, "type", None), "name", None),
+                "payload": _json_safe(getattr(ch_info_post, "payload", None)),
+            })
+        except Exception as e:
+            emit("CHANNEL_QUERY_POST_ERROR", {"err": repr(e)})
+    else:
+        emit("SET_CHANNEL_SKIPPED", {"reason": "do_set_channel=False"})
 
     emit("PRE_STATS", await _collect_stats(mc))
 

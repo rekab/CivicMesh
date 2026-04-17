@@ -13,6 +13,7 @@ from pathlib import Path
 from diagnostics.radio.harness.connection import probe_clock_skew, run_node
 from diagnostics.radio.harness.logger import (
     NodesConfig,
+    console_log,
     make_run_dir,
     update_latest_symlink,
     write_manifest,
@@ -31,18 +32,22 @@ TEST_NAME = "t0_passive_listen"
 LISTEN_S = 30.0
 
 
-async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = None) -> dict:
+async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = None,
+              *, do_set_channel: bool = True) -> dict:
     if run_dir is None:
         run_dir = make_run_dir(runs_dir, TEST_NAME)
 
     run_id = f"{TEST_NAME}_{uuid.uuid4().hex[:8]}"
     test_marker = f"{nodes_cfg.test.message_prefix} t0 {run_id[-8:]}"  # not transmitted; for manifest only
+    console_log("mac", f"T0 passive listen — run_dir={run_dir.name} listen={LISTEN_S:.0f}s")
 
+    console_log("mac", f"phase: preflight on {list(nodes_cfg.nodes)} (parallel)")
     pre_results = await asyncio.gather(
         *[preflight(nc, nodes_cfg.test.channel) for nc in nodes_cfg.nodes.values()]
     )
     pre_failed = [pr for pr in pre_results if not pr.ok]
     if pre_failed:
+        console_log("mac", f"⚠️ preflight failed on {[pr.node_name for pr in pre_failed]} — aborting")
         summary = _preflight_failure_summary(pre_results)
         write_summary(run_dir, summary)
         write_manifest(run_dir, {
@@ -53,16 +58,20 @@ async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = Non
         update_latest_symlink(runs_dir, run_dir)
         return {"verdict": "PREFLIGHT_FAILED", "run_dir": str(run_dir)}
 
+    console_log("mac", "phase: clock skew probe (parallel)")
     skews = await asyncio.gather(
         *[probe_clock_skew(nc) for nc in nodes_cfg.nodes.values()]
     )
 
     hard_deadline = LISTEN_S + 30.0
+    console_log("mac", f"phase: spawning node_side.py on both nodes in role=listen (listen_after_s={LISTEN_S:.0f})")
     tasks = []
     for node_name, nc in nodes_cfg.nodes.items():
-        params = _common_params(node_name, nc, nodes_cfg, run_id, role="listen", listen_after_s=LISTEN_S)
+        params = _common_params(node_name, nc, nodes_cfg, run_id, role="listen",
+                                 listen_after_s=LISTEN_S, do_set_channel=do_set_channel)
         tasks.append(run_node(nc, params, run_dir, hard_deadline_s=hard_deadline))
     node_results = await asyncio.gather(*tasks)
+    console_log("mac", "phase: writing summary.md + manifest.json")
 
     summary = _summarize(nodes_cfg, node_results, skews, pre_results)
     write_summary(run_dir, summary)
@@ -88,7 +97,7 @@ async def run(nodes_cfg: NodesConfig, runs_dir: Path, run_dir: Path | None = Non
     return {"verdict": "REPORTED", "run_dir": str(run_dir)}
 
 
-def _common_params(node_name, nc, nodes_cfg, run_id, *, role, listen_after_s, **extra):
+def _common_params(node_name, nc, nodes_cfg, run_id, *, role, listen_after_s, do_set_channel=True, **extra):
     params = {
         "node_name": node_name,
         "serial_port": nc.serial_port,
@@ -103,6 +112,7 @@ def _common_params(node_name, nc, nodes_cfg, run_id, *, role, listen_after_s, **
         "iterations": 1,
         "pre_send_delay_s": 0.0,
         "stall_threshold_s": 30.0,
+        "do_set_channel": do_set_channel,
     }
     params.update(extra)
     return params

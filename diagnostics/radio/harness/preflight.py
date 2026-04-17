@@ -7,30 +7,99 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-from .logger import NodeConfig
+from .logger import NodeConfig, console_log
 
 
 PREFLIGHT_PY_TEMPLATE = r"""
 import json, os, subprocess
+
 checks = {}
-try:
-    r = subprocess.run(['pgrep', '-fa', 'mesh_bot.py'], capture_output=True, text=True)
-    checks['mesh_bot_pids'] = r.stdout.strip()
-except Exception as e:
-    checks['mesh_bot_pids'] = 'error: ' + repr(e)
-try:
-    r = subprocess.run(['lsof', __SERIAL_PORT__], capture_output=True, text=True)
-    checks['lsof_serial'] = r.stdout.strip()
-except Exception as e:
-    checks['lsof_serial'] = 'error: ' + repr(e)
-checks['serial_exists'] = os.path.exists(__SERIAL_PORT__)
-checks['serial_readable'] = os.access(__SERIAL_PORT__, os.R_OK)
+me = os.getpid()
+
+def _read_cmdline(pid):
+    try:
+        with open('/proc/' + str(pid) + '/cmdline', 'rb') as f:
+            raw = f.read()
+    except Exception:
+        return None
+    parts = [p.decode('utf-8', 'replace') for p in raw.split(b'\x00') if p]
+    return parts
+
+def _iter_pids():
+    try:
+        return [int(e) for e in os.listdir('/proc') if e.isdigit()]
+    except FileNotFoundError:
+        return []
+
+# Find real mesh_bot.py invocations — argv contains mesh_bot.py as a file
+# argument, NOT embedded in a `-c` inline script body (which would
+# self-match this very preflight process).
+mesh_bot_matches = []
+for pid in _iter_pids():
+    if pid == me:
+        continue
+    argv = _read_cmdline(pid)
+    if not argv:
+        continue
+    skip_next = False
+    hit = False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ('-c', '--command'):
+            skip_next = True
+            continue
+        if a == 'mesh_bot.py' or a.endswith('/mesh_bot.py'):
+            hit = True
+            break
+    if hit:
+        mesh_bot_matches.append(str(pid) + ' ' + ' '.join(argv))
+checks['mesh_bot_pids'] = '\n'.join(mesh_bot_matches)
+
+# Find processes holding the serial port by walking /proc/*/fd symlinks.
+# More reliable than lsof (which isn't installed on minimal Debian).
+serial_port = __SERIAL_PORT__
+real_target = os.path.realpath(serial_port) if os.path.exists(serial_port) else serial_port
+serial_holders = []
+for pid in _iter_pids():
+    if pid == me:
+        continue
+    fd_dir = '/proc/' + str(pid) + '/fd'
+    try:
+        fds = os.listdir(fd_dir)
+    except Exception:
+        continue
+    held = False
+    for fd in fds:
+        try:
+            link = os.readlink(fd_dir + '/' + fd)
+        except Exception:
+            continue
+        if link == serial_port or link == real_target:
+            held = True
+            break
+        try:
+            if os.path.realpath(link) == real_target:
+                held = True
+                break
+        except Exception:
+            pass
+    if held:
+        argv = _read_cmdline(pid) or []
+        serial_holders.append(str(pid) + ' ' + ' '.join(argv))
+checks['serial_holders'] = '\n'.join(serial_holders)
+
+checks['serial_exists'] = os.path.exists(serial_port)
+checks['serial_readable'] = os.access(serial_port, os.R_OK)
+
 try:
     import meshcore  # type: ignore
     checks['meshcore'] = 'ok'
     checks['meshcore_version'] = getattr(meshcore, '__version__', 'unknown')
 except Exception as e:
     checks['meshcore'] = 'error: ' + repr(e)
+
 try:
     try:
         import tomllib
@@ -42,6 +111,7 @@ try:
 except Exception as e:
     checks['channels'] = []
     checks['config_error'] = 'error: ' + repr(e)
+
 try:
     r = subprocess.run(['chronyc', 'tracking'], capture_output=True, text=True)
     checks['chronyc'] = r.stdout if r.returncode == 0 else ('error: ' + r.stderr.strip())
@@ -49,6 +119,7 @@ except FileNotFoundError:
     checks['chronyc'] = 'not installed'
 except Exception as e:
     checks['chronyc'] = 'error: ' + repr(e)
+
 print(json.dumps(checks))
 """
 
@@ -110,6 +181,7 @@ def _parse_chrony_offset_ms(text: str) -> float | None:
 
 
 async def preflight(node: NodeConfig, channel_name: str) -> PreflightResult:
+    console_log(f"mac→{node.name}", f"preflight: ssh {node.ssh_target} checking mesh_bot/serial/meshcore/channel/clock")
     script = _build_preflight_script(node)
     remote_cmd = f"python3 -c {shlex.quote(script)}"
     cmd = _remote_command(node, remote_cmd)
@@ -138,17 +210,12 @@ async def preflight(node: NodeConfig, channel_name: str) -> PreflightResult:
 
     pids = checks.get("mesh_bot_pids") or ""
     if isinstance(pids, str) and pids.strip():
-        result.failures.append(f"mesh_bot still running: {pids.strip()[:200]}")
-    lsof = checks.get("lsof_serial") or ""
-    if isinstance(lsof, str) and lsof.strip():
-        first_data_line = next(
-            (ln for ln in lsof.splitlines() if ln and not ln.startswith("COMMAND")),
-            "",
+        result.failures.append(f"mesh_bot still running: {pids.strip()[:300]}")
+    holders = checks.get("serial_holders") or ""
+    if isinstance(holders, str) and holders.strip():
+        result.failures.append(
+            f"{node.serial_port} held by another process: {holders.strip()[:300]}"
         )
-        if first_data_line:
-            result.failures.append(
-                f"{node.serial_port} held by another process: {first_data_line[:200]}"
-            )
     if not checks.get("serial_exists"):
         result.failures.append(f"{node.serial_port} does not exist on {node.name}")
     if not checks.get("serial_readable"):
@@ -178,4 +245,6 @@ async def preflight(node: NodeConfig, channel_name: str) -> PreflightResult:
         result.annotations.append("chronyc not installed — clock offset unknown")
 
     result.ok = not result.failures
+    status = "OK" if result.ok else "FAIL"
+    console_log(f"mac→{node.name}", f"preflight: {status}  ({result.summary_line()})")
     return result
