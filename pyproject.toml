@@ -9,7 +9,21 @@ description = "Civic Mesh Hub Relay Bot: WiFi captive-portal relay for MeshCore 
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "meshcore",
+  # meshcore is strictly pinned, not ranged. Rationale:
+  #   - CivicMesh is a deployed app, not a library; nothing downstream
+  #     benefits from version flexibility.
+  #   - Nodes include zero2w which has no internet; upgrades are manual
+  #     (apt-offline-style). A range would let two nodes drift to
+  #     different versions silently — we literally saw this happen:
+  #     pi4 on 2.2.5 vs zero2w on 2.3.6, where 2.2.5 returned
+  #     ERROR(no_event_received) from send_chan_msg under sustained-send
+  #     pressure even though the packet transmitted and was decoded on
+  #     the other side. Pinning forces an explicit, intentional upgrade.
+  #   - meshcore_py's minor versions have changed behavior non-trivially
+  #     (e.g. 2.2→2.3 changed event payloads and added pycryptodome).
+  # To bump: update this pin, re-run `python3 diagnostics/radio/run_test.py t3`,
+  # confirm 40/40 BOTH_AGREE_SENT, then commit.
+  "meshcore==2.3.6",
   "tomli; python_version < '3.11'",
 ]
 
