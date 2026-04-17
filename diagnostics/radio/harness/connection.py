@@ -103,9 +103,12 @@ async def run_node(
     """Launch node_side.py on the node over SSH and stream its JSONL stdout
     to events.jsonl, its stderr (library debug + logging) to meshcore_debug.log."""
     nd = node_dir(run_dir, node.name)
-    events_path = nd / "events.jsonl"
-    stderr_path = nd / "meshcore_debug.log"
     runid = params["run_id"]
+    # Per-subprocess filenames: t3 launches two subprocesses per node (one
+    # per direction-batch), each with its own runid. Without the suffix,
+    # the second batch's files would clobber the first on disk.
+    events_path = nd / f"events__{runid}.jsonl"
+    stderr_path = nd / f"meshcore_debug__{runid}.log"
 
     rt_params_json = json.dumps(params)
     rt_params_quoted = shlex.quote(rt_params_json)
@@ -178,7 +181,7 @@ async def run_node(
     authoritative_count: int | None = None
     stream_loss = False
     try:
-        authoritative_path = nd / "authoritative.jsonl"
+        authoritative_path = nd / f"authoritative__{runid}.jsonl"
         console_log(f"mac→{node.name}", f"fetching authoritative /tmp/civicmesh_harness_{runid}.jsonl")
         await fetch_node_jsonl(node, runid, authoritative_path)
         authoritative_count = sum(

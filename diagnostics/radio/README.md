@@ -49,18 +49,21 @@ Each invocation creates a timestamped subdirectory under
 ```
 diagnostics/radio/runs/
   2026-04-17T21-15-03__t1_unidirectional_pi4_to_zero2w/
-    manifest.json               # test config + verdict + paths
-    summary.md                  # human-readable verdict
+    manifest.json                             # test config + verdict + paths
+    summary.md                                # human-readable verdict
     pi4/
-      events.jsonl              # streamed JSONL events (every EventType)
-      authoritative.jsonl       # /tmp/civicmesh_harness_<runid>.jsonl fetched post-run
-      meshcore_debug.log        # library debug + Python logging output
+      events__<runid>.jsonl                   # streamed JSONL events (every EventType)
+      authoritative__<runid>.jsonl            # /tmp/civicmesh_harness_<runid>.jsonl fetched post-run
+      meshcore_debug__<runid>.log             # library debug + Python logging output
     zero2w/
-      events.jsonl
-      authoritative.jsonl
-      meshcore_debug.log
+      events__<runid>.jsonl
+      authoritative__<runid>.jsonl
+      meshcore_debug__<runid>.log
   latest -> 2026-04-17T21-15-03__t1_unidirectional_pi4_to_zero2w/
 ```
+
+T3 launches two subprocess batches (one per direction), so each node
+directory contains two sets of files — one per `<runid>`.
 
 ### Reading `events.jsonl`
 
