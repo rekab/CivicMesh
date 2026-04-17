@@ -1,0 +1,24 @@
+# SSH config aliases on my Mac map these IPs to friendly names:
+#   civicmesh              -> 192.168.1.101 (pi4)
+#   civicmesh-toorcamp-01  -> 10.0.0.1      (zero2w)
+# The harness uses IPs directly — more robust, especially for zero2w
+# which is only reachable over its own captive-portal AP.
+
+[pi4]
+ssh_host = "192.168.1.101"
+ssh_user = "james"
+serial_port = "/dev/ttyUSB0"
+baud = 115200
+repo_path = "/home/james/code/CivicMesh"
+
+[zero2w]
+ssh_host = "10.0.0.1"
+ssh_user = "james"
+serial_port = "/dev/ttyUSB0"
+baud = 115200
+repo_path = "/home/james/code/CivicMesh"
+
+[test]
+channel = "#civicmesh"
+message_prefix = "[RTTEST]"
+min_send_spacing_s = 3.0
