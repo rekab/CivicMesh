@@ -202,30 +202,69 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 )
                 log.info("mesh:connected port=%s baudrate=%d", cfg.radio.serial_port, DEFAULT_BAUDRATE)
 
-                resp = await mesh_client.commands.set_radio(
-                    cfg.radio.freq_mhz,
-                    cfg.radio.bw_khz,
-                    cfg.radio.sf,
-                    cfg.radio.cr,
-                )
-                log.info(
-                    "mesh:set_radio event=%s type=%s payload=%s",
-                    resp,
-                    getattr(resp, "type", None),
-                    getattr(resp, "payload", None),
-                )
-                if resp.type == EventType.ERROR:
-                    log.error("mesh:set_radio_failed err=%s", resp.payload)
-
-                await mesh_client.commands.send_appstart()
+                # Verify radio params from self_info (populated by
+                # send_appstart inside create_serial).  If they already
+                # match cfg, skip set_radio entirely — on some firmware
+                # (e.g. v1.11.0) set_radio breaks the session.
                 radio_info = getattr(mesh_client, "self_info", {}) or {}
-                log.info(
-                    "mesh:radio_after freq=%s bw=%s sf=%s cr=%s",
-                    radio_info.get("radio_freq"),
-                    radio_info.get("radio_bw"),
-                    radio_info.get("radio_sf"),
-                    radio_info.get("radio_cr"),
-                )
+                expected_radio = {
+                    "radio_freq": cfg.radio.freq_mhz,
+                    "radio_bw": cfg.radio.bw_khz,
+                    "radio_sf": cfg.radio.sf,
+                    "radio_cr": cfg.radio.cr,
+                }
+
+                def _radio_matches(info, expected):
+                    for key, want in expected.items():
+                        got = info.get(key)
+                        if got is None or float(got) != float(want):
+                            return False
+                    return True
+
+                if _radio_matches(radio_info, expected_radio):
+                    log.info(
+                        "mesh:radio_params_ok freq=%s bw=%s sf=%s cr=%s",
+                        radio_info.get("radio_freq"),
+                        radio_info.get("radio_bw"),
+                        radio_info.get("radio_sf"),
+                        radio_info.get("radio_cr"),
+                    )
+                else:
+                    log.info(
+                        "mesh:radio_mismatch, attempting set_radio "
+                        "freq=%s bw=%s sf=%s cr=%s",
+                        cfg.radio.freq_mhz, cfg.radio.bw_khz,
+                        cfg.radio.sf, cfg.radio.cr,
+                    )
+                    await mesh_client.commands.set_radio(
+                        cfg.radio.freq_mhz,
+                        cfg.radio.bw_khz,
+                        cfg.radio.sf,
+                        cfg.radio.cr,
+                    )
+                    # Re-read self_info — the library return value is not
+                    # authoritative; self_info after appstart is.
+                    await mesh_client.commands.send_appstart()
+                    radio_info = getattr(mesh_client, "self_info", {}) or {}
+                    if _radio_matches(radio_info, expected_radio):
+                        log.info(
+                            "mesh:radio_reconfigured freq=%s bw=%s sf=%s cr=%s",
+                            radio_info.get("radio_freq"),
+                            radio_info.get("radio_bw"),
+                            radio_info.get("radio_sf"),
+                            radio_info.get("radio_cr"),
+                        )
+                    else:
+                        for key, want in expected_radio.items():
+                            got = radio_info.get(key)
+                            if got is None or float(got) != float(want):
+                                log.error(
+                                    "mesh:radio_verify_failed %s expected=%s got=%s",
+                                    key, want, got,
+                                )
+                        raise RuntimeError(
+                            "radio params do not match config after set_radio"
+                        )
                 channel_info = await mesh_client.commands.get_channel(0)
                 log.info("mesh:get_channel idx=0 event=%s payload=%s", channel_info.type, channel_info.payload)
                 stats_core = await mesh_client.commands.get_stats_core()
