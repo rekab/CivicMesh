@@ -36,6 +36,7 @@ from diagnostics.radio.tests import (  # noqa: E402
     t1_unidirectional,
     t2_unidirectional_reverse,
     t3_repetition,
+    t4_self_echo_characterization,
 )
 
 
@@ -48,6 +49,7 @@ TEST_REGISTRY = {
     "t1": t1_unidirectional,
     "t2": t2_unidirectional_reverse,
     "t3": t3_repetition,
+    "t4": t4_self_echo_characterization,
 }
 
 
@@ -55,7 +57,7 @@ async def _run_one(test_key: str, nodes_cfg, runs_dir: Path, *, run_dir: Path | 
                    iterations: int | None = None, do_set_channel: bool = True):
     mod = TEST_REGISTRY[test_key]
     kwargs = {"do_set_channel": do_set_channel}
-    if test_key == "t3" and iterations is not None:
+    if test_key in ("t3", "t4") and iterations is not None:
         kwargs["iterations"] = iterations
     return await mod.run(nodes_cfg, runs_dir, run_dir=run_dir, **kwargs)
 
@@ -92,11 +94,11 @@ def _write_all_summary(parent_dir: Path, results: dict) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="CivicMesh radio round-trip diagnostics.")
-    p.add_argument("test", choices=["t0", "t1", "t2", "t3", "all"])
+    p.add_argument("test", choices=["t0", "t1", "t2", "t3", "t4", "all"])
     p.add_argument("--nodes-toml", type=Path, default=DEFAULT_NODES_TOML)
     p.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     p.add_argument("--iterations", type=int, default=None,
-                   help="T3 only: override iterations per direction.")
+                   help="T3/T4: override iterations per direction.")
     p.add_argument("--no-set-channel", action="store_true",
                    help="Skip set_channel on each node (diagnostic: see CHANNEL_QUERY_PRE "
                         "to observe what's persisted in firmware without overwriting it). "

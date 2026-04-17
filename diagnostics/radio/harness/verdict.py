@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from datetime import datetime
 from typing import Iterable
 
 
@@ -115,6 +116,64 @@ def median(values: list[float]) -> float | None:
     if not values:
         return None
     return statistics.median(values)
+
+
+def parse_iso_to_epoch(ts) -> float | None:
+    """Convert ISO8601 ('2026-04-17T21:13:50.129Z') to unix-epoch seconds (float)."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def make_expected_text(sender_name: str, marker: str) -> str:
+    """The firmware prepends 'Name: ' during transmission, so a matching
+    CHANNEL_MSG_RECV.payload.text on any node is exactly this composite."""
+    return f"{sender_name}: {marker}"
+
+
+def match_self_echo(events: Iterable[dict], expected_text: str,
+                    expected_sender_ts_epoch: float, txt_type: int = 0,
+                    ts_tolerance_s: float = 2.0) -> list[dict]:
+    """Return the list of CHANNEL_MSG_RECV events whose composite key
+    (text == expected_text, sender_timestamp within ±ts_tolerance_s of
+    expected_sender_ts_epoch, txt_type == txt_type) matches.
+
+    Used to attribute echoes back to a specific outbound send. Bias is
+    tight on cross-message disambiguation — late echoes that fail any
+    leg of this triple match are dropped rather than misattributed."""
+    out: list[dict] = []
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("event_type") != "CHANNEL_MSG_RECV":
+            continue
+        p = ev.get("payload")
+        if not isinstance(p, dict):
+            continue
+        if p.get("text") != expected_text:
+            continue
+        if int(p.get("txt_type", 0) or 0) != int(txt_type):
+            continue
+        ts = p.get("sender_timestamp")
+        if not isinstance(ts, (int, float)):
+            continue
+        if abs(float(ts) - float(expected_sender_ts_epoch)) > ts_tolerance_s:
+            continue
+        out.append(ev)
+    return out
+
+
+def find_self_info_name(events: Iterable[dict]) -> str | None:
+    """Pull the node's `self_info.name` from the first SELF_INFO event."""
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("event_type") == "SELF_INFO":
+            p = ev.get("payload")
+            if isinstance(p, dict):
+                name = p.get("name")
+                if isinstance(name, str) and name:
+                    return name
+    return None
 
 
 def manifest_for(test_name: str, marker: str, nodes_cfg, run_id: str, sender: str | None, receiver: str | None) -> dict:

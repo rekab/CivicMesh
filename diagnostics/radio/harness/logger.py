@@ -96,6 +96,15 @@ def format_event_oneline(ev: dict) -> str:
         text = payload.get("text") or payload.get("content") or ""
         bits.append(f'sender="{_truncate(str(sender), 20)}"')
         bits.append(f'text="{_truncate(str(text), 60)}"')
+        pl = payload.get("path_len")
+        if pl is not None:
+            bits.append(f"path_len={pl}")
+        snr = payload.get("SNR")
+        if snr is not None:
+            bits.append(f"SNR={snr}")
+        sts = payload.get("sender_timestamp")
+        if sts is not None:
+            bits.append(f"sender_ts={sts}")
     elif et in ("CHANNEL_QUERY_PRE", "CHANNEL_QUERY_POST"):
         inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
         bits.append(f"idx={payload.get('channel_idx')}")

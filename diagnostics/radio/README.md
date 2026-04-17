@@ -33,11 +33,30 @@ python diagnostics/radio/run_test.py t0        # 30s passive listen — checks R
 python diagnostics/radio/run_test.py t1        # single send pi4 → zero2w
 python diagnostics/radio/run_test.py t2        # single send zero2w → pi4
 python diagnostics/radio/run_test.py t3        # 20 sends each direction
-python diagnostics/radio/run_test.py all       # t0, t1, t2, t3 in sequence
+python diagnostics/radio/run_test.py t4        # self-echo characterization (5 sends each direction)
+python diagnostics/radio/run_test.py all       # t0, t1, t2, t3 in sequence (T4 is opt-in)
 python diagnostics/radio/run_test.py t3 --iterations 40   # longer T3
+python diagnostics/radio/run_test.py t4 --iterations 10   # longer T4
 
 python diagnostics/radio/run_test.py t1 --runs-dir /tmp/my-runs
 ```
+
+**T4 (self-echo characterization)** answers two questions before any
+heard-count UI/schema work:
+
+- **Q1**: does the SENDING node hear its own transmissions echoed back via
+  local repeaters as `CHANNEL_MSG_RECV` events? If NO, the heard-count
+  feature must be built on `RX_LOG_DATA` with manual decryption rather
+  than the cleaner `CHANNEL_MSG_RECV` path.
+- **Q2**: how long should the application keep an outbound message in
+  active echo-matching state before retiring it? T4 produces a
+  histogram of echo arrival times and a conservative recommended
+  lifetime (`max(observed_max + 5s, 15s floor)`).
+
+Matching uses a strict composite key `(text, sender_timestamp,
+txt_type)` rather than a substring search — the design preference is
+undercount over false-positive attribution. Read the top of T4's
+`summary.md` for the Q1 verdict; it's the load-bearing finding.
 
 Config lives in `diagnostics/radio/nodes.toml`. Edit that, not the Python.
 
