@@ -362,35 +362,68 @@ def _summarize(nodes_cfg, batches, skews, pre_results, iterations):
             "listener_event_counts": event_type_counts(listener_events),
         })
 
-    # Q1 verdict
+    # Q1 verdict — careful about distinguishing NO from UNCLEAR.
+    #
+    # Naive logic ("sender saw any RX_LOG_DATA → must have heard own packet
+    # back → therefore firmware suppresses CHANNEL_MSG_RECV") is wrong:
+    # RX_LOG_DATA on the sender could be ambient traffic from other
+    # operators on the channel, not a repeater rebroadcasting OUR message.
+    #
+    # Definitive evidence that a repeater is active in this test:
+    # at least one CHANNEL_MSG_RECV (any vantage, any marker) with
+    # path_len > 0. Without that, this test cannot rule out "no repeater
+    # rebroadcast our packet" and Q1 must remain UNCLEAR.
+    any_repeater_seen = False
+    for b in per_batch_analysis:
+        for r in b["marker_rows"]:
+            for pl in (r.get("sender_path_lens") or []) + (r.get("listener_path_lens") or []):
+                if isinstance(pl, int) and pl > 0:
+                    any_repeater_seen = True
+                    break
+            if any_repeater_seen:
+                break
+        if any_repeater_seen:
+            break
+
     if sender_echo_total > 0:
         q1_verdict = "YES"
         q1_line = (
             f"**Q1 — Self-echo via CHANNEL_MSG_RECV: YES** "
             f"({sender_echo_total} matched echoes across {sender_send_total} sender-side sends)"
         )
+    elif not any_repeater_seen:
+        # No echoes at all (sender or listener) carried path_len > 0, so
+        # we never observed a repeater participating in this run. Cannot
+        # distinguish firmware suppression from "no rebroadcast happened
+        # at all."
+        q1_verdict = "UNCLEAR_NO_REPEATER"
+        q1_line = (
+            "**Q1 — Self-echo via CHANNEL_MSG_RECV: UNCLEAR (no repeater observed)** "
+            "(0 sender-side echoes; no path_len > 0 events anywhere in this run, so "
+            "no repeater is rebroadcasting on this channel near these nodes — "
+            "we cannot distinguish firmware suppression from 'nothing to echo'. "
+            "Re-run from a location with confirmed repeater activity, or check the "
+            "Android client at this location to see if it observes any path_len > 0 "
+            "messages on this channel.)"
+        )
     else:
-        if sender_rx_log_total == 0:
-            q1_verdict = "UNCLEAR"
-            q1_line = (
-                "**Q1 — Self-echo via CHANNEL_MSG_RECV: UNCLEAR** "
-                "(0 RX_LOG_DATA on sender either — sender's radio may not have heard "
-                "anything during this run; rerun with active mesh / closer repeater "
-                "to get a definitive answer)"
-            )
-        else:
-            q1_verdict = "NO"
-            q1_line = (
-                f"**Q1 — Self-echo via CHANNEL_MSG_RECV: NO** "
-                f"(0 matched echoes across {sender_send_total} sends, but "
-                f"{sender_rx_log_total} RX_LOG_DATA events fired on sender — "
-                f"firmware appears to suppress self-echo decoding)"
-            )
+        # Repeater activity WAS observed (path_len > 0 elsewhere) but
+        # zero of those rebroadcasts decoded as CHANNEL_MSG_RECV on the
+        # sender. That's evidence the firmware suppresses self-echoes.
+        q1_verdict = "NO"
+        q1_line = (
+            f"**Q1 — Self-echo via CHANNEL_MSG_RECV: NO** "
+            f"(0 sender-side echoes across {sender_send_total} sends, despite "
+            f"path_len > 0 events being observed elsewhere in this run — "
+            f"firmware appears to suppress self-echo decoding)"
+        )
 
     lines.append(q1_line)
     lines.append("")
     lines.append(
-        f"_Self-echo via RX_LOG_DATA: {sender_rx_log_total} raw RF events on sender(s) across batches._"
+        f"_Sender RX_LOG_DATA events (any source — own echo, ambient, or other): "
+        f"{sender_rx_log_total} across batches. Treat as suggestive only; without "
+        f"per-event decryption we can't say which were self-echoes._"
     )
     lines.append("")
 
@@ -403,6 +436,14 @@ def _summarize(nodes_cfg, batches, skews, pre_results, iterations):
             "but the production code path will need to subscribe to "
             "RX_LOG_DATA on the sender, decrypt the payload using the "
             "channel secret, and match against locally-originated sends."
+        )
+        lines.append("")
+    elif q1_verdict == "UNCLEAR_NO_REPEATER":
+        lines.append(
+            "**Implementation path is undecided.** No repeater activity was "
+            "observed during this run, so Q1 cannot be answered. Until Q1 "
+            "is answered, the heard-count feature design has two possible "
+            "implementation paths and we don't know which is correct."
         )
         lines.append("")
 
