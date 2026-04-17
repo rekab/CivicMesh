@@ -25,6 +25,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from diagnostics.radio.harness.logger import (  # noqa: E402
+    console_log,
     load_nodes_config,
     make_run_dir,
     update_latest_symlink,
@@ -50,25 +51,28 @@ TEST_REGISTRY = {
 }
 
 
-async def _run_one(test_key: str, nodes_cfg, runs_dir: Path, *, run_dir: Path | None = None, iterations: int | None = None):
+async def _run_one(test_key: str, nodes_cfg, runs_dir: Path, *, run_dir: Path | None = None,
+                   iterations: int | None = None, do_set_channel: bool = True):
     mod = TEST_REGISTRY[test_key]
-    kwargs = {}
+    kwargs = {"do_set_channel": do_set_channel}
     if test_key == "t3" and iterations is not None:
         kwargs["iterations"] = iterations
     return await mod.run(nodes_cfg, runs_dir, run_dir=run_dir, **kwargs)
 
 
-async def _run_all(nodes_cfg, runs_dir: Path, *, iterations: int | None = None):
+async def _run_all(nodes_cfg, runs_dir: Path, *, iterations: int | None = None, do_set_channel: bool = True):
     parent_dir = make_run_dir(runs_dir, "all")
+    console_log("mac", f"`all`: parent run_dir={parent_dir.name}")
     results = {}
     for key in ("t0", "t1", "t2", "t3"):
         sub_dir = parent_dir / key
         sub_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[run_test] starting {key} → {sub_dir}", flush=True)
-        res = await _run_one(key, nodes_cfg, parent_dir, run_dir=sub_dir, iterations=iterations)
+        console_log("mac", f"`all`: starting {key} → {sub_dir.name}/")
+        res = await _run_one(key, nodes_cfg, parent_dir, run_dir=sub_dir, iterations=iterations, do_set_channel=do_set_channel)
         results[key] = res
-        print(f"[run_test] {key} verdict: {res['verdict']}", flush=True)
+        console_log("mac", f"`all`: {key} verdict: {res['verdict']}")
         if key != "t3":
+            console_log("mac", "`all`: gap 10s before next test")
             await asyncio.sleep(10.0)
     _write_all_summary(parent_dir, results)
     update_latest_symlink(runs_dir, parent_dir)
@@ -93,21 +97,31 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     p.add_argument("--iterations", type=int, default=None,
                    help="T3 only: override iterations per direction.")
+    p.add_argument("--no-set-channel", action="store_true",
+                   help="Skip set_channel on each node (diagnostic: see CHANNEL_QUERY_PRE "
+                        "to observe what's persisted in firmware without overwriting it). "
+                        "By default the harness mirrors mesh_bot and asserts "
+                        "sha256(channel_name)[:16] as the shared secret.")
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    console_log("mac", f"loading {args.nodes_toml}")
     nodes_cfg = load_nodes_config(args.nodes_toml)
+    console_log("mac", f"nodes: {list(nodes_cfg.nodes)}  channel={nodes_cfg.test.channel}")
     args.runs_dir.mkdir(parents=True, exist_ok=True)
 
+    do_set_channel = not args.no_set_channel
+    if not do_set_channel:
+        console_log("mac", "⚠️ --no-set-channel: harness will NOT call set_channel; relying on whatever the firmware has persisted")
     if args.test == "all":
-        result = asyncio.run(_run_all(nodes_cfg, args.runs_dir, iterations=args.iterations))
+        result = asyncio.run(_run_all(nodes_cfg, args.runs_dir, iterations=args.iterations, do_set_channel=do_set_channel))
     else:
-        result = asyncio.run(_run_one(args.test, nodes_cfg, args.runs_dir, iterations=args.iterations))
+        result = asyncio.run(_run_one(args.test, nodes_cfg, args.runs_dir, iterations=args.iterations, do_set_channel=do_set_channel))
 
-    print(f"[run_test] {args.test} verdict: {result['verdict']}")
-    print(f"[run_test] run_dir: {result['run_dir']}")
+    console_log("mac", f"{args.test} verdict: {result['verdict']}")
+    console_log("mac", f"run_dir: {result['run_dir']}")
     # Non-zero exit on preflight failure so CI/automation can detect it.
     if result.get("verdict") == "PREFLIGHT_FAILED":
         return 2

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +10,133 @@ from pathlib import Path
 
 
 HARNESS_VERSION = "0.1.0"
+
+
+def console_log(source: str, msg: str) -> None:
+    """Write a timestamped, source-prefixed line to the orchestrator console.
+
+    source examples: "mac", "mac→pi4", "pi4", "zero2w".
+    """
+    now = datetime.now(timezone.utc).astimezone()
+    ts = now.strftime("%H:%M:%S") + f".{now.microsecond // 1000:03d}"
+    print(f"{ts} [{source}] {msg}", flush=True)
+
+
+# Events streamed from the node side that are worth echoing to the Mac
+# console in real time. Keeps noise low — RX_LOG_DATA and similar are
+# excluded (they're in events.jsonl for later analysis).
+LIVE_ECHO_EVENTS = frozenset({
+    "HARNESS_START",
+    "HARNESS_INIT",
+    "SELF_INFO",
+    "PRE_STATS",
+    "POST_STATS",
+    "SUBSCRIBED",
+    "AUTO_FETCH_STARTED",
+    "AUTO_FETCH_ERROR",
+    "CREATE_SERIAL_ERROR",
+    "MESHCORE_IMPORT_ERROR",
+    "CONFIG_LOAD_ERROR",
+    "CHANNEL_NOT_FOUND",
+    "CHANNEL_QUERY_PRE",
+    "CHANNEL_QUERY_PRE_ERROR",
+    "CHANNEL_QUERY_POST",
+    "CHANNEL_QUERY_POST_ERROR",
+    "SET_CHANNEL_PRE",
+    "SET_CHANNEL_RESULT",
+    "SET_CHANNEL_ERROR",
+    "SET_CHANNEL_SKIPPED",
+    "SEND_PRE",
+    "SEND_RESULT",
+    "SEND_EXCEPTION",
+    "RADIO_STALLED",
+    "CHANNEL_MSG_RECV",
+    "HANDLER_ERROR",
+    "DISCONNECTED",
+    "DISCONNECT_ERROR",
+    "TEST_COMPLETE",
+    "UNKNOWN_ROLE",
+    "ROLE_DISPATCH_ERROR",
+    "EMIT_ENCODE_ERROR",
+})
+
+
+def format_event_oneline(ev: dict) -> str:
+    """Compact one-line summary of a JSONL event for live echo."""
+    et = ev.get("event_type", "?")
+    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    bits = [et]
+    if et == "HARNESS_START":
+        bits.append(f"role={payload.get('role')}")
+        bits.append(f"listen_after_s={payload.get('listen_after_s')}")
+    elif et == "HARNESS_INIT":
+        types_count = payload.get("event_types_count")
+        bits.append(f"event_types={types_count}")
+        bits.append(f"channel_idx={payload.get('channel_idx')}")
+    elif et == "SUBSCRIBED":
+        bits.append(f"ok_count={payload.get('ok_count')}")
+        errs = payload.get("errors") or []
+        if errs:
+            bits.append(f"errors={len(errs)}")
+    elif et == "SEND_PRE":
+        marker = payload.get("marker") or ""
+        bits.append(f'marker="{_truncate(marker, 60)}"')
+    elif et == "SEND_RESULT":
+        bits.append(f"type={payload.get('type')}")
+        inner = payload.get("payload")
+        if isinstance(inner, dict) and payload.get("type") == "ERROR":
+            bits.append(f"reason={inner.get('reason')}")
+        dur = payload.get("duration_s")
+        if isinstance(dur, (int, float)):
+            bits.append(f"duration={dur*1000:.0f}ms")
+    elif et == "SEND_EXCEPTION":
+        bits.append(f'err={_truncate(str(payload.get("err")), 80)}')
+    elif et == "CHANNEL_MSG_RECV":
+        sender = payload.get("sender") or payload.get("pubkey_prefix") or "?"
+        text = payload.get("text") or payload.get("content") or ""
+        bits.append(f'sender="{_truncate(str(sender), 20)}"')
+        bits.append(f'text="{_truncate(str(text), 60)}"')
+    elif et in ("CHANNEL_QUERY_PRE", "CHANNEL_QUERY_POST"):
+        inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        bits.append(f"idx={payload.get('channel_idx')}")
+        bits.append(f"result_type={payload.get('type')}")
+        # Try to surface the secret/hash/key if present — common key names
+        # vary across library versions; show whichever appears.
+        for key in ("secret", "psk", "hash", "key", "channel_hash", "channel_secret"):
+            v = inner.get(key)
+            if v is not None:
+                bits.append(f"{key}={_truncate(str(v), 40)}")
+                break
+    elif et == "SET_CHANNEL_PRE":
+        bits.append(f"idx={payload.get('channel_idx')}")
+        bits.append(f"name={payload.get('channel_name')}")
+        bits.append(f"secret_hex={_truncate(str(payload.get('secret_hex')), 32)}")
+    elif et == "SET_CHANNEL_RESULT":
+        bits.append(f"idx={payload.get('channel_idx')}")
+        bits.append(f"result_type={payload.get('type')}")
+    elif et == "SET_CHANNEL_ERROR":
+        bits.append(f'err={_truncate(str(payload.get("err")), 120)}')
+    elif et == "SET_CHANNEL_SKIPPED":
+        bits.append(f"reason={payload.get('reason')}")
+    elif et == "RADIO_STALLED":
+        bits.append(f"silence_s={payload.get('silence_s'):.1f}" if isinstance(payload.get("silence_s"), (int, float)) else "")
+        bits.append(f"phase={payload.get('phase')}")
+    elif et in ("CREATE_SERIAL_ERROR", "MESHCORE_IMPORT_ERROR", "CONFIG_LOAD_ERROR",
+                "AUTO_FETCH_ERROR", "DISCONNECT_ERROR", "HANDLER_ERROR"):
+        bits.append(f'err={_truncate(str(payload.get("err")), 120)}')
+    elif et == "CHANNEL_NOT_FOUND":
+        bits.append(f"channel_name={payload.get('channel_name')}")
+        bits.append(f"available={payload.get('available')}")
+    elif et == "TEST_COMPLETE":
+        if payload.get("reason"):
+            bits.append(f"reason={payload.get('reason')}")
+    return " ".join(b for b in bits if b)
+
+
+def _truncate(s: str, n: int) -> str:
+    if len(s) <= n:
+        return s
+    return s[: n - 1] + "…"
 
 
 @dataclass

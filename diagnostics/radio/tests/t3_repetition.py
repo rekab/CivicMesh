@@ -18,6 +18,7 @@ from pathlib import Path
 from diagnostics.radio.harness.connection import probe_clock_skew, run_node
 from diagnostics.radio.harness.logger import (
     NodesConfig,
+    console_log,
     make_run_dir,
     update_latest_symlink,
     write_manifest,
@@ -47,18 +48,21 @@ async def run(
     run_dir: Path | None = None,
     *,
     iterations: int = DEFAULT_ITERATIONS,
+    do_set_channel: bool = True,
 ) -> dict:
     if run_dir is None:
         run_dir = make_run_dir(runs_dir, TEST_NAME)
 
     run_id_base = f"{TEST_NAME}_{uuid.uuid4().hex[:8]}"
     marker_base = f"{nodes_cfg.test.message_prefix} t3 {run_id_base[-8:]}"
+    console_log("mac", f"T3 repetition — run_dir={run_dir.name} iterations={iterations}/direction spacing={nodes_cfg.test.min_send_spacing_s}s")
 
-    # Preflight once for both nodes
+    console_log("mac", f"phase: preflight on {list(nodes_cfg.nodes)} (parallel)")
     pre_results = await asyncio.gather(
         *[preflight(nc, nodes_cfg.test.channel) for nc in nodes_cfg.nodes.values()]
     )
     if any(not pr.ok for pr in pre_results):
+        console_log("mac", f"⚠️ preflight failed — aborting {TEST_NAME}")
         lines = [f"# {TEST_NAME} — PREFLIGHT FAILED", ""]
         for pr in pre_results:
             lines.append(f"- {pr.summary_line()}")
@@ -71,6 +75,7 @@ async def run(
         update_latest_symlink(runs_dir, run_dir)
         return {"verdict": "PREFLIGHT_FAILED", "run_dir": str(run_dir)}
 
+    console_log("mac", "phase: clock skew probe (parallel)")
     skews = await asyncio.gather(
         *[probe_clock_skew(nc) for nc in nodes_cfg.nodes.values()]
     )
@@ -78,18 +83,23 @@ async def run(
     directions = [("pi4", "zero2w"), ("zero2w", "pi4")]
     batch_summaries: list[dict] = []
 
-    for sender, receiver in directions:
+    for i, (sender, receiver) in enumerate(directions, start=1):
         batch_id = f"{run_id_base}__{sender}_to_{receiver}"
         marker = f"{marker_base} {sender}->{receiver}"
+        console_log("mac", f"phase: batch {i}/{len(directions)} — {sender} → {receiver} ({iterations} sends)")
         batch = await _run_batch(
             nodes_cfg, run_dir, batch_id, marker, sender, receiver,
             iterations=iterations,
             send_spacing_s=nodes_cfg.test.min_send_spacing_s,
+            do_set_channel=do_set_channel,
         )
+        console_log("mac", f"batch {sender}→{receiver} verdict: {batch['verdict']}")
         batch_summaries.append(batch)
-        # Let the radios cool between directions.
-        await asyncio.sleep(5.0)
+        if i < len(directions):
+            console_log("mac", "cooling down 5s between directions")
+            await asyncio.sleep(5.0)
 
+    console_log("mac", "phase: computing aggregate verdict + writing summary.md + manifest.json")
     summary = _summarize(nodes_cfg, batch_summaries, skews, pre_results, iterations)
     write_summary(run_dir, summary)
     write_manifest(run_dir, {
@@ -121,7 +131,7 @@ def _worst_verdict(verdicts):
     return "UNKNOWN"
 
 
-async def _run_batch(nodes_cfg, run_dir, batch_id, marker, sender, receiver, *, iterations, send_spacing_s):
+async def _run_batch(nodes_cfg, run_dir, batch_id, marker, sender, receiver, *, iterations, send_spacing_s, do_set_channel=True):
     total_send_window_s = PRE_SEND_DELAY_S + iterations * send_spacing_s + 5.0
     sender_listen = POST_BATCH_LISTEN_S
     receiver_listen = total_send_window_s + sender_listen + 5.0
@@ -135,12 +145,14 @@ async def _run_batch(nodes_cfg, run_dir, batch_id, marker, sender, receiver, *, 
         pre_send_delay_s=PRE_SEND_DELAY_S,
         iterations=iterations,
         send_spacing_s=send_spacing_s,
+        do_set_channel=do_set_channel,
     )
     receiver_params = _params(
         nodes_cfg, receiver, batch_id, marker,
         role="listen",
         listen_after_s=receiver_listen,
         pre_send_delay_s=0.0,
+        do_set_channel=do_set_channel,
     )
 
     sender_task = run_node(nodes_cfg.node(sender), sender_params, run_dir, hard_deadline_s=hard_deadline_sender)
@@ -190,7 +202,7 @@ async def _run_batch(nodes_cfg, run_dir, batch_id, marker, sender, receiver, *, 
 
 
 def _params(nodes_cfg, node_name, run_id, marker, *, role, listen_after_s, pre_send_delay_s,
-            iterations=1, send_spacing_s=None):
+            iterations=1, send_spacing_s=None, do_set_channel=True):
     nc = nodes_cfg.node(node_name)
     return {
         "node_name": node_name,
@@ -206,6 +218,7 @@ def _params(nodes_cfg, node_name, run_id, marker, *, role, listen_after_s, pre_s
         "iterations": iterations,
         "pre_send_delay_s": pre_send_delay_s,
         "stall_threshold_s": 30.0,
+        "do_set_channel": do_set_channel,
     }
 
 

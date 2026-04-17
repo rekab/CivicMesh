@@ -15,6 +15,7 @@ from pathlib import Path
 from diagnostics.radio.harness.connection import probe_clock_skew, run_node
 from diagnostics.radio.harness.logger import (
     NodesConfig,
+    console_log,
     make_run_dir,
     update_latest_symlink,
     write_manifest,
@@ -45,6 +46,7 @@ async def run(
     sender: str = SENDER,
     receiver: str = RECEIVER,
     test_name: str = TEST_NAME,
+    do_set_channel: bool = True,
 ) -> dict:
     if run_dir is None:
         run_dir = make_run_dir(runs_dir, f"{test_name}_{sender}_to_{receiver}")
@@ -54,13 +56,18 @@ async def run(
     if len(marker) > 140:
         marker = marker[:140]
 
+    console_log("mac", f"{test_name} — run_dir={run_dir.name} sender={sender} receiver={receiver}")
+    console_log("mac", f"marker=\"{marker}\"")
+    console_log("mac", f"phase: preflight on [{sender}, {receiver}] (parallel)")
     pre_results = await asyncio.gather(
         preflight(nodes_cfg.node(sender), nodes_cfg.test.channel),
         preflight(nodes_cfg.node(receiver), nodes_cfg.test.channel),
     )
     if any(not pr.ok for pr in pre_results):
+        console_log("mac", f"⚠️ preflight failed — aborting {test_name}")
         return _write_preflight_failure(test_name, run_dir, runs_dir, pre_results, nodes_cfg, marker, run_id, sender, receiver)
 
+    console_log("mac", "phase: clock skew probe (parallel)")
     skews = await asyncio.gather(
         probe_clock_skew(nodes_cfg.node(sender)),
         probe_clock_skew(nodes_cfg.node(receiver)),
@@ -76,21 +83,31 @@ async def run(
         role="send_once",
         listen_after_s=sender_listen,
         pre_send_delay_s=PRE_SEND_DELAY_S,
+        do_set_channel=do_set_channel,
     )
     receiver_params = _params(
         nodes_cfg, receiver, run_id, marker,
         role="listen",
         listen_after_s=receiver_listen,
         pre_send_delay_s=0.0,
+        do_set_channel=do_set_channel,
     )
 
+    console_log(
+        "mac",
+        f"phase: spawning sender (role=send_once) and receiver (role=listen). "
+        f"sender pre_send_delay={PRE_SEND_DELAY_S}s, listens {sender_listen}s after send; "
+        f"receiver listens {receiver_listen}s total",
+    )
     sender_task = run_node(nodes_cfg.node(sender), sender_params, run_dir, hard_deadline_s=hard_deadline_sender)
     receiver_task = run_node(nodes_cfg.node(receiver), receiver_params, run_dir, hard_deadline_s=hard_deadline_receiver)
     sender_result, receiver_result = await asyncio.gather(sender_task, receiver_task)
 
+    console_log("mac", "phase: computing verdict and writing summary.md + manifest.json")
     summary, verdict = _summarize(
         test_name, sender, receiver, marker, sender_result, receiver_result, skews, pre_results
     )
+    console_log("mac", f"{test_name} verdict: {verdict}")
     write_summary(run_dir, summary)
     write_manifest(run_dir, {
         **manifest_for(test_name, marker, nodes_cfg, run_id, sender=sender, receiver=receiver),
@@ -107,7 +124,8 @@ async def run(
     return {"verdict": verdict, "run_dir": str(run_dir)}
 
 
-def _params(nodes_cfg, node_name, run_id, marker, *, role, listen_after_s, pre_send_delay_s):
+def _params(nodes_cfg, node_name, run_id, marker, *, role, listen_after_s, pre_send_delay_s,
+            do_set_channel=True):
     nc = nodes_cfg.node(node_name)
     return {
         "node_name": node_name,
@@ -123,6 +141,7 @@ def _params(nodes_cfg, node_name, run_id, marker, *, role, listen_after_s, pre_s
         "iterations": 1,
         "pre_send_delay_s": pre_send_delay_s,
         "stall_threshold_s": 30.0,
+        "do_set_channel": do_set_channel,
     }
 
 

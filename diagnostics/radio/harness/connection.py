@@ -7,7 +7,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .logger import NodeConfig, NodeEventSink, node_dir
+from .logger import (
+    LIVE_ECHO_EVENTS,
+    NodeConfig,
+    NodeEventSink,
+    console_log,
+    format_event_oneline,
+    node_dir,
+)
 
 
 NODE_SIDE_PATH = Path(__file__).parent / "node_side.py"
@@ -58,12 +65,20 @@ class NodeResult:
     runid: str
 
 
-async def _pipe_reader(stream: asyncio.StreamReader, sink: NodeEventSink) -> None:
+async def _pipe_reader(stream: asyncio.StreamReader, sink: NodeEventSink, node_name: str) -> None:
     while True:
         line = await stream.readline()
         if not line:
             break
         sink.write_raw(line)
+        last = sink.events[-1] if sink.events else None
+        if last and last.parsed:
+            ev = last.parsed
+            et = ev.get("event_type")
+            if et in LIVE_ECHO_EVENTS:
+                console_log(node_name, format_event_oneline(ev))
+        elif last and last.parse_error:
+            console_log(node_name, f"⚠️ unparseable line from node: {last.raw_line[:120]!r}")
 
 
 async def _stderr_reader(stream: asyncio.StreamReader, path: Path) -> None:
@@ -100,6 +115,11 @@ async def run_node(
     source = load_node_side_source()
 
     sink = NodeEventSink(events_path)
+    console_log(
+        f"mac→{node.name}",
+        f"spawning node_side.py role={params.get('role')} "
+        f"listen_after_s={params.get('listen_after_s')} (hard_deadline={hard_deadline_s:.0f}s)",
+    )
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -117,7 +137,7 @@ async def run_node(
     except Exception:
         pass
 
-    stdout_task = asyncio.create_task(_pipe_reader(proc.stdout, sink))
+    stdout_task = asyncio.create_task(_pipe_reader(proc.stdout, sink, node.name))
     stderr_task = asyncio.create_task(_stderr_reader(proc.stderr, stderr_path))
 
     hardkilled = False
@@ -125,6 +145,7 @@ async def run_node(
         await asyncio.wait_for(proc.wait(), timeout=hard_deadline_s)
     except asyncio.TimeoutError:
         hardkilled = True
+        console_log(f"mac→{node.name}", f"⚠️ hit hard deadline ({hard_deadline_s:.0f}s); SIGTERM-ing SSH")
         try:
             proc.terminate()
         except ProcessLookupError:
@@ -141,6 +162,11 @@ async def run_node(
     await stdout_task
     await stderr_task
     sink.close()
+    console_log(
+        f"mac→{node.name}",
+        f"node_side exit_code={proc.returncode} streamed_lines={sink.line_count} "
+        f"hardkilled={hardkilled}",
+    )
 
     test_complete = any(
         isinstance(ev.parsed, dict) and ev.parsed.get("event_type") == "TEST_COMPLETE"
@@ -153,13 +179,21 @@ async def run_node(
     stream_loss = False
     try:
         authoritative_path = nd / "authoritative.jsonl"
+        console_log(f"mac→{node.name}", f"fetching authoritative /tmp/civicmesh_harness_{runid}.jsonl")
         await fetch_node_jsonl(node, runid, authoritative_path)
         authoritative_count = sum(
             1 for line in authoritative_path.read_text(errors="replace").splitlines() if line.strip()
         )
         if authoritative_count > sink.line_count:
             stream_loss = True
-    except Exception:
+            console_log(
+                f"mac→{node.name}",
+                f"⚠️ stream_loss: streamed={sink.line_count} authoritative={authoritative_count}",
+            )
+        else:
+            console_log(f"mac→{node.name}", f"authoritative_count={authoritative_count} (matches stream)")
+    except Exception as e:
+        console_log(f"mac→{node.name}", f"⚠️ fetch authoritative failed: {e!r}")
         authoritative_path = None
         authoritative_count = None
 
@@ -197,6 +231,7 @@ async def fetch_node_jsonl(node: NodeConfig, runid: str, dest: Path) -> None:
 
 
 async def probe_clock_skew(node: NodeConfig) -> dict:
+    console_log(f"mac→{node.name}", "clock skew probe (ssh round-trip)")
     remote = "python3 -c 'import time; print(time.time())'"
     cmd = _ssh_raw_cmd(node, remote)
     t0_wall = time.time()
@@ -210,18 +245,21 @@ async def probe_clock_skew(node: NodeConfig) -> dict:
     t1_mono = time.monotonic()
     t1_wall = time.time()
     if proc.returncode != 0:
-        return {
-            "node": node.name,
-            "ok": False,
-            "err": stderr.decode(errors="replace").strip()[:300],
-        }
+        err = stderr.decode(errors="replace").strip()[:300]
+        console_log(f"mac→{node.name}", f"clock skew: FAIL {err}")
+        return {"node": node.name, "ok": False, "err": err}
     try:
         node_ts = float(stdout.decode().strip())
     except Exception as e:
+        console_log(f"mac→{node.name}", f"clock skew: parse error {e!r}")
         return {"node": node.name, "ok": False, "err": f"parse: {e!r}"}
     mac_mid_wall = (t0_wall + t1_wall) / 2.0
     rtt_ms = (t1_mono - t0_mono) * 1000.0
     estimated_skew_ms = (node_ts - mac_mid_wall) * 1000.0
+    console_log(
+        f"mac→{node.name}",
+        f"clock skew: rtt={rtt_ms:.0f}ms estimated_skew={estimated_skew_ms:+.0f}ms",
+    )
     return {
         "node": node.name,
         "ok": True,
