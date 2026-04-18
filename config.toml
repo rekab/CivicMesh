@@ -10,7 +10,7 @@ sf = 7
 cr = 5
 
 [channels]
-names = ["#civicmesh", "#puget-sound"]
+names = ["#civicmesh", "#puget-sound", "#testing"]
 
 [local]
 names = ["#local"]
@@ -33,6 +33,9 @@ name_pattern = "^[A-Za-z0-9_-]+$"
 outbox_max_delay_sec = 10
 outbox_idle_reset_sec = 60
 outbox_max_retries = 3
+# Seconds to wait for an echo after no_event_received before retrying.
+# Must be < ActiveOutboxIndex lifetime (20s) to catch late echoes.
+outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240  # 10GB
 
 [logging]

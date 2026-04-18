@@ -373,7 +373,7 @@ def get_messages(
         if include_pinned:
             rows.extend(
                 conn.execute(
-                    "SELECT messages.*, outbox.heard_count"
+                    "SELECT messages.*, outbox.heard_count, outbox.retry_count"
                     " FROM messages"
                     " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
                     " WHERE messages.channel=? AND messages.pinned=1"
@@ -383,7 +383,7 @@ def get_messages(
             )
         rows.extend(
             conn.execute(
-                "SELECT messages.*, outbox.heard_count"
+                "SELECT messages.*, outbox.heard_count, outbox.retry_count"
                 " FROM messages"
                 " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
                 " WHERE messages.channel=? AND messages.pinned=0"
@@ -584,6 +584,20 @@ def mark_outbox_sent(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
             log.debug("db:mark_outbox_sent count=%d", len(outbox_ids))
         q = "UPDATE outbox SET sent=1, status='sent' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
         conn.execute(q, outbox_ids)
+    finally:
+        conn.close()
+
+
+def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=None) -> None:
+    """Persist sender_ts on first send attempt so echo-confirmed retries
+    can reference the original timestamp. The IS NULL guard ensures
+    retries don't overwrite the timestamp from the first attempt."""
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "UPDATE outbox SET sender_ts = ? WHERE id = ? AND sender_ts IS NULL",
+            (int(sender_ts), int(outbox_id)),
+        )
     finally:
         conn.close()
 

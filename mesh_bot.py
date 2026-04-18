@@ -9,6 +9,7 @@ from config import load_config
 from database import (
     DBConfig,
     cleanup_retention_bytes_per_channel,
+    get_outbox_message,
     get_pending_outbox,
     increment_heard,
     init_db,
@@ -18,6 +19,7 @@ from database import (
     mark_outbox_failed,
     prune_heard_packets,
     record_outbox_send,
+    update_outbox_sender_ts,
     upsert_status,
 )
 from logger import setup_logging
@@ -122,40 +124,126 @@ async def _outbox_task(
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
                     consecutive_errors = 0
                 else:
+                    # Check for echoes before retrying — an echo that
+                    # arrived between attempts proves the prior send worked.
+                    if item["retry_count"] > 0:
+                        row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
+                        if row and row["heard_count"] > 0:
+                            insert_message(
+                                db_cfg, ts=item["ts"], channel=channel,
+                                sender=sender, content=content, source="wifi",
+                                session_id=item.get("session_id"),
+                                fingerprint=item.get("fingerprint"),
+                                outbox_id=int(item["id"]), log=log,
+                            )
+                            record_outbox_send(
+                                db_cfg, outbox_id=int(item["id"]),
+                                sender_ts=row.get("sender_ts") or int(time.time()),
+                                log=log,
+                            )
+                            log.info(
+                                "outbox:sent_via_echo id=%s heard_count=%d "
+                                "min_path_len=%s best_snr=%s",
+                                item["id"], row["heard_count"],
+                                row.get("min_path_len"), row.get("best_snr"),
+                            )
+                            consecutive_errors = 0
+                            continue
+
                     # Capture the wall-clock second we expect the
                     # firmware to stamp on the outgoing packet, before
                     # the call. The match logic in active_outbox uses
                     # ±1s tolerance to handle second boundaries.
                     sender_ts = int(time.time())
+                    # Persist sender_ts so echo-confirmed retries can
+                    # reference the original timestamp. IS NULL guard
+                    # in the query prevents retries from overwriting.
+                    update_outbox_sender_ts(
+                        db_cfg, outbox_id=int(item["id"]),
+                        sender_ts=sender_ts, log=log,
+                    )
+                    # Register for echo matching BEFORE the send so
+                    # echoes arriving during a no_event_received timeout
+                    # are caught. expected_text is the full on-the-wire
+                    # form: firmware prepends "Name: " during transmission.
+                    my_name = self_name_provider() or ""
+                    if my_name:
+                        active_outbox.add(
+                            outbox_id=int(item["id"]),
+                            channel=channel,
+                            expected_text=f"{my_name}: {outbound}",
+                            sender_ts=sender_ts,
+                        )
+
                     result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
                     if result.type == EventType.ERROR:
+                        payload = result.payload
+                        is_no_event = (
+                            isinstance(payload, dict)
+                            and payload.get("reason") == "no_event_received"
+                        )
+
+                        if is_no_event:
+                            echo_wait = cfg.limits.outbox_echo_wait_sec
+                            log.info(
+                                "outbox:no_event_received id=%s waiting_for_echo_sec=%d",
+                                item["id"], echo_wait,
+                            )
+                            await asyncio.sleep(echo_wait)
+
+                            # Re-read outbox row to check if echoes arrived during wait
+                            row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
+                            if row and row["heard_count"] > 0:
+                                # Echo confirmed — treat as successful send
+                                insert_message(
+                                    db_cfg, ts=item["ts"], channel=channel,
+                                    sender=sender, content=content, source="wifi",
+                                    session_id=item.get("session_id"),
+                                    fingerprint=item.get("fingerprint"),
+                                    outbox_id=int(item["id"]), log=log,
+                                )
+                                record_outbox_send(
+                                    db_cfg, outbox_id=int(item["id"]),
+                                    sender_ts=sender_ts, log=log,
+                                )
+                                log.info(
+                                    "outbox:sent_via_echo id=%s heard_count=%d "
+                                    "first_heard_ts=%s last_heard_ts=%s "
+                                    "min_path_len=%s best_snr=%s",
+                                    item["id"], row["heard_count"],
+                                    row.get("first_heard_ts"), row.get("last_heard_ts"),
+                                    row.get("min_path_len"), row.get("best_snr"),
+                                )
+                                consecutive_errors = 0
+                                continue  # finally still advances backoff — intentional
+
+                            # No echo — fall through to normal retry
+                            log.info(
+                                "outbox:echo_not_heard id=%s proceeding_with_retry",
+                                item["id"],
+                            )
+
+                        # Normal error path (non-no_event, or no_event without echo)
                         new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
                         log.error(
                             "outbox:send_failed id=%s channel=%s attempt=%d/%d err=%s",
-                            item["id"],
-                            channel,
-                            new_count,
-                            max_retries,
-                            result.payload,
+                            item["id"], channel, new_count, max_retries, result.payload,
                         )
                         if new_count >= max_retries:
                             mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
                             log.warning(
                                 "outbox:giving_up id=%s channel=%s after %d attempts",
-                                item["id"],
-                                channel,
-                                new_count,
+                                item["id"], channel, new_count,
                             )
                         consecutive_errors += 1
                         if consecutive_errors >= consecutive_error_pause:
                             log.warning(
                                 "outbox:pausing consecutive_errors=%d cooldown=%ds",
-                                consecutive_errors,
-                                consecutive_error_cooldown,
+                                consecutive_errors, consecutive_error_cooldown,
                             )
                             await asyncio.sleep(consecutive_error_cooldown)
                     else:
-                        mid = insert_message(
+                        insert_message(
                             db_cfg,
                             ts=item["ts"],
                             channel=channel,
@@ -173,19 +261,6 @@ async def _outbox_task(
                             sender_ts=sender_ts,
                             log=log,
                         )
-                        # Register for echo matching. expected_text is
-                        # the full on-the-wire form: firmware prepends
-                        # "Name: " during transmission, so incoming
-                        # RX_LOG_DATA.payload.message will be exactly
-                        # f"{my_name}: {outbound}".
-                        my_name = self_name_provider() or ""
-                        if my_name:
-                            active_outbox.add(
-                                outbox_id=int(item["id"]),
-                                channel=channel,
-                                expected_text=f"{my_name}: {outbound}",
-                                sender_ts=sender_ts,
-                            )
                         consecutive_errors = 0
             except Exception as e:
                 log.error("outbox:send_exception id=%s err=%s", item["id"], e, exc_info=True)
