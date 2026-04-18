@@ -567,8 +567,9 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
+            hub_name = self.server.cfg.hub.name
             if not row:
-                _json(self, 200, {"radio": "unknown", "mesh_bot_seen": False})
+                _json(self, 200, {"radio": "unknown", "mesh_bot_seen": False, "hub_name": hub_name})
                 return
             now = _now_ts()
             age = now - int(row.get("last_seen_ts") or 0)
@@ -582,6 +583,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "mesh_bot_seen": True,
                     "last_seen_ts": int(row.get("last_seen_ts") or 0),
                     "age_sec": int(age),
+                    "hub_name": hub_name,
                 },
             )
             return

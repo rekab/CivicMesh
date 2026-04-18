@@ -36,10 +36,11 @@
       CivicMesh
     </div>
     <div id="debugBanner" class="topbar__debug" hidden>DEBUG</div>
-    <div class="topbar__status">
+    <button type="button" class="topbar__status topbar__status--btn" id="statusBtn" aria-label="Show node stats" aria-expanded="false">
       <span id="statusDot" class="topbar__dot topbar__dot--ok"></span>
       <span id="sessionStatus">Connected</span>
-    </div>
+      <svg class="topbar__status-chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 3.5 5 6.5 7.5 3.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
   </div>
 
   <!-- VIEW: Welcome / About -->
@@ -224,9 +225,10 @@
         </svg>
         CivicMesh
       </div>
-      <div class="channels__brand-status">
+      <button type="button" class="channels__brand-status channels__brand-status--btn" id="statusBtnDesktop" aria-label="Show node stats" aria-expanded="false">
         <span class="topbar__dot topbar__dot--ok"></span> Connected
-      </div>
+        <svg class="topbar__status-chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 3.5 5 6.5 7.5 3.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
     <div class="channels">
       <div class="channels__header">Channels</div>
@@ -287,6 +289,122 @@
     <button class="compose-modal__send" id="postBtn" disabled>Post to Mesh</button>
   </div>
 </div>
+
+<!-- Stats Overlay -->
+<div class="stats-overlay" id="statsOverlay"></div>
+<aside class="stats-sheet" id="statsSheet" role="dialog" aria-labelledby="statsTitle" aria-modal="true">
+  <header class="stats-sheet__head">
+    <div class="stats-sheet__head-left">
+      <div class="stats-sheet__handle" aria-hidden="true"></div>
+      <div class="stats-sheet__eyebrow">Node Stats</div>
+      <h2 id="statsTitle" class="stats-sheet__title">
+        <span class="stats-sheet__dot stats-sheet__dot--ok"></span>
+        <span id="statsNodeName">CivicMesh</span>
+      </h2>
+      <div class="stats-sheet__sub">
+        <span id="statsUptime">Healthy</span>
+        <span class="stats-sheet__sep">&middot;</span>
+        <span id="statsUpdated">updated just now</span>
+      </div>
+    </div>
+    <button type="button" class="stats-sheet__close" id="statsCloseBtn" aria-label="Close stats">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </header>
+  <div class="stats-sheet__body">
+    <section class="stats-card">
+      <div class="stats-card__head">
+        <h3 class="stats-card__title">Hotspot</h3>
+        <span class="stats-card__tag stats-card__tag--local">WIFI</span>
+      </div>
+      <div class="stats-card__hint">People connected to this hub</div>
+      <div class="stats-grid stats-grid--3">
+        <div class="stat-tile">
+          <div class="stat-tile__label">Now</div>
+          <div class="stat-tile__big" id="wifiNow">&mdash;</div>
+          <div class="stat-tile__hint stat-tile__hint--live"><span class="live-dot"></span>active</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile__label">24&thinsp;h</div>
+          <div class="stat-tile__big" id="wifiDay">&mdash;</div>
+          <div class="stat-tile__hint">unique sessions</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile__label">7&thinsp;d</div>
+          <div class="stat-tile__big" id="wifiWeek">&mdash;</div>
+          <div class="stat-tile__hint">unique sessions</div>
+        </div>
+      </div>
+    </section>
+    <section class="stats-card">
+      <div class="stats-card__head">
+        <h3 class="stats-card__title">Messages seen</h3>
+        <div class="stats-range" role="tablist" id="rangeTabs">
+          <button role="tab" data-range="5min" class="stats-range__btn">5m</button>
+          <button role="tab" data-range="hour" class="stats-range__btn stats-range__btn--active">1h</button>
+          <button role="tab" data-range="day"  class="stats-range__btn">24h</button>
+          <button role="tab" data-range="week" class="stats-range__btn">7d</button>
+        </div>
+      </div>
+      <div class="stats-card__hint">Every packet this node heard on the air &mdash; own, relay, neighbour.</div>
+      <div class="sparkline" id="spark">
+        <div class="sparkline__scale" id="sparkScale"><span>&mdash;</span><span>&mdash;</span><span>0</span></div>
+        <div class="sparkline__bars" id="sparkBars" aria-hidden="true"></div>
+        <div class="sparkline__axis" id="sparkAxis"></div>
+      </div>
+      <div class="sparkline__legend">
+        <div class="sparkline__legend-item">
+          <span class="sparkline__legend-num" id="sparkTotal">&mdash;</span>
+          <span class="sparkline__legend-lbl">total packets</span>
+        </div>
+        <div class="sparkline__legend-item">
+          <span class="sparkline__legend-num" id="sparkPeak">&mdash;</span>
+          <span class="sparkline__legend-lbl">peak bucket</span>
+        </div>
+        <div class="sparkline__legend-item">
+          <span class="sparkline__legend-num" id="sparkBucket">&mdash;</span>
+          <span class="sparkline__legend-lbl">per bucket</span>
+        </div>
+      </div>
+    </section>
+    <section class="stats-card">
+      <div class="stats-card__head">
+        <h3 class="stats-card__title">This node's activity</h3>
+      </div>
+      <div class="stats-subhead">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Messages sent
+      </div>
+      <div class="stats-grid stats-grid--3">
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">1&thinsp;h</div><div class="stat-tile__big" id="sentHour">&mdash;</div></div>
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">24&thinsp;h</div><div class="stat-tile__big" id="sentDay">&mdash;</div></div>
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">7&thinsp;d</div><div class="stat-tile__big" id="sentWeek">&mdash;</div></div>
+      </div>
+      <div class="stats-subhead stats-subhead--spaced">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        Repeaters heard
+        <span class="stats-subhead__hint">unique repeaters heard directly</span>
+      </div>
+      <div class="stats-grid stats-grid--3">
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">1&thinsp;h</div><div class="stat-tile__big" id="repHour">&mdash;</div></div>
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">24&thinsp;h</div><div class="stat-tile__big" id="repDay">&mdash;</div></div>
+        <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">7&thinsp;d</div><div class="stat-tile__big" id="repWeek">&mdash;</div></div>
+      </div>
+    </section>
+    <section class="stats-card stats-card--raw">
+      <button type="button" class="stats-raw__toggle" id="statsRawToggle" aria-expanded="false">
+        <svg class="stats-raw__chev" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 l4 3 -4 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Raw response
+        <span class="stats-raw__hint">/api/stats</span>
+      </button>
+      <pre class="stats-raw__code" id="statsRawCode" hidden></pre>
+    </section>
+    <footer class="stats-sheet__foot">
+      <span>Timestamps in local time.</span>
+      <span>All stats local to this node.</span>
+    </footer>
+  </div>
+</aside>
 
 <script src="/app.js"></script>
 </body>
