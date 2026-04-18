@@ -58,6 +58,7 @@ class LimitsConfig:
     outbox_max_retries: int
     outbox_max_delay_sec: int
     outbox_idle_reset_sec: int
+    outbox_echo_wait_sec: int
     retention_bytes_per_channel: int
 
 
@@ -148,6 +149,7 @@ def load_config(path: str) -> AppConfig:
             outbox_max_retries=int(limits.get("outbox_max_retries", 3)),
             outbox_max_delay_sec=int(limits.get("outbox_max_delay_sec", 10)),
             outbox_idle_reset_sec=int(limits.get("outbox_idle_reset_sec", 60)),
+            outbox_echo_wait_sec=int(limits.get("outbox_echo_wait_sec", 8)),
             retention_bytes_per_channel=int(limits.get("retention_bytes_per_channel", 10 * 1024 * 1024 * 1024)),
         ),
         logging=LoggingConfig(
