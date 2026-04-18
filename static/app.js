@@ -5,6 +5,7 @@ const API = {
   vote: "/api/vote",
   session: "/api/session",
   status: "/api/status",
+  stats: "/api/stats",
 };
 
 function $(id) {
@@ -503,6 +504,7 @@ async function refreshRadioStatus() {
   try {
     var data = await fetchJSON(API.status, { method: "GET" });
     state.radioStatus = data.radio || "unknown";
+    if (data.hub_name) state.hubName = data.hub_name;
   } catch {
     state.radioStatus = "unknown";
   }
@@ -736,6 +738,196 @@ function validateNameLive() {
   }
 }
 
+/* ---- Node Stats Overlay ---- */
+
+var statsState = {
+  open: false,
+  range: "hour",
+  data: null,
+  liveTimer: null,
+};
+
+function fmtStatNum(n) {
+  if (n == null) return "\u2014";
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+  return String(n);
+}
+
+function statsRangeMeta(r) {
+  switch (r) {
+    case "5min": return { label: "5 minutes", bucket: "30 s", axisStart: "\u22125m", axisEnd: "now" };
+    case "hour": return { label: "1 hour",    bucket: "5 min", axisStart: "\u22121h", axisEnd: "now" };
+    case "day":  return { label: "24 hours",  bucket: "1 h",  axisStart: "\u221224h", axisEnd: "now" };
+    case "week": return { label: "7 days",    bucket: "6 h",  axisStart: "\u22127d", axisEnd: "now" };
+  }
+  return { label: "", bucket: "", axisStart: "", axisEnd: "now" };
+}
+
+function tickTile(el, newVal) {
+  if (!el) return;
+  var nv = fmtStatNum(newVal);
+  if (el.textContent !== nv) {
+    el.textContent = nv;
+    el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick");
+  }
+}
+
+function renderStats() {
+  var d = statsState.data; if (!d) return;
+
+  tickTile($("wifiNow"),  d.wifi_sessions.now);
+  tickTile($("wifiDay"),  d.wifi_sessions.day);
+  tickTile($("wifiWeek"), d.wifi_sessions.week);
+
+  tickTile($("sentHour"), d.messages_sent.hour);
+  tickTile($("sentDay"),  d.messages_sent.day);
+  tickTile($("sentWeek"), d.messages_sent.week);
+
+  tickTile($("repHour"),  d.direct_repeaters.hour);
+  tickTile($("repDay"),   d.direct_repeaters.day);
+  tickTile($("repWeek"),  d.direct_repeaters.week);
+
+  renderSparkline();
+  renderStatsRaw();
+
+  // Header info
+  var nameEl = $("statsNodeName");
+  if (nameEl && state.hubName) nameEl.textContent = state.hubName;
+
+  var uptimeEl = $("statsUptime");
+  if (uptimeEl) uptimeEl.textContent = "Healthy \u00b7 radio " + (state.radioStatus || "unknown");
+
+  var updated = $("statsUpdated");
+  if (updated) {
+    var dt = new Date(d.now_ts * 1000);
+    var hh = dt.getHours(), mm = String(dt.getMinutes()).padStart(2, "0"),
+        ss = String(dt.getSeconds()).padStart(2, "0");
+    var ap = hh >= 12 ? "pm" : "am"; hh = hh % 12 || 12;
+    updated.textContent = "updated " + hh + ":" + mm + ":" + ss + " " + ap;
+  }
+}
+
+function renderSparkline() {
+  var d = statsState.data; if (!d) return;
+  var meta = statsRangeMeta(statsState.range);
+  var seen = d.messages_seen[statsState.range];
+  if (!seen) return;
+  var values = seen.bars;
+  var max = Math.max.apply(null, values.concat([1]));
+  var total = values.reduce(function(a, b) { return a + b; }, 0);
+  var peak = max;
+
+  var scale = $("sparkScale");
+  if (scale) scale.innerHTML = "<span>" + max + "</span><span>" + Math.round(max / 2) + "</span><span>0</span>";
+
+  var axis = $("sparkAxis");
+  if (axis) axis.innerHTML = "<span>" + meta.axisStart + "</span><span>" + meta.axisEnd + "</span>";
+
+  var host = $("sparkBars");
+  if (!host) return;
+  host.innerHTML = "";
+
+  values.forEach(function(v) {
+    var bar = document.createElement("div");
+    bar.className = "sparkline__bar" + (v === peak && v > 0 ? " sparkline__bar--peak" : (v > max * 0.65 ? " sparkline__bar--hot" : ""));
+    bar.style.height = Math.max((v / max) * 100, v === 0 ? 0 : 3) + "%";
+    if (v === 0) bar.setAttribute("data-zero", "1");
+    var tip = document.createElement("div");
+    tip.className = "sparkline__bar-tip";
+    tip.textContent = v + " pkt";
+    bar.appendChild(tip);
+    host.appendChild(bar);
+  });
+
+  var sparkTotal = $("sparkTotal");
+  var sparkPeak = $("sparkPeak");
+  var sparkBucket = $("sparkBucket");
+  if (sparkTotal) sparkTotal.textContent = fmtStatNum(total);
+  if (sparkPeak) sparkPeak.textContent = fmtStatNum(peak);
+  if (sparkBucket) sparkBucket.textContent = meta.bucket;
+}
+
+function renderStatsRaw() {
+  var pre = $("statsRawCode");
+  if (!pre || pre.hidden) return;
+  var json = JSON.stringify(statsState.data, null, 2);
+  var colored = json
+    .replace(/("(?:\\.|[^"\\])*")(\s*:)/g, '<span class="k">$1</span>$2')
+    .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="n">$1</span>')
+    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span class="s">$1</span>')
+    .replace(/([{}\[\],])/g, '<span class="p">$1</span>');
+  pre.innerHTML = colored;
+}
+
+async function refreshStats() {
+  try {
+    statsState.data = await fetchJSON(API.stats, { method: "GET" });
+  } catch (e) {
+    // keep stale data on error
+  }
+  renderStats();
+}
+
+function openStatsSheet() {
+  if (statsState.open) return;
+  statsState.open = true;
+  refreshStats();
+  var sheet = $("statsSheet");
+  var overlay = $("statsOverlay");
+  overlay.classList.add("active");
+  sheet.classList.add("active");
+  if (window.matchMedia("(min-width: 768px)").matches) {
+    sheet.style.transform = "translate(-50%, -50%) scale(1)";
+    sheet.style.opacity = "1";
+  }
+  var btn = $("statusBtn"); if (btn) btn.setAttribute("aria-expanded", "true");
+  var btnD = $("statusBtnDesktop"); if (btnD) btnD.setAttribute("aria-expanded", "true");
+  // Auto-refresh every 20s while open
+  statsState.liveTimer = setInterval(refreshStats, 20000);
+}
+
+function closeStatsSheet() {
+  if (!statsState.open) return;
+  statsState.open = false;
+  var sheet = $("statsSheet");
+  $("statsOverlay").classList.remove("active");
+  sheet.classList.remove("active");
+  sheet.style.transform = "";
+  sheet.style.opacity = "";
+  var btn = $("statusBtn"); if (btn) btn.setAttribute("aria-expanded", "false");
+  var btnD = $("statusBtnDesktop"); if (btnD) btnD.setAttribute("aria-expanded", "false");
+  if (statsState.liveTimer) { clearInterval(statsState.liveTimer); statsState.liveTimer = null; }
+}
+
+function setStatsRange(r) {
+  statsState.range = r;
+  document.querySelectorAll("#rangeTabs .stats-range__btn").forEach(function(b) {
+    b.classList.toggle("stats-range__btn--active", b.dataset.range === r);
+  });
+  renderSparkline();
+}
+
+function toggleStatsRaw() {
+  var btn = $("statsRawToggle");
+  var pre = $("statsRawCode");
+  var open = pre.hidden;
+  pre.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (open) renderStatsRaw();
+}
+
+function initStats() {
+  var btn = $("statusBtn"); if (btn) btn.addEventListener("click", openStatsSheet);
+  var btnD = $("statusBtnDesktop"); if (btnD) btnD.addEventListener("click", openStatsSheet);
+  $("statsCloseBtn").addEventListener("click", closeStatsSheet);
+  $("statsOverlay").addEventListener("click", closeStatsSheet);
+  document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeStatsSheet(); });
+  document.querySelectorAll("#rangeTabs .stats-range__btn").forEach(function(b) {
+    b.addEventListener("click", function() { setStatsRange(b.dataset.range); });
+  });
+  $("statsRawToggle").addEventListener("click", toggleStatsRaw);
+}
+
 /* ---- Init ---- */
 
 async function init() {
@@ -763,6 +955,9 @@ async function init() {
   }
   applyMaxChars();
   applyNameMax();
+
+  // Stats overlay
+  initStats();
 
   // Fetch channels
   var data = await fetchJSON(API.channels, { method: "GET" });
