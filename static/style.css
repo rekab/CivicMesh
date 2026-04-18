@@ -127,15 +127,15 @@ body {
   padding-bottom: calc(24px + var(--safe-bottom));
 }
 .welcome__hero {
-  background: linear-gradient(145deg, #1565c0 0%, #1b5e20 100%);
-  color: #ffffff;
+  background: #ffffff;
+  color: #1e4f8a;
   text-align: center;
-  padding: 40px 24px 36px;
+  padding: 24px 24px 20px;
 }
 .welcome__icon {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 16px;
+  width: 220px;
+  height: 220px;
+  margin: -40px auto -50px;
   color: rgba(255,255,255,0.9);
 }
 .welcome__title {
@@ -146,10 +146,11 @@ body {
 }
 .welcome__subtitle {
   font-size: 15px;
-  color: rgba(255,255,255,0.85);
+  color: #1e4f8a;
   line-height: 1.55;
-  max-width: 300px;
+  max-width: 420px;
   margin: 0 auto;
+  padding-bottom: 4px;
 }
 .welcome__content {
   padding: 20px 16px;
@@ -716,7 +717,7 @@ body {
   display: none;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 16px 8px;
+  padding: 8px 16px 4px;
   background: var(--brown);
 }
 .channels__brand-name {
