@@ -432,7 +432,10 @@ function renderMessages(msgs) {
       detailRows =
         '<div class="msg-bubble__detail-row"><span>Source</span><span>' + escapeHtml(sourceLabel(m.source)) + '</span></div>' +
         '<div class="msg-bubble__detail-row"><span>Time</span><span>' + escapeHtml(fmtFullTimestamp(m.ts)) + '</span></div>' +
-        (voteHtml ? '<div style="margin-top:4px">' + voteHtml + '</div>' : '');
+        (voteHtml ? '<div style="margin-top:4px">' + voteHtml + '</div>' : '') +
+        (m.source === "wifi" && state.meshChannelNames.has(state.activeChannel) && typeof m.heard_count === "number" && m.heard_count > 0
+          ? '<div class="msg-bubble__detail-row"><span>Heard</span><span>' + m.heard_count + ' repeats</span></div>'
+          : '');
     }
 
     div.innerHTML =
