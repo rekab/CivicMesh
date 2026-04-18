@@ -43,7 +43,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     fingerprint TEXT,
     sent INTEGER DEFAULT 0,
     retry_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'queued'
+    status TEXT NOT NULL DEFAULT 'queued',
+    -- Heard-count tracking (see docs/heard_count_design.md):
+    heard_count INTEGER NOT NULL DEFAULT 0,
+    min_path_len INTEGER,
+    first_heard_ts INTEGER,
+    last_heard_ts INTEGER,
+    best_snr REAL,
+    sender_ts INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS votes (
@@ -121,6 +128,33 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add outbox.status")
             conn.execute("ALTER TABLE outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+        # Heard-count columns (echo tracking from RX_LOG_DATA).
+        # Schema rationale and matching design are in
+        # docs/heard_count_design.md and diagnostics/radio/FINDINGS.md.
+        if "heard_count" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.heard_count")
+            conn.execute("ALTER TABLE outbox ADD COLUMN heard_count INTEGER NOT NULL DEFAULT 0")
+        if "min_path_len" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.min_path_len")
+            conn.execute("ALTER TABLE outbox ADD COLUMN min_path_len INTEGER")
+        if "first_heard_ts" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.first_heard_ts")
+            conn.execute("ALTER TABLE outbox ADD COLUMN first_heard_ts INTEGER")
+        if "last_heard_ts" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.last_heard_ts")
+            conn.execute("ALTER TABLE outbox ADD COLUMN last_heard_ts INTEGER")
+        if "best_snr" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.best_snr")
+            conn.execute("ALTER TABLE outbox ADD COLUMN best_snr REAL")
+        if "sender_ts" not in outbox_cols:
+            if log:
+                log.info("db:migrate add outbox.sender_ts")
+            conn.execute("ALTER TABLE outbox ADD COLUMN sender_ts INTEGER")
         # Align status with existing sent flags or clean up bad values.
         conn.execute(
             """
@@ -505,6 +539,80 @@ def mark_outbox_sent(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
             log.debug("db:mark_outbox_sent count=%d", len(outbox_ids))
         q = "UPDATE outbox SET sent=1, status='sent' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
         conn.execute(q, outbox_ids)
+    finally:
+        conn.close()
+
+
+def record_outbox_send(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=None) -> None:
+    """Mark a single outbox row as sent and persist the sender_timestamp
+    that the firmware will stamp on the transmitted packet.
+
+    `sender_ts` is captured by the caller as `int(time.time())` around
+    the moment of the `send_chan_msg` call. It's used as the matching
+    key tie-breaker when echoes come back via RX_LOG_DATA — see
+    docs/heard_count_design.md.
+    """
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:record_outbox_send id=%d sender_ts=%d", outbox_id, sender_ts)
+        conn.execute(
+            "UPDATE outbox SET sent=1, status='sent', sender_ts=? WHERE id=?",
+            (int(sender_ts), int(outbox_id)),
+        )
+    finally:
+        conn.close()
+
+
+def increment_heard(
+    cfg: DBConfig,
+    *,
+    outbox_id: int,
+    path_len: Optional[int],
+    snr: Optional[float],
+    ts: int,
+    log=None,
+) -> None:
+    """Record one observed echo against an outbox row.
+
+    Increments heard_count by 1; updates first_heard_ts (if NULL),
+    last_heard_ts, min_path_len (if smaller or NULL), best_snr (if
+    larger or NULL). Idempotent in the SQL sense: if outbox_id no
+    longer exists, the UPDATE silently affects 0 rows.
+    """
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug(
+                "db:increment_heard outbox_id=%d path_len=%s snr=%s",
+                outbox_id, path_len, snr,
+            )
+        conn.execute(
+            """
+            UPDATE outbox
+            SET
+              heard_count    = heard_count + 1,
+              first_heard_ts = COALESCE(first_heard_ts, ?),
+              last_heard_ts  = ?,
+              min_path_len   = CASE
+                  WHEN ? IS NULL THEN min_path_len
+                  WHEN min_path_len IS NULL OR ? < min_path_len THEN ?
+                  ELSE min_path_len
+              END,
+              best_snr       = CASE
+                  WHEN ? IS NULL THEN best_snr
+                  WHEN best_snr IS NULL OR ? > best_snr THEN ?
+                  ELSE best_snr
+              END
+            WHERE id = ?
+            """,
+            (
+                int(ts), int(ts),
+                path_len, path_len, path_len,
+                snr, snr, snr,
+                int(outbox_id),
+            ),
+        )
     finally:
         conn.close()
 

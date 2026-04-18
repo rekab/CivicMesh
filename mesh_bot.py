@@ -9,14 +9,16 @@ from database import (
     DBConfig,
     cleanup_retention_bytes_per_channel,
     get_pending_outbox,
+    increment_heard,
     init_db,
     increment_outbox_retry,
     insert_message,
     mark_outbox_failed,
-    mark_outbox_sent,
+    record_outbox_send,
     upsert_status,
 )
 from logger import setup_logging
+from outbox_echoes import ActiveOutboxIndex
 
 EventType = None
 MeshCore = None
@@ -52,7 +54,15 @@ async def _heartbeat_task(cfg, db_cfg: DBConfig, log):
         await asyncio.sleep(10)
 
 
-async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_idx: dict[str, int]):
+async def _outbox_task(
+    cfg,
+    db_cfg: DBConfig,
+    log,
+    mesh_client,
+    channel_name_to_idx: dict[str, int],
+    active_outbox: ActiveOutboxIndex,
+    self_name_provider,
+):
     # Backoff levels map to a delay sequence [0, 2, 5, max_delay_sec].
     # The last entry is configurable so operators can cap the max pacing.
     # We advance one level after each send attempt to avoid draining large
@@ -104,6 +114,11 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
                     consecutive_errors = 0
                 else:
+                    # Capture the wall-clock second we expect the
+                    # firmware to stamp on the outgoing packet, before
+                    # the call. The match logic in active_outbox uses
+                    # ±1s tolerance to handle second boundaries.
+                    sender_ts = int(time.time())
                     result = await mesh_client.commands.send_chan_msg(channel_idx, outbound)
                     if result.type == EventType.ERROR:
                         new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
@@ -143,7 +158,25 @@ async def _outbox_task(cfg, db_cfg: DBConfig, log, mesh_client, channel_name_to_
                             fingerprint=item.get("fingerprint"),
                             log=log,
                         )
-                        mark_outbox_sent(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                        record_outbox_send(
+                            db_cfg,
+                            outbox_id=int(item["id"]),
+                            sender_ts=sender_ts,
+                            log=log,
+                        )
+                        # Register for echo matching. expected_text is
+                        # the full on-the-wire form: firmware prepends
+                        # "Name: " during transmission, so incoming
+                        # RX_LOG_DATA.payload.message will be exactly
+                        # f"{my_name}: {outbound}".
+                        my_name = self_name_provider() or ""
+                        if my_name:
+                            active_outbox.add(
+                                outbox_id=int(item["id"]),
+                                channel=channel,
+                                expected_text=f"{my_name}: {outbound}",
+                                sender_ts=sender_ts,
+                            )
                         consecutive_errors = 0
             except Exception as e:
                 log.error("outbox:send_exception id=%s err=%s", item["id"], e, exc_info=True)
@@ -186,6 +219,8 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
     mesh_client = None
     channel_name_to_idx = {name: idx for idx, name in enumerate(cfg.channels.names)}
+    active_outbox = ActiveOutboxIndex()
+    known_channel_names = set(cfg.channels.names)
 
     async def _connect_loop():
         nonlocal mesh_client
@@ -290,6 +325,62 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 log.info("mesh:auto_fetch_started")
                 upsert_status(db_cfg, process="mesh_bot", radio_connected=True, log=log)
 
+                # Enable channel-message decryption in meshcore_py's
+                # parser. Required for RX_LOG_DATA events to carry
+                # decrypted `message` / `sender_timestamp` / `chan_name`
+                # — the inputs the heard-count handler needs. Verified
+                # in diagnostics/radio/FINDINGS.md.
+                try:
+                    mesh_client.set_decrypt_channel_logs(True)
+                    log.info("mesh:decrypt_channel_logs_enabled")
+                except Exception as e:
+                    log.error("mesh:decrypt_channel_logs_failed err=%s", e, exc_info=True)
+
+                # RX_LOG_DATA handler — increments heard_count on the
+                # outbox row whose echo we just observed. Filter on
+                # `message != None && chan_name in our channels` per
+                # FINDINGS: chan_hash is 1 byte and collisions happen,
+                # but the library leaves message=None when the HMAC
+                # validation fails, so message != None is the
+                # authoritative "this is a real channel message we can
+                # see plaintext for" signal.
+                def _on_rx_log_data(event):
+                    try:
+                        p = event.payload
+                        msg = p.get("message")
+                        if msg is None:
+                            return
+                        chan_name = p.get("chan_name")
+                        if chan_name not in known_channel_names:
+                            return
+                        sender_ts = p.get("sender_timestamp")
+                        if not isinstance(sender_ts, int):
+                            return
+                        outbox_id = active_outbox.match(
+                            channel=chan_name,
+                            message_text=msg,
+                            sender_ts=sender_ts,
+                        )
+                        if outbox_id is None:
+                            return  # not one of our active sends
+                        increment_heard(
+                            db_cfg,
+                            outbox_id=outbox_id,
+                            path_len=p.get("path_len"),
+                            snr=p.get("snr"),
+                            ts=_now_ts(),
+                            log=log,
+                        )
+                        log.debug(
+                            "outbox:heard outbox_id=%d path_len=%s snr=%s",
+                            outbox_id, p.get("path_len"), p.get("snr"),
+                        )
+                    except Exception as e:
+                        log.error("mesh:rx_log_data_error %s", e, exc_info=True)
+
+                mesh_client.subscribe(EventType.RX_LOG_DATA, _on_rx_log_data)
+                log.info("mesh:rx_log_data_subscribed")
+
                 # Handlers
                 def _on_channel_message(event):
                     try:
@@ -332,8 +423,15 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
     await _connect_loop()
 
+    def _self_name():
+        info = getattr(mesh_client, "self_info", None) or {}
+        return info.get("name") if isinstance(info, dict) else None
+
     await asyncio.gather(
-        _outbox_task(cfg, db_cfg, log, mesh_client, channel_name_to_idx),
+        _outbox_task(
+            cfg, db_cfg, log, mesh_client, channel_name_to_idx,
+            active_outbox, _self_name,
+        ),
         _retention_task(cfg, db_cfg, log),
         _heartbeat_task(cfg, db_cfg, log),
     )
