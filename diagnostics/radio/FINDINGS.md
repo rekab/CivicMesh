@@ -131,6 +131,90 @@ repeater is closer to (or has clearer line-of-sight to) zero2w than
 pi4. Worth re-validating from each node's location independently if
 heard-counts seem suspiciously low at one site.
 
+## Decryption smoke test (2026-04-18, T4 with `set_decrypt_channel_logs(True)`)
+
+Validated the load-bearing assumption in `docs/heard_count_design.md`:
+that we don't need to implement AES ourselves and can rely on
+`meshcore_py`'s built-in decryption to populate plaintext fields on
+`RX_LOG_DATA` events.
+
+Procedure: temporarily added `mc.set_decrypt_channel_logs(True)` to
+`harness/node_side.py` (after `set_channel`/`get_channel` registered
+the channel with the parser), re-ran T4, inspected the RX_LOG_DATA
+events, then reverted the change. Findings:
+
+**Decryption works on every channel-message RX_LOG_DATA**, populating
+the assumed fields:
+
+| field              | populated when             | example value                                  |
+|--------------------|----------------------------|------------------------------------------------|
+| `message`          | decrypt success            | `"oh_no: [RTTEST] t4 606916b5 pi4->zero2w i=0 u=5c85ae12"` |
+| `sender_timestamp` | decrypt success            | `1776479911` (unix epoch s)                    |
+| `txt_type`         | decrypt success            | `0` (plain text)                               |
+| `chan_name`        | decrypt success            | `"#civicmesh"`                                 |
+| `msg_hash`         | decrypt success            | `3149666130` (cache key)                       |
+| `attempt`          | decrypt success            | `0`                                            |
+| `chan_hash`        | always (1 byte)            | `"b4"`                                         |
+| `cipher_mac`       | always (2 bytes)           | `"33ba"`                                       |
+| `crypted`          | always (raw ciphertext)    | (hex)                                          |
+| `pkt_hash`         | always                     | `1179614920` (32-bit)                          |
+
+Of 37 GRP_TXT RX_LOG_DATA events captured in the run, 27 had
+`message` populated — exactly the events whose `chan_hash` matched a
+registered channel AND passed the HMAC-MAC validation. The remaining
+10 had `chan_hash` from other channels (`f0`, `72`) and `chan_name:
+None` — the library correctly recognized them as "not on a channel I
+have the secret for" and skipped decryption.
+
+**Subtlety worth knowing**: `chan_hash` is only 1 byte, so collisions
+are common (1/256). One zero2w event had `chan_hash=b4` (matches our
+`#civicmesh`) but `cipher_mac=33ba` instead of the expected MAC for
+our channel — the library correctly rejected the decrypt via HMAC
+verification, leaving `message: None`. Production code must NOT match
+on `chan_hash` alone; rely on `message != None && chan_name ==
+"<expected channel>"`.
+
+**Own-send vs ambient is cleanly separable**:
+
+| batch                      | total path_len>0 sender-side | own-send | ambient | own pkt_hashes | ambient path_lens   |
+|----------------------------|------------------------------|----------|---------|----------------|---------------------|
+| pi4 → zero2w (sender pi4)  | 7                            | **7**    | 0       | 4 distinct     | (none)              |
+| zero2w → pi4 (sender zero2w)| 6                            | **3**    | 3       | 3 distinct     | 5, 6, 24 (far mesh) |
+
+For pi4's batch: 4 unique packets bounced back, with 7 total physical
+receptions (so 3 of those 4 packets were heard via 2 different paths
+each). Path_len distribution of own-sends: `{1: 4, 2: 2, 3: 1}` —
+local repeater plus a couple of two/three-hop paths.
+
+For zero2w's batch: 3 own-send echoes (one per send, each at
+path_len=1 — single local repeater hop) plus 3 ambient events at
+path_len 5/6/24. The ambient ones are clearly far-mesh flood traffic
+from other operators; matching by `message.startswith(f"{my_name}:
+")` plus marker text comparison cleanly excludes them.
+
+**Implications for the production design**:
+
+- The proposed implementation in `docs/heard_count_design.md` works
+  exactly as designed. No need to revisit the manual-decryption
+  fallback path.
+- The `ActiveOutboxIndex` matching key `(channel, text, sender_ts)`
+  is sufficient given the data — `sender_timestamp` from the
+  decrypted payload is monotonic and unique per send.
+- `heard_count` semantics: each `RX_LOG_DATA` event with
+  `message`/`sender_timestamp` matching is one increment. So the
+  count includes physical-reception duplicates of the same packet
+  (e.g. pi4 saw pkt_hash 1179614920 twice — that's heard_count += 2).
+  This is the right semantic for "how many times my radio heard this
+  message," matching what the Android client appears to display.
+- One refinement worth considering: also expose `distinct_paths`
+  (count of distinct path_len values seen, or count of distinct
+  pkt_hashes if dedup is desired). Out of scope for the first
+  iteration — `heard_count` + `min_path_len` is enough to get the UI
+  off the ground.
+
+The smoke test does not contradict any assumption in the design doc.
+Cleared for implementation.
+
 ## Test-environment caveats
 
   - **Clock skew**: zero2w's clock runs ~12 seconds behind pi4 (no
