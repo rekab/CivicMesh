@@ -13,6 +13,7 @@ from typing import Any, Optional
 from config import load_config
 from database import (
     DBConfig,
+    compute_stats,
     create_or_update_session,
     get_message,
     get_messages,
@@ -26,6 +27,7 @@ from database import (
     posts_in_last_window,
     queue_outbox,
     record_post_for_session,
+    touch_session_last_seen,
     update_vote,
     update_session_fingerprint,
 )
@@ -34,6 +36,9 @@ from logger import setup_logging
 
 def _now_ts() -> int:
     return int(time.time())
+
+
+_stats_cache: dict = {"ts": 0.0, "data": None}
 
 
 def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) -> None:
@@ -442,7 +447,9 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         # API routes are always served regardless of Host.
         if path.startswith("/api/"):
-            pass
+            _sid = self._get_session_id()
+            if _sid:
+                touch_session_last_seen(self.server.db_cfg, _sid, _now_ts())
         else:
             client_ip = self._client_ip()
             _mac, dev = get_link_from_ip(client_ip)
@@ -577,6 +584,17 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "age_sec": int(age),
                 },
             )
+            return
+
+        if path == "/api/stats":
+            now = time.time()
+            if _stats_cache["data"] is not None and now - _stats_cache["ts"] < 20:
+                _json(self, 200, _stats_cache["data"])
+                return
+            data = compute_stats(self.server.db_cfg, _now_ts(), log=log)
+            _stats_cache["ts"] = now
+            _stats_cache["data"] = data
+            _json(self, 200, data)
             return
 
         if path == "/api/votes":

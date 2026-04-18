@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     fingerprint TEXT,
     created_ts INTEGER,
     last_post_ts INTEGER,
+    last_seen_ts INTEGER,
     post_count_hour INTEGER DEFAULT 0
 );
 
@@ -84,6 +85,17 @@ CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(pinned, pin_order);
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(sent, ts);
 CREATE INDEX IF NOT EXISTS idx_votes_message ON votes(message_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_mac ON sessions(mac_address);
+
+CREATE TABLE IF NOT EXISTS heard_packets (
+    ts INTEGER NOT NULL,
+    payload_type INTEGER NOT NULL,
+    route_type INTEGER NOT NULL,
+    path_len INTEGER NOT NULL,
+    last_path_byte INTEGER,
+    snr REAL,
+    rssi INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_heard_packets_ts ON heard_packets(ts);
 """
 
 
@@ -192,6 +204,25 @@ def init_db(cfg: DBConfig, log=None) -> None:
         outbox_cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbox)").fetchall()]
         if "status" in outbox_cols:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, ts)")
+
+        # -- heard_packets table (stats endpoint) --
+        conn.execute("""CREATE TABLE IF NOT EXISTS heard_packets (
+            ts INTEGER NOT NULL,
+            payload_type INTEGER NOT NULL,
+            route_type INTEGER NOT NULL,
+            path_len INTEGER NOT NULL,
+            last_path_byte INTEGER,
+            snr REAL,
+            rssi INTEGER
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_heard_packets_ts ON heard_packets(ts)")
+
+        # -- sessions.last_seen_ts --
+        sessions_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "last_seen_ts" not in sessions_cols:
+            if log:
+                log.info("db:migrate add sessions.last_seen_ts")
+            conn.execute("ALTER TABLE sessions ADD COLUMN last_seen_ts INTEGER")
     finally:
         conn.close()
 
@@ -931,5 +962,104 @@ def search_messages(
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def insert_heard_packet(cfg: DBConfig, *, ts, payload_type, route_type, path_len,
+                        last_path_byte=None, snr=None, rssi=None, log=None):
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "INSERT INTO heard_packets (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi),
+        )
+    finally:
+        conn.close()
+
+
+def touch_session_last_seen(cfg: DBConfig, session_id, ts, log=None):
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "UPDATE sessions SET last_seen_ts = ? WHERE session_id = ?",
+            (ts, session_id),
+        )
+    finally:
+        conn.close()
+
+
+def prune_heard_packets(cfg: DBConfig, *, cutoff_ts, log=None):
+    conn = _connect(cfg)
+    try:
+        cur = conn.execute("DELETE FROM heard_packets WHERE ts < ?", (cutoff_ts,))
+        if cur.rowcount and log:
+            log.info("retention:heard_packets deleted=%d", cur.rowcount)
+    finally:
+        conn.close()
+
+
+def compute_stats(cfg: DBConfig, now_ts, log=None):
+    conn = _connect(cfg)
+    try:
+        # -- wifi_sessions --
+        wifi = {}
+        for label, window in [("now", 300), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT session_id) AS n FROM sessions WHERE last_seen_ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            wifi[label] = row["n"] if row else 0
+
+        # -- messages_seen histograms --
+        seen = {}
+        windows = [
+            ("5min", 30, 10),     # 30s buckets, 10 bars
+            ("hour", 300, 12),    # 5min buckets, 12 bars
+            ("day", 3600, 24),    # 1hr buckets, 24 bars
+            ("week", 21600, 28),  # 6hr buckets, 28 bars
+        ]
+        for label, bucket_s, n_bars in windows:
+            window_s = bucket_s * n_bars
+            cutoff = now_ts - window_s
+            rows = conn.execute(
+                "SELECT (ts / ?) * ? AS bucket, COUNT(*) AS n "
+                "FROM heard_packets WHERE ts >= ? GROUP BY bucket ORDER BY bucket",
+                (bucket_s, bucket_s, cutoff),
+            ).fetchall()
+            counts = {r["bucket"]: r["n"] for r in rows}
+            # Align to present: most recent bar covers the current time slice
+            end_bucket = (now_ts // bucket_s) * bucket_s
+            start_bucket = end_bucket - (n_bars - 1) * bucket_s
+            bars = [counts.get(start_bucket + i * bucket_s, 0) for i in range(n_bars)]
+            seen[label] = {"bucket_s": bucket_s, "bars": bars}
+
+        # -- messages_sent --
+        sent = {}
+        for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE source = 'wifi' AND ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            sent[label] = row["n"] if row else 0
+
+        # -- direct_repeaters --
+        repeaters = {}
+        for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT last_path_byte) AS n FROM heard_packets "
+                "WHERE path_len >= 1 AND ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            repeaters[label] = row["n"] if row else 0
+
+        return {
+            "now_ts": now_ts,
+            "wifi_sessions": wifi,
+            "messages_seen": seen,
+            "messages_sent": sent,
+            "direct_repeaters": repeaters,
+        }
     finally:
         conn.close()
