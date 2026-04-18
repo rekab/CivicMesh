@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import functools
 import hashlib
 import time
 from typing import Optional
@@ -12,8 +13,10 @@ from database import (
     increment_heard,
     init_db,
     increment_outbox_retry,
+    insert_heard_packet,
     insert_message,
     mark_outbox_failed,
+    prune_heard_packets,
     record_outbox_send,
     upsert_status,
 )
@@ -40,6 +43,11 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                 )
                 if deleted:
                     log.info("retention:channel=%s deleted=%d", ch, deleted)
+            # Prune heard_packets older than 8 days (1 week + 1 day slack)
+            try:
+                prune_heard_packets(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
+            except Exception as e:
+                log.error("retention:heard_packets_error %s", e, exc_info=True)
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
@@ -381,6 +389,43 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
                 mesh_client.subscribe(EventType.RX_LOG_DATA, _on_rx_log_data)
                 log.info("mesh:rx_log_data_subscribed")
+
+                # Stats: record every heard packet for the /api/stats endpoint.
+                # Separate handler from echo-matching — fires on ALL packets
+                # (adverts, acks, routing, undecryptable), not just decoded
+                # channel messages. DB write offloaded to executor to avoid
+                # blocking the event loop during SD-card GC stalls.
+                def _on_rx_log_stats(event):
+                    try:
+                        p = event.payload
+                        payload_type = p.get("payload_type")
+                        route_type = p.get("route_type")
+                        path_len = p.get("path_len")
+                        if payload_type is None or route_type is None or path_len is None:
+                            log.debug("stats:skip_malformed_packet")
+                            return
+                        path_hex = p.get("path") or ""
+                        last_path_byte = None
+                        if path_len >= 1 and len(path_hex) >= 2:
+                            last_path_byte = int(path_hex[-2:], 16)
+                        snr = p.get("snr")
+                        rssi = p.get("rssi")
+                        loop = asyncio.get_running_loop()
+                        loop.run_in_executor(
+                            None,
+                            functools.partial(
+                                insert_heard_packet,
+                                db_cfg, ts=_now_ts(),
+                                payload_type=payload_type, route_type=route_type,
+                                path_len=path_len, last_path_byte=last_path_byte,
+                                snr=snr, rssi=rssi, log=log,
+                            ),
+                        )
+                    except Exception as e:
+                        log.error("stats:rx_log_error %s", e, exc_info=True)
+
+                mesh_client.subscribe(EventType.RX_LOG_DATA, _on_rx_log_stats)
+                log.info("stats:rx_log_subscribed")
 
                 # Handlers
                 def _on_channel_message(event):
