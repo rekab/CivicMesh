@@ -156,6 +156,7 @@ async def _outbox_task(
                             source="wifi",
                             session_id=item.get("session_id"),
                             fingerprint=item.get("fingerprint"),
+                            outbox_id=int(item["id"]),
                             log=log,
                         )
                         record_outbox_send(

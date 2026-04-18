@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS messages (
     upvotes INTEGER DEFAULT 0,
     downvotes INTEGER DEFAULT 0,
     pinned INTEGER DEFAULT 0,
-    pin_order INTEGER
+    pin_order INTEGER,
+    outbox_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS outbox (
@@ -114,6 +115,10 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add messages.fingerprint")
             conn.execute("ALTER TABLE messages ADD COLUMN fingerprint TEXT")
+        if "outbox_id" not in messages_cols:
+            if log:
+                log.info("db:migrate add messages.outbox_id")
+            conn.execute("ALTER TABLE messages ADD COLUMN outbox_id INTEGER")
         outbox_cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbox)").fetchall()]
         if "fingerprint" not in outbox_cols:
             if log:
@@ -201,6 +206,7 @@ def insert_message(
     source: str,
     session_id: Optional[str] = None,
     fingerprint: Optional[str] = None,
+    outbox_id: Optional[int] = None,
     log=None,
 ) -> int:
     conn = _connect(cfg)
@@ -208,8 +214,8 @@ def insert_message(
         if log:
             log.debug("db:insert_message channel=%s sender=%s source=%s len=%d", channel, sender, source, len(content))
         cur = conn.execute(
-            "INSERT INTO messages (ts, channel, sender, content, source, session_id, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ts, channel, sender, content, source, session_id, fingerprint),
+            "INSERT INTO messages (ts, channel, sender, content, source, session_id, fingerprint, outbox_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, channel, sender, content, source, session_id, fingerprint, outbox_id),
         )
         return int(cur.lastrowid)
     finally:
@@ -336,13 +342,21 @@ def get_messages(
         if include_pinned:
             rows.extend(
                 conn.execute(
-                    "SELECT * FROM messages WHERE channel=? AND pinned=1 ORDER BY pin_order ASC NULLS LAST, ts DESC",
+                    "SELECT messages.*, outbox.heard_count"
+                    " FROM messages"
+                    " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
+                    " WHERE messages.channel=? AND messages.pinned=1"
+                    " ORDER BY messages.pin_order ASC NULLS LAST, messages.ts DESC",
                     (channel,),
                 ).fetchall()
             )
         rows.extend(
             conn.execute(
-                "SELECT * FROM messages WHERE channel=? AND pinned=0 ORDER BY ts DESC LIMIT ? OFFSET ?",
+                "SELECT messages.*, outbox.heard_count"
+                " FROM messages"
+                " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
+                " WHERE messages.channel=? AND messages.pinned=0"
+                " ORDER BY messages.ts DESC LIMIT ? OFFSET ?",
                 (channel, limit, offset),
             ).fetchall()
         )
