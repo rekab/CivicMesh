@@ -362,96 +362,127 @@ def _summarize(nodes_cfg, batches, skews, pre_results, iterations):
             "listener_event_counts": event_type_counts(listener_events),
         })
 
-    # Q1 verdict — careful about distinguishing NO from UNCLEAR.
+    # Q1 verdict — based on the firmware behavior we now know to be true,
+    # not on whether self-matched CHANNEL_MSG_RECV events appeared.
     #
-    # Naive logic ("sender saw any RX_LOG_DATA → must have heard own packet
-    # back → therefore firmware suppresses CHANNEL_MSG_RECV") is wrong:
-    # RX_LOG_DATA on the sender could be ambient traffic from other
-    # operators on the channel, not a repeater rebroadcasting OUR message.
+    # The firmware deduplicates CHANNEL_MSG_RECV: when the same packet
+    # arrives multiple times at the RF layer (direct + via various
+    # repeater paths), each arrival fires its own RX_LOG_DATA event but
+    # only the FIRST arrival is decoded into a CHANNEL_MSG_RECV. T0 data
+    # confirms this: a single message can produce 6+ RX_LOG_DATA events
+    # at path_len 0/1/17 yet only 1 CHANNEL_MSG_RECV. This means
+    # CHANNEL_MSG_RECV cannot be used to count repeats from any vantage,
+    # not just the sender's. The implementation path is forced to
+    # RX_LOG_DATA + manual decryption.
     #
-    # Definitive evidence that a repeater is active in this test:
-    # at least one CHANNEL_MSG_RECV (any vantage, any marker) with
-    # path_len > 0. Without that, this test cannot rule out "no repeater
-    # rebroadcast our packet" and Q1 must remain UNCLEAR.
-    any_repeater_seen = False
-    for b in per_batch_analysis:
-        for r in b["marker_rows"]:
-            for pl in (r.get("sender_path_lens") or []) + (r.get("listener_path_lens") or []):
-                if isinstance(pl, int) and pl > 0:
-                    any_repeater_seen = True
-                    break
-            if any_repeater_seen:
-                break
-        if any_repeater_seen:
-            break
+    # The remaining diagnostic question this test can answer is whether
+    # repeater activity is observable in the RX_LOG_DATA stream during
+    # this run — a sub-finding, not a path-determining one.
 
-    if sender_echo_total > 0:
-        q1_verdict = "YES"
-        q1_line = (
-            f"**Q1 — Self-echo via CHANNEL_MSG_RECV: YES** "
-            f"({sender_echo_total} matched echoes across {sender_send_total} sender-side sends)"
+    # Walk all RX_LOG_DATA across all batches and nodes.
+    all_rx_log_path_lens: list[int] = []
+    sender_rx_log_path_len_gt0 = 0
+    sender_rx_log_total_count = 0
+    listener_rx_log_path_len_gt0 = 0
+    sender_rx_log_offsets_gt0: list[float] = []  # offset from nearest preceding SEND_PRE on same node
+    for b in batches:
+        sender_events = b["sender_result"].events or []
+        listener_events = b["listener_result"].events or []
+        send_pre_monos = sorted(
+            (sp.get("payload") or {}).get("pre_mono_ts")
+            for sp in _find_send_pres(sender_events)
+            if isinstance((sp.get("payload") or {}).get("pre_mono_ts"), (int, float))
         )
-    elif not any_repeater_seen:
-        # No echoes at all (sender or listener) carried path_len > 0, so
-        # we never observed a repeater participating in this run. Cannot
-        # distinguish firmware suppression from "no rebroadcast happened
-        # at all."
-        q1_verdict = "UNCLEAR_NO_REPEATER"
-        q1_line = (
-            "**Q1 — Self-echo via CHANNEL_MSG_RECV: UNCLEAR (no repeater observed)** "
-            "(0 sender-side echoes; no path_len > 0 events anywhere in this run, so "
-            "no repeater is rebroadcasting on this channel near these nodes — "
-            "we cannot distinguish firmware suppression from 'nothing to echo'. "
-            "Re-run from a location with confirmed repeater activity, or check the "
-            "Android client at this location to see if it observes any path_len > 0 "
-            "messages on this channel.)"
-        )
-    else:
-        # Repeater activity WAS observed (path_len > 0 elsewhere) but
-        # zero of those rebroadcasts decoded as CHANNEL_MSG_RECV on the
-        # sender. That's evidence the firmware suppresses self-echoes.
-        q1_verdict = "NO"
-        q1_line = (
-            f"**Q1 — Self-echo via CHANNEL_MSG_RECV: NO** "
-            f"(0 sender-side echoes across {sender_send_total} sends, despite "
-            f"path_len > 0 events being observed elsewhere in this run — "
-            f"firmware appears to suppress self-echo decoding)"
-        )
+        for ev in sender_events:
+            if ev.get("event_type") != "RX_LOG_DATA":
+                continue
+            sender_rx_log_total_count += 1
+            pl = (ev.get("payload") or {}).get("path_len")
+            if isinstance(pl, int):
+                all_rx_log_path_lens.append(pl)
+                if pl > 0:
+                    sender_rx_log_path_len_gt0 += 1
+                    rx_mono = ev.get("mono_ts")
+                    if isinstance(rx_mono, (int, float)):
+                        # Offset from the most recent prior SEND_PRE on this
+                        # node (None if none preceded).
+                        prior = [m for m in send_pre_monos if m <= rx_mono]
+                        if prior:
+                            sender_rx_log_offsets_gt0.append(rx_mono - prior[-1])
+        for ev in listener_events:
+            if ev.get("event_type") != "RX_LOG_DATA":
+                continue
+            pl = (ev.get("payload") or {}).get("path_len")
+            if isinstance(pl, int):
+                all_rx_log_path_lens.append(pl)
+                if pl > 0:
+                    listener_rx_log_path_len_gt0 += 1
 
-    lines.append(q1_line)
-    lines.append("")
+    repeater_activity_observed = any(pl > 0 for pl in all_rx_log_path_lens)
+    pl_distribution_str = " ".join(
+        f"len={k}:{v}" for k, v in sorted(Counter(all_rx_log_path_lens).items())
+    )
+
+    q1_verdict = "RX_LOG_DATA_REQUIRED"
     lines.append(
-        f"_Sender RX_LOG_DATA events (any source — own echo, ambient, or other): "
-        f"{sender_rx_log_total} across batches. Treat as suggestive only; without "
-        f"per-event decryption we can't say which were self-echoes._"
+        "**Q1 — Implementation path: RX_LOG_DATA + manual decryption** "
+        "(CHANNEL_MSG_RECV is firmware-deduped to the FIRST physical "
+        "reception of each packet — confirmed by T0 data showing the same "
+        "message arriving as 6+ RX_LOG_DATA events at path_len 0/1/17 but "
+        "only 1 CHANNEL_MSG_RECV. This means counting repeats requires "
+        "subscribing to RX_LOG_DATA, regardless of what this run shows.)"
     )
     lines.append("")
-
-    if q1_verdict == "NO":
+    if repeater_activity_observed:
         lines.append(
-            "**Implementation path: heard-count must be built from "
-            "RX_LOG_DATA with manual decryption; CHANNEL_MSG_RECV cannot be "
-            "used on the sender side.** The Q2 lifetime histogram below is "
-            "still useful (it characterizes echoes seen on the OTHER node) "
-            "but the production code path will need to subscribe to "
-            "RX_LOG_DATA on the sender, decrypt the payload using the "
-            "channel secret, and match against locally-originated sends."
+            f"_Repeater activity in this run: **YES** — "
+            f"{sender_rx_log_path_len_gt0} sender-side and "
+            f"{listener_rx_log_path_len_gt0} listener-side RX_LOG_DATA events "
+            f"with path_len > 0. Full path_len distribution across all "
+            f"RX_LOG_DATA in run: {pl_distribution_str}._"
         )
-        lines.append("")
-    elif q1_verdict == "UNCLEAR_NO_REPEATER":
+    else:
         lines.append(
-            "**Implementation path is undecided.** No repeater activity was "
-            "observed during this run, so Q1 cannot be answered. Until Q1 "
-            "is answered, the heard-count feature design has two possible "
-            "implementation paths and we don't know which is correct."
+            f"_Repeater activity in this run: **NO** — 0 RX_LOG_DATA events "
+            f"with path_len > 0 (out of {sender_rx_log_total_count} total "
+            f"sender-side RX_LOG_DATA events). Channel was quiet of repeater "
+            f"traffic during this run. Path_len distribution: "
+            f"{pl_distribution_str or '(none)'}_"
+        )
+    lines.append("")
+
+    if sender_rx_log_offsets_gt0:
+        s_p = percentiles(sender_rx_log_offsets_gt0, [50, 95, 100])
+        lines.append(
+            f"_Sender-side RX_LOG_DATA path_len > 0, time-offset from "
+            f"nearest preceding SEND_PRE on the same node (s): "
+            f"p50={s_p[50]:.2f}  p95={s_p[95]:.2f}  max={s_p[100]:.2f}  "
+            f"(n={len(sender_rx_log_offsets_gt0)}). Without payload "
+            f"decryption these are CANDIDATE rebroadcasts of own sends — "
+            f"definitive attribution requires decrypting the RX_LOG_DATA "
+            f"payload bytes against the channel secret in the actual "
+            f"feature implementation._"
         )
         lines.append("")
 
     # Q2 — lifetime histogram + recommendation
-    lines.append(f"## Q2 — Echo arrival distribution (any vantage)")
+    #
+    # NOTE: this section uses CHANNEL_MSG_RECV match offsets, which only
+    # capture the FIRST physical reception per packet (firmware dedupes
+    # later receptions). The "lifetime" computed here is therefore the
+    # window for the first-hop direct decode, NOT the full tail of all
+    # repeater rebroadcasts. The RX_LOG_DATA stats above are closer to
+    # the right signal for production matching-window tuning.
+    lines.append(f"## Q2 — First-hop CHANNEL_MSG_RECV arrival distribution (any vantage)")
+    lines.append("")
+    lines.append(
+        "_NB: CHANNEL_MSG_RECV is firmware-deduped to one decode per "
+        "packet, so this is first-hop only. Use the RX_LOG_DATA stats "
+        "above for the actual matching-window tuning data._"
+    )
     lines.append("")
     if not all_offsets:
-        lines.append("_No matching CHANNEL_MSG_RECV echoes found on any vantage. Cannot compute lifetime recommendation._")
+        lines.append("_No matching CHANNEL_MSG_RECV first-hop arrivals on any vantage. Cannot compute lifetime recommendation._")
         lines.append("")
         lines.append(f"**Recommended echo-matching lifetime: {LIFETIME_FLOOR_S:.0f}s** "
                      f"(falling back to floor; no observed data to inform a tighter value)")
