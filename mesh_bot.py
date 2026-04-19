@@ -18,12 +18,14 @@ from database import (
     insert_message,
     mark_outbox_failed,
     prune_heard_packets,
+    prune_telemetry,
     prune_terminal_outbox,
     reconcile_message_status,
     record_outbox_send,
     update_outbox_sender_ts,
     upsert_status,
 )
+import telemetry
 from logger import setup_logging
 from outbox_echoes import ActiveOutboxIndex
 
@@ -57,6 +59,16 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                 prune_terminal_outbox(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
             except Exception as e:
                 log.error("retention:outbox_error %s", e, exc_info=True)
+            # Prune telemetry: samples after 7 days, events after 30 days
+            try:
+                prune_telemetry(
+                    db_cfg,
+                    samples_cutoff_ts=_now_ts() - 7 * 86400,
+                    events_cutoff_ts=_now_ts() - 30 * 86400,
+                    log=log,
+                )
+            except Exception as e:
+                log.error("retention:telemetry_error %s", e, exc_info=True)
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
@@ -537,6 +549,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         ),
         _retention_task(cfg, db_cfg, log),
         _heartbeat_task(cfg, db_cfg, log),
+        telemetry.telemetry_loop(db_cfg, log),
     )
 
 
