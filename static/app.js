@@ -373,7 +373,6 @@ function sourceLabel(source) {
   if (source === "local") return "On-site";
   if (source === "mesh") return "Mesh";
   if (source === "wifi") return "WiFi";
-  if (source === "pending") return "Queued";
   return String(source || "");
 }
 
@@ -400,11 +399,13 @@ function renderMessages(msgs) {
     }
 
     var isOwn = m.session_id && m.session_id === sid;
-    var isPending = Boolean(m.pending);
+    var isPending = m.source === "wifi" && m.status === "queued";
+    var isFailed = m.source === "wifi" && m.status === "failed";
     var div = document.createElement("div");
     div.className = "msg-bubble" +
-      (isOwn || isPending ? " msg-bubble--own" : "") +
-      (isPending ? " msg-bubble--pending" : "");
+      (isOwn || isPending || isFailed ? " msg-bubble--own" : "") +
+      (isPending ? " msg-bubble--pending" : "") +
+      (isFailed ? " msg-bubble--failed" : "");
 
     var metaId = "meta-" + String(m.id).replace(/[^a-zA-Z0-9_-]/g, "_");
     var isLast = (i === msgs.length - 1);
@@ -417,18 +418,21 @@ function renderMessages(msgs) {
     var upActive = my === 1 ? " active-up" : "";
     var badge = uv > 0 ? " \u2605" + uv : "";
     var voteHtml = "";
-    if (!isPending && canVote) {
+    if (!isPending && !isFailed && canVote) {
       voteHtml = '<button class="btn--vote' + upActive + '" data-id="' + m.id + '" data-v="1" data-my="' + my + '">\u2605 Upvote' + badge + '</button>';
     } else if (uv > 0) {
       voteHtml = '<span>\u2605 ' + uv + '</span>';
     }
 
-    var timeText = isPending ? "Queued for mesh" : fmtTime(m.ts);
-    var senderText = isPending ? "You" : escapeHtml(m.sender || "unknown");
+    var timeText = isPending ? "Queued for mesh" : isFailed ? "Failed to send" : fmtTime(m.ts);
+    var senderText = (isPending || isFailed) ? "You" : escapeHtml(m.sender || "unknown");
 
     var detailRows = "";
     if (isPending) {
       detailRows = '<div class="msg-bubble__detail-row"><span>Status</span><span>Queued \u2014 will send when radio connects</span></div>';
+    } else if (isFailed) {
+      detailRows = '<div class="msg-bubble__detail-row"><span>Status</span><span>Failed to send \u2014 radio may have been offline</span></div>' +
+        (typeof m.retry_count === "number" ? '<div class="msg-bubble__detail-row"><span>Retries</span><span>' + m.retry_count + '/3</span></div>' : '');
     } else {
       detailRows =
         '<div class="msg-bubble__detail-row"><span>Source</span><span>' + escapeHtml(sourceLabel(m.source)) + '</span></div>' +

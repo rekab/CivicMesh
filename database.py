@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS messages (
     downvotes INTEGER DEFAULT 0,
     pinned INTEGER DEFAULT 0,
     pin_order INTEGER,
-    outbox_id INTEGER
+    outbox_id INTEGER,
+    status TEXT              -- "queued" | "sent" | "failed" for wifi; NULL for mesh/local/legacy
 );
 
 CREATE TABLE IF NOT EXISTS outbox (
@@ -131,6 +132,10 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add messages.outbox_id")
             conn.execute("ALTER TABLE messages ADD COLUMN outbox_id INTEGER")
+        if "status" not in messages_cols:
+            if log:
+                log.info("db:migrate add messages.status")
+            conn.execute("ALTER TABLE messages ADD COLUMN status TEXT")
         outbox_cols = [r["name"] for r in conn.execute("PRAGMA table_info(outbox)").fetchall()]
         if "fingerprint" not in outbox_cols:
             if log:
@@ -238,6 +243,7 @@ def insert_message(
     session_id: Optional[str] = None,
     fingerprint: Optional[str] = None,
     outbox_id: Optional[int] = None,
+    status: Optional[str] = None,
     log=None,
 ) -> int:
     conn = _connect(cfg)
@@ -245,10 +251,24 @@ def insert_message(
         if log:
             log.debug("db:insert_message channel=%s sender=%s source=%s len=%d", channel, sender, source, len(content))
         cur = conn.execute(
-            "INSERT INTO messages (ts, channel, sender, content, source, session_id, fingerprint, outbox_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, channel, sender, content, source, session_id, fingerprint, outbox_id),
+            "INSERT INTO messages (ts, channel, sender, content, source, session_id, fingerprint, outbox_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, channel, sender, content, source, session_id, fingerprint, outbox_id, status),
         )
         return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def update_message_status(cfg: DBConfig, *, outbox_id: int, status: str, log=None) -> None:
+    """Update the status of a message row linked to an outbox send."""
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:update_message_status outbox_id=%d status=%s", outbox_id, status)
+        conn.execute(
+            "UPDATE messages SET status = ? WHERE outbox_id = ?",
+            (status, int(outbox_id)),
+        )
     finally:
         conn.close()
 
@@ -549,26 +569,6 @@ def get_pending_outbox_for_session(
         rows = conn.execute(
             "SELECT * FROM outbox WHERE status='queued' AND session_id=? AND channel=? ORDER BY ts DESC LIMIT ?",
             (session_id, channel, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def get_pending_outbox_for_channel(
-    cfg: DBConfig,
-    *,
-    channel: str,
-    limit: int = 20,
-    log=None,
-) -> list[dict[str, Any]]:
-    conn = _connect(cfg)
-    try:
-        if log:
-            log.debug("db:get_pending_outbox_for_channel channel=%s limit=%d", channel, limit)
-        rows = conn.execute(
-            "SELECT * FROM outbox WHERE status='queued' AND channel=? ORDER BY ts DESC LIMIT ?",
-            (channel, limit),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -926,7 +926,7 @@ def cleanup_retention_bytes_per_channel(cfg: DBConfig, *, channel: str, max_byte
                 """
                 SELECT id, LENGTH(content) AS b
                 FROM messages
-                WHERE channel=? AND pinned=0
+                WHERE channel=? AND pinned=0 AND (status IS NULL OR status != 'queued')
                 ORDER BY ts ASC
                 LIMIT 1
                 """,
@@ -1014,6 +1014,21 @@ def prune_heard_packets(cfg: DBConfig, *, cutoff_ts, log=None):
         conn.close()
 
 
+def prune_terminal_outbox(cfg: DBConfig, *, cutoff_ts, log=None):
+    """Delete sent/failed outbox rows older than cutoff. The corresponding
+    messages rows retain their status independently."""
+    conn = _connect(cfg)
+    try:
+        cur = conn.execute(
+            "DELETE FROM outbox WHERE status IN ('sent', 'failed') AND ts < ?",
+            (cutoff_ts,),
+        )
+        if cur.rowcount and log:
+            log.info("retention:outbox deleted=%d", cur.rowcount)
+    finally:
+        conn.close()
+
+
 def compute_stats(cfg: DBConfig, now_ts, log=None):
     conn = _connect(cfg)
     try:
@@ -1053,7 +1068,7 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
         sent = {}
         for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM messages WHERE source = 'wifi' AND ts >= ?",
+                "SELECT COUNT(*) AS n FROM messages WHERE source = 'wifi' AND (status IS NULL OR status = 'sent') AND ts >= ?",
                 (now_ts - window,),
             ).fetchone()
             sent[label] = row["n"] if row else 0

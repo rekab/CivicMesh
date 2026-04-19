@@ -23,7 +23,6 @@ from database import (
     get_vote_counts,
     init_db,
     insert_message,
-    get_pending_outbox_for_channel,
     posts_in_last_window,
     queue_outbox,
     record_post_for_session,
@@ -535,33 +534,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if sid:
                 for r in rows:
                     r["user_vote"] = get_user_vote(self.server.db_cfg, message_id=int(r["id"]), session_id=sid, log=log)
-            if channel in self.server.cfg.channels.names and offset == 0:
-                pending = get_pending_outbox_for_channel(
-                    self.server.db_cfg,
-                    channel=channel,
-                    limit=10,
-                    log=log,
-                )
-                if pending:
-                    pending_msgs = []
-                    for p in pending:
-                        pending_msgs.append(
-                            {
-                                "id": f"pending-{p['id']}",
-                                "ts": int(p["ts"]),
-                                "channel": p["channel"],
-                                "sender": p["sender"],
-                                "content": p["content"],
-                                "source": "pending",
-                                "session_id": p.get("session_id"),
-                                "fingerprint": p.get("fingerprint"),
-                                "upvotes": 0,
-                                "downvotes": 0,
-                                "user_vote": 0,
-                                "pending": True,
-                            }
-                        )
-                    rows = pending_msgs + rows
             _json(self, 200, {"messages": rows})
             return
 
@@ -720,9 +692,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 200, {"ok": True, "message_id": mid, "local": True})
                 return
 
+            now = _now_ts()
             oid = queue_outbox(
                 self.server.db_cfg,
-                ts=_now_ts(),
+                ts=now,
                 channel=channel,
                 sender=name,
                 content=content,
@@ -730,9 +703,22 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 fingerprint=fingerprint or None,
                 log=log,
             )
-            record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=_now_ts(), log=log)
-            log.info("post:queued id=%d channel=%s session=%s len=%d", oid, channel, sid, len(content))
-            _json(self, 200, {"ok": True, "outbox_id": oid})
+            mid = insert_message(
+                self.server.db_cfg,
+                ts=now,
+                channel=channel,
+                sender=name,
+                content=content,
+                source="wifi",
+                session_id=sid,
+                fingerprint=fingerprint or None,
+                outbox_id=oid,
+                status="queued",
+                log=log,
+            )
+            record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=now, log=log)
+            log.info("post:queued outbox_id=%d message_id=%d channel=%s session=%s len=%d", oid, mid, channel, sid, len(content))
+            _json(self, 200, {"ok": True, "outbox_id": oid, "message_id": mid})
             return
 
         if path == "/api/vote":
