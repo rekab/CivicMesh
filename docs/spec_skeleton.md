@@ -40,25 +40,108 @@
 - Default-on posting rate limits with layered signals.
 - Controls protect mesh throughput without building durable identities.
 
-## Data Model (SQLite)
+## Data Model (SQLite, WAL mode)
 
-### Tables (current schema)
-- messages: id, ts, channel, sender, content, source ("mesh" | "wifi"), session_id, fingerprint, upvotes, downvotes, pinned, pin_order.
-- outbox: id, ts, channel, sender, content, session_id, fingerprint, sent (0/1).
-- votes: message_id, session_id, vote_type (1 or -1), ts.
-- sessions: session_id, name, location, mac_address, fingerprint, created_ts, last_post_ts, post_count_hour.
+See `docs/message_lifecycle.md` for the message/outbox state machine and atomicity constraints.
 
-### Indexes (current schema)
-- messages(channel, ts DESC) for channel feeds.
-- messages(pinned, pin_order) for pinned ordering.
-- outbox(sent, ts) for pending sends.
-- votes(message_id) for vote lookups.
-- sessions(mac_address) for session association.
+### Tables
+
+**messages** — all community-visible posts (inbound mesh, local, and wifi-originated).
+
+| column | type | notes |
+|--------|------|-------|
+| id | INTEGER PRIMARY KEY | |
+| ts | INTEGER NOT NULL | unix epoch seconds |
+| channel | TEXT NOT NULL | channel name, e.g. "#civicmesh" |
+| sender | TEXT NOT NULL | display name |
+| content | TEXT NOT NULL | message body |
+| source | TEXT NOT NULL | "mesh", "wifi", or "local" |
+| session_id | TEXT | poster's session (wifi/local only) |
+| fingerprint | TEXT | browser fingerprint hash |
+| upvotes | INTEGER DEFAULT 0 | |
+| downvotes | INTEGER DEFAULT 0 | |
+| pinned | INTEGER DEFAULT 0 | |
+| pin_order | INTEGER | |
+| outbox_id | INTEGER | FK to outbox.id (wifi only) |
+| status | TEXT | "queued"/"sent"/"failed" for wifi; NULL for mesh/local/legacy |
+
+**outbox** — send queue for wifi-originated messages. Consumed by mesh_bot.
+
+| column | type | notes |
+|--------|------|-------|
+| id | INTEGER PRIMARY KEY | |
+| ts | INTEGER NOT NULL | original post time |
+| channel | TEXT NOT NULL | |
+| sender | TEXT NOT NULL | |
+| content | TEXT NOT NULL | |
+| session_id | TEXT NOT NULL | |
+| fingerprint | TEXT | |
+| sent | INTEGER DEFAULT 0 | legacy flag, 1 = sent |
+| retry_count | INTEGER NOT NULL DEFAULT 0 | attempts so far |
+| status | TEXT NOT NULL DEFAULT 'queued' | "queued"/"sent"/"failed" |
+| heard_count | INTEGER NOT NULL DEFAULT 0 | echo count from mesh |
+| min_path_len | INTEGER | shortest echo path |
+| first_heard_ts | INTEGER | first echo timestamp |
+| last_heard_ts | INTEGER | most recent echo |
+| best_snr | REAL | best SNR across echoes |
+| sender_ts | INTEGER | wall-clock second of first send attempt |
+
+**votes** — per-session upvotes/downvotes on messages.
+
+| column | type | notes |
+|--------|------|-------|
+| message_id | INTEGER NOT NULL | PK with session_id |
+| session_id | TEXT NOT NULL | PK with message_id |
+| vote_type | INTEGER NOT NULL | 1=upvote, -1=downvote |
+| ts | INTEGER NOT NULL | |
+
+**sessions** — walk-up user sessions (cookie-based, no accounts).
+
+| column | type | notes |
+|--------|------|-------|
+| session_id | TEXT PRIMARY KEY | |
+| name | TEXT | display name |
+| location | TEXT | hub location |
+| mac_address | TEXT | for abuse prevention |
+| fingerprint | TEXT | browser fingerprint |
+| created_ts | INTEGER | |
+| last_post_ts | INTEGER | for rate limit window |
+| last_seen_ts | INTEGER | for active-user counting |
+| post_count_hour | INTEGER DEFAULT 0 | rolling rate limit counter |
+
+**status** — process heartbeats.
+
+| column | type | notes |
+|--------|------|-------|
+| process | TEXT PRIMARY KEY | "mesh_bot" |
+| last_seen_ts | INTEGER NOT NULL | |
+| radio_connected | INTEGER NOT NULL DEFAULT 0 | |
+
+**heard_packets** — raw radio packet log for `/api/stats` histograms.
+
+| column | type | notes |
+|--------|------|-------|
+| ts | INTEGER NOT NULL | |
+| payload_type | INTEGER NOT NULL | |
+| route_type | INTEGER NOT NULL | |
+| path_len | INTEGER NOT NULL | |
+| last_path_byte | INTEGER | last hop identifier |
+| snr | REAL | |
+| rssi | INTEGER | |
+
+### Indexes
+- messages(channel, ts DESC) — channel feeds
+- messages(pinned, pin_order) — pinned message ordering
+- outbox(sent, ts) — legacy pending lookup
+- outbox(status, ts) — pending send queue
+- votes(message_id) — vote lookups
+- sessions(mac_address) — session-by-MAC lookups
+- heard_packets(ts) — stats time-range queries
 
 ### Retention and Pruning
-- Keep recent messages by age and/or count per channel (configurable).
-- Periodic pruning of old sessions and vote rows.
-- Avoid frequent vacuum/defrag to minimize writes.
+- `cleanup_retention_bytes_per_channel`: deletes oldest unpinned messages when channel exceeds byte budget. Protects queued messages (`status != 'queued'`).
+- `prune_heard_packets`: deletes heard_packets older than 8 days. Runs hourly in mesh_bot's retention task.
+- `prune_terminal_outbox`: deletes sent/failed outbox rows older than 8 days. The messages rows retain their status independently; the LEFT JOIN returns NULL for pruned outbox columns.
 
 ## UI Flows
 
@@ -68,29 +151,29 @@
 
 ### Post Message
 - Submit -> validate length and rate limit -> enqueue.
-- Confirm state as queued with best-effort language.
+- Message appears immediately in timeline as "Queued for mesh".
 
 ### View Status
-- Per-message indicator: queued, sent-to-radio, failed/retrying.
-- Optional retry count and last error in non-technical phrasing.
+- Per-message indicator: queued, sent-to-radio, failed.
+- Failed messages show retry count on tap.
+- Sent wifi messages show heard count (echo repeats) on tap.
 
 ## Outbound Pipeline
 
-### Queue -> Batching -> Send -> Retry/Backoff -> State Transitions
-- Insert message into outbox with state queued and next_attempt_at=now.
-- Worker selects due items, groups by channel, sends in small batches.
-- On send attempt:
-  - If serial/radio unavailable: mark failed/retrying, schedule backoff.
-  - If send accepted by meshcore_py: mark sent-to-radio.
-  - If send error: increment retry_count, update backoff, keep failed/retrying.
-- Backoff: exponential with ceiling and jitter; reset on success.
-- State transitions are monotonic and recorded.
+See `docs/message_lifecycle.md` for the full state machine.
+
+### Summary
+- `/api/post` atomically creates both an outbox row and a messages row (`status='queued'`).
+- mesh_bot's `_outbox_task` polls `outbox WHERE status='queued'`, sends via radio, and atomically updates both tables on success or failure.
+- Echo-aware retry: after `no_event_received`, waits for mesh echoes before retrying. Pre-retry echo check on each subsequent attempt.
+- Backoff: `[0, 2, 5, max_delay_sec]` sequence, reset after idle period. Consecutive error pause (30s) after 5 sustained failures.
+- Max retries: 3 (configurable via `outbox_max_retries`).
 
 ## MeshCore Integration Assumptions
 - Subscriptions are limited to configured public channels only.
 - Receive: meshcore_py delivers inbound messages with channel id and timestamp; store immediately in messages.
 - Send: meshcore_py provides synchronous success/failure for "sent to radio" only (not delivery).
-- Any repeat/ack/receipt metadata is optional and treated as best-effort.
+- Echo detection via RX_LOG_DATA events provides best-effort delivery evidence (heard_count).
 
 ## Threat Model and Mitigations
 - Threats: spam flooding, offensive content, radio DoS, local network probing.
@@ -103,10 +186,10 @@
 
 ## Deployment and Operations
 - Systemd units: civicmesh-web starts after network; civicmesh-mesh depends on serial device.
-- Startup order: DB check/migration -> web server -> mesh bot.
+- Startup order: DB check/migration -> reconciliation -> web server / mesh bot.
 - Logging: separate app logs and security log; rotate with size limits.
 - Upgrades: offline-safe update process; no internet dependency.
-- Recovery: DB integrity check on boot; auto-prune corrupted outbox rows; safe restart.
+- Recovery: DB integrity check on boot; startup reconciliation fixes inconsistent message/outbox status; safe restart.
 
 ## Future Work (Placeholder)
 - Admin/control via encrypted channels (no design in v0).
