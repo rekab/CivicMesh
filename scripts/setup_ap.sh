@@ -32,9 +32,24 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 readonly COUNTRY_CODE="US"
 readonly SUBNET="10.0.0"           # We'll use 10.0.0.0/24
 readonly AP_IP="${SUBNET}.1"
-readonly DHCP_RANGE_START="${SUBNET}.50"
-readonly DHCP_RANGE_END="${SUBNET}.150"
-readonly DHCP_LEASE_TIME="12h"
+# Pool and lease are sized for high-churn walk-up deployments.
+# Per-SSID MAC randomization on modern iOS/Android means one phone can
+# consume multiple leases over an event (family of four = four leases;
+# "forget and rejoin" re-randomizes).  A narrow pool with long leases
+# is the silent-failure mode to avoid: AP still broadcasts, SSID still
+# visible, but new phones just don't get an IP — no error banner, no
+# user-visible log.
+#
+#   Pool .10–.250 (241 addresses): avoids .1 (AP) and .255 (broadcast);
+#   buys headroom for MAC churn.
+#
+#   15m lease: walk-up duration is minutes, not hours.  Clients renew at
+#   T/2 (~7.5m), so a user composing a post won't hit renewal mid-session.
+#   Abandoned leases reclaim ~4x/hour.  Below 10m some clients get
+#   fidgety; dnsmasq's floor is 2m.
+readonly DHCP_RANGE_START="${SUBNET}.10"
+readonly DHCP_RANGE_END="${SUBNET}.250"
+readonly DHCP_LEASE_TIME="15m"
 readonly APP_PORT="8080"           # Port the app listens on (unprivileged)
 readonly PUBLIC_PORT="80"          # Port clients connect to (redirected to APP_PORT)
 readonly BACKUP_DIR="/var/backups/civicmesh"
@@ -726,7 +741,7 @@ bind-interfaces
 
 # === DHCP Server ===
 # Assign IPs from ${DHCP_RANGE_START} to ${DHCP_RANGE_END}
-# This gives us ~100 addresses for walk-up clients
+# This gives us ~240 addresses for walk-up clients
 # Lease time: ${DHCP_LEASE_TIME}
 dhcp-range=${DHCP_RANGE_START},${DHCP_RANGE_END},255.255.255.0,${DHCP_LEASE_TIME}
 
