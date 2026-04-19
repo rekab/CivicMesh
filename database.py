@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import time
@@ -97,6 +98,31 @@ CREATE TABLE IF NOT EXISTS heard_packets (
     rssi INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_heard_packets_ts ON heard_packets(ts);
+
+CREATE TABLE IF NOT EXISTS telemetry_samples (
+    ts INTEGER PRIMARY KEY,
+    uptime_s INTEGER,
+    load_1m REAL,
+    cpu_temp_c REAL,
+    mem_available_kb INTEGER,
+    mem_total_kb INTEGER,
+    disk_free_kb INTEGER,
+    disk_total_kb INTEGER,
+    net_rx_bytes INTEGER,
+    net_tx_bytes INTEGER,
+    outbox_depth INTEGER,
+    outbox_oldest_age_s INTEGER,
+    throttled_bitmask INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_events (
+    id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_ts ON telemetry_events(ts);
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_ts ON telemetry_events(kind, ts);
 
 """
 
@@ -226,6 +252,33 @@ def init_db(cfg: DBConfig, log=None) -> None:
             rssi INTEGER
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_heard_packets_ts ON heard_packets(ts)")
+
+        # -- telemetry tables --
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS telemetry_samples (
+                ts INTEGER PRIMARY KEY,
+                uptime_s INTEGER,
+                load_1m REAL,
+                cpu_temp_c REAL,
+                mem_available_kb INTEGER,
+                mem_total_kb INTEGER,
+                disk_free_kb INTEGER,
+                disk_total_kb INTEGER,
+                net_rx_bytes INTEGER,
+                net_tx_bytes INTEGER,
+                outbox_depth INTEGER,
+                outbox_oldest_age_s INTEGER,
+                throttled_bitmask INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS telemetry_events (
+                id INTEGER PRIMARY KEY,
+                ts INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                detail TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_telemetry_events_ts ON telemetry_events(ts);
+            CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_ts ON telemetry_events(kind, ts);
+        """)
 
         # -- sessions.last_seen_ts --
         sessions_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
@@ -1184,12 +1237,348 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
             ).fetchone()
             repeaters[label] = row["n"] if row else 0
 
-        return {
+        result = {
             "now_ts": now_ts,
             "wifi_sessions": wifi,
             "messages_seen": seen,
             "messages_sent": sent,
             "direct_repeaters": repeaters,
         }
+        result["system"] = _build_system_telemetry(cfg, now_ts, log=log)
+        return result
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Telemetry helpers
+# ---------------------------------------------------------------------------
+
+def insert_telemetry_sample(
+    cfg: DBConfig,
+    *,
+    ts: int,
+    uptime_s: Optional[int],
+    load_1m: Optional[float],
+    cpu_temp_c: Optional[float],
+    mem_available_kb: Optional[int],
+    mem_total_kb: Optional[int],
+    disk_free_kb: Optional[int],
+    disk_total_kb: Optional[int],
+    net_rx_bytes: Optional[int],
+    net_tx_bytes: Optional[int],
+    outbox_depth: Optional[int],
+    outbox_oldest_age_s: Optional[int],
+    throttled_bitmask: Optional[int],
+    log=None,
+) -> None:
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "INSERT INTO telemetry_samples "
+            "(ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb, "
+            "disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes, "
+            "outbox_depth, outbox_oldest_age_s, throttled_bitmask) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb,
+             disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes,
+             outbox_depth, outbox_oldest_age_s, throttled_bitmask),
+        )
+    finally:
+        conn.close()
+
+
+def insert_telemetry_event(
+    cfg: DBConfig,
+    *,
+    ts: int,
+    kind: str,
+    detail: Optional[dict] = None,
+    log=None,
+) -> None:
+    conn = _connect(cfg)
+    try:
+        detail_json = json.dumps(detail) if detail is not None else None
+        conn.execute(
+            "INSERT INTO telemetry_events (ts, kind, detail) VALUES (?,?,?)",
+            (ts, kind, detail_json),
+        )
+    finally:
+        conn.close()
+
+
+def get_telemetry_samples_since(
+    cfg: DBConfig,
+    *,
+    since_ts: int,
+    log=None,
+) -> list[dict]:
+    conn = _connect(cfg)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM telemetry_samples WHERE ts > ? ORDER BY ts",
+            (since_ts,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_telemetry_events_since(
+    cfg: DBConfig,
+    *,
+    since_ts: int,
+    kinds: Optional[list[str]] = None,
+    log=None,
+) -> list[dict]:
+    conn = _connect(cfg)
+    try:
+        if kinds:
+            placeholders = ",".join("?" for _ in kinds)
+            rows = conn.execute(
+                f"SELECT ts, kind, detail FROM telemetry_events "
+                f"WHERE ts > ? AND kind IN ({placeholders}) ORDER BY ts",
+                (since_ts, *kinds),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, kind, detail FROM telemetry_events WHERE ts > ? ORDER BY ts",
+                (since_ts,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("detail"):
+                try:
+                    d["detail"] = json.loads(d["detail"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+def get_outbox_snapshot(
+    cfg: DBConfig,
+    *,
+    now_ts: int,
+    log=None,
+) -> tuple[int, Optional[int]]:
+    conn = _connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS depth, MIN(ts) AS oldest_ts FROM outbox WHERE status = 'queued'"
+        ).fetchone()
+        depth = row["depth"] if row else 0
+        oldest_ts = row["oldest_ts"] if row else None
+        oldest_age_s = (now_ts - oldest_ts) if oldest_ts is not None else None
+        return depth, oldest_age_s
+    finally:
+        conn.close()
+
+
+def prune_telemetry(
+    cfg: DBConfig,
+    *,
+    samples_cutoff_ts: int,
+    events_cutoff_ts: int,
+    log=None,
+) -> None:
+    conn = _connect(cfg)
+    try:
+        conn.execute("DELETE FROM telemetry_samples WHERE ts < ?", (samples_cutoff_ts,))
+        conn.execute("DELETE FROM telemetry_events WHERE ts < ?", (events_cutoff_ts,))
+    finally:
+        conn.close()
+
+
+def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
+    """Build the system telemetry dict for compute_stats(). Single connection."""
+    conn = _connect(cfg)
+    try:
+        # 1. 1h samples
+        rows_1h = conn.execute(
+            "SELECT * FROM telemetry_samples WHERE ts > ? ORDER BY ts",
+            (now_ts - 3600,),
+        ).fetchall()
+        samples_1h = [dict(r) for r in rows_1h]
+
+        # 2. 24h samples (subset of columns for hourly aggregation)
+        rows_24h = conn.execute(
+            "SELECT ts, disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes "
+            "FROM telemetry_samples WHERE ts > ? ORDER BY ts",
+            (now_ts - 86400,),
+        ).fetchall()
+        samples_24h = [dict(r) for r in rows_24h]
+
+        # 3. Event counts by kind
+        event_count_rows = conn.execute(
+            "SELECT kind, COUNT(*) AS n FROM telemetry_events "
+            "WHERE ts > ? AND kind IN ('rate_limit','mac_mismatch','http_error','throttle_change') "
+            "GROUP BY kind",
+            (now_ts - 86400,),
+        ).fetchall()
+        event_counts = {r["kind"]: r["n"] for r in event_count_rows}
+
+        # 4. Throttle change events
+        throttle_rows = conn.execute(
+            "SELECT ts, detail FROM telemetry_events "
+            "WHERE ts > ? AND kind = 'throttle_change' ORDER BY ts",
+            (now_ts - 86400,),
+        ).fetchall()
+
+        # 5. HTTP error breakdown by status code
+        http_err_rows = conn.execute(
+            "SELECT json_extract(detail, '$.status') AS s, COUNT(*) AS n "
+            "FROM telemetry_events WHERE ts > ? AND kind = 'http_error' GROUP BY s",
+            (now_ts - 86400,),
+        ).fetchall()
+
+        # 6. Outbox snapshot
+        outbox_row = conn.execute(
+            "SELECT COUNT(*) AS depth, MIN(ts) AS oldest_ts FROM outbox WHERE status = 'queued'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    # -- Build the result dict --
+    latest = samples_1h[-1] if samples_1h else {}
+
+    # CPU
+    load_1h_values = [s["load_1m"] for s in samples_1h if s.get("load_1m") is not None]
+    temp_1h_values = [s["cpu_temp_c"] for s in samples_1h if s.get("cpu_temp_c") is not None]
+    throttled_bitmask = latest.get("throttled_bitmask")
+    throttled_now = None
+    if throttled_bitmask is not None:
+        throttled_now = bool(throttled_bitmask & 0xF)
+
+    # Memory
+    mem_1h_values = [
+        round(s["mem_available_kb"] / 1024)
+        for s in samples_1h if s.get("mem_available_kb") is not None
+    ]
+
+    # Network rate from last two 1h samples
+    rx_Bps, tx_Bps = 0, 0
+    if len(samples_1h) >= 2:
+        s_prev, s_last = samples_1h[-2], samples_1h[-1]
+        dt = s_last["ts"] - s_prev["ts"]
+        if dt > 0 and s_last.get("net_rx_bytes") is not None and s_prev.get("net_rx_bytes") is not None:
+            drx = s_last["net_rx_bytes"] - s_prev["net_rx_bytes"]
+            dtx = s_last["net_tx_bytes"] - s_prev["net_tx_bytes"]
+            rx_Bps = max(0, drx) // dt
+            tx_Bps = max(0, dtx) // dt
+
+    # 24h hourly series: disk and net
+    hourly_disk = {}  # bucket -> [free_kb values]
+    hourly_net = {}   # bucket -> (last_rx, last_tx)  for delta computation
+    for s in samples_24h:
+        bucket = (s["ts"] // 3600) * 3600
+        if s.get("disk_free_kb") is not None:
+            hourly_disk.setdefault(bucket, []).append(s["disk_free_kb"])
+        if s.get("net_rx_bytes") is not None:
+            hourly_net[bucket] = (s["net_rx_bytes"], s["net_tx_bytes"])
+
+    # Disk: average free per hour bucket
+    end_bucket = (now_ts // 3600) * 3600
+    disk_24h_values = []
+    for i in range(24):
+        b = end_bucket - (23 - i) * 3600
+        vals = hourly_disk.get(b)
+        if vals:
+            disk_24h_values.append(round(sum(vals) / len(vals) / 1024))
+        else:
+            disk_24h_values.append(None)
+
+    # Net: hourly byte deltas
+    sorted_net_buckets = sorted(hourly_net.keys())
+    net_deltas = {}
+    for j in range(1, len(sorted_net_buckets)):
+        b_prev = sorted_net_buckets[j - 1]
+        b_curr = sorted_net_buckets[j]
+        rx_prev, tx_prev = hourly_net[b_prev]
+        rx_curr, tx_curr = hourly_net[b_curr]
+        drx = rx_curr - rx_prev
+        dtx = tx_curr - tx_prev
+        net_deltas[b_curr] = (max(0, drx), max(0, dtx))
+
+    rx_24h_values = []
+    tx_24h_values = []
+    for i in range(24):
+        b = end_bucket - (23 - i) * 3600
+        if b in net_deltas:
+            rx_delta, tx_delta = net_deltas[b]
+            rx_24h_values.append(rx_delta // 3600)
+            tx_24h_values.append(tx_delta // 3600)
+        else:
+            rx_24h_values.append(None)
+            tx_24h_values.append(None)
+
+    # Outbox
+    outbox_depth = outbox_row["depth"] if outbox_row else 0
+    outbox_oldest_ts = outbox_row["oldest_ts"] if outbox_row else None
+    outbox_oldest_age_s = (now_ts - outbox_oldest_ts) if outbox_oldest_ts is not None else None
+
+    # Throttle events
+    throttle_events_24h = []
+    for r in throttle_rows:
+        detail = r["detail"]
+        if detail:
+            try:
+                d = json.loads(detail)
+            except (json.JSONDecodeError, TypeError):
+                d = {}
+        else:
+            d = {}
+        throttle_events_24h.append({
+            "ts": r["ts"],
+            "old": d.get("old"),
+            "new": d.get("new"),
+            "changed_bits": d.get("changed_bits", []),
+            "active_now": d.get("active_now", []),
+        })
+
+    # HTTP error breakdown
+    http_errors = {}
+    for r in http_err_rows:
+        status_str = str(r["s"]) if r["s"] is not None else "unknown"
+        http_errors[status_str] = r["n"]
+
+    return {
+        "now_ts": now_ts,
+        "uptime_s": latest.get("uptime_s"),
+        "cpu": {
+            "load_1m": latest.get("load_1m"),
+            "temp_c": latest.get("cpu_temp_c"),
+            "throttled_now": throttled_now,
+            "load_1h_series": {"sample_sec": 60, "values": load_1h_values},
+            "temp_1h_series": {"sample_sec": 60, "values": temp_1h_values},
+        },
+        "mem": {
+            "available_mb": round(latest["mem_available_kb"] / 1024) if latest.get("mem_available_kb") is not None else None,
+            "total_mb": round(latest["mem_total_kb"] / 1024) if latest.get("mem_total_kb") is not None else None,
+            "available_1h_series": {"sample_sec": 60, "values": mem_1h_values},
+        },
+        "disk": {
+            "free_mb": round(latest["disk_free_kb"] / 1024) if latest.get("disk_free_kb") is not None else None,
+            "total_mb": round(latest["disk_total_kb"] / 1024) if latest.get("disk_total_kb") is not None else None,
+            "series_24h": {"sample_sec": 3600, "values": disk_24h_values},
+        },
+        "net": {
+            "rx_now_Bps": rx_Bps,
+            "tx_now_Bps": tx_Bps,
+            "rx_24h": {"sample_sec": 3600, "values": rx_24h_values},
+            "tx_24h": {"sample_sec": 3600, "values": tx_24h_values},
+        },
+        "outbox": {
+            "depth_now": outbox_depth,
+            "oldest_age_s": outbox_oldest_age_s,
+        },
+        "throttle_events_24h": throttle_events_24h,
+        "events_24h": {
+            "rate_limit": event_counts.get("rate_limit", 0),
+            "mac_mismatch": event_counts.get("mac_mismatch", 0),
+            "http_errors": http_errors,
+        },
+    }

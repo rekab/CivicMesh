@@ -23,6 +23,7 @@ from database import (
     get_vote_counts,
     init_db,
     insert_message,
+    insert_telemetry_event,
     posts_in_last_window,
     queue_outbox_and_message,
     reconcile_message_status,
@@ -38,10 +39,26 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+def _record_telemetry_event(db_cfg, kind, detail=None):
+    """Fire-and-forget telemetry event insert."""
+    try:
+        insert_telemetry_event(db_cfg, ts=_now_ts(), kind=kind, detail=detail)
+    except Exception:
+        pass
+
+
 _stats_cache: dict = {"ts": 0.0, "data": None}
 
 
 def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) -> None:
+    if status >= 400:
+        try:
+            _record_telemetry_event(
+                handler.server.db_cfg, "http_error",
+                {"status": status, "path": handler.path},
+            )
+        except Exception:
+            pass
     body = json.dumps(obj).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -214,6 +231,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         path=self.path,
                         ua=self.headers.get("User-Agent", ""),
                     )
+                _record_telemetry_event(self.server.db_cfg, "mac_mismatch", {"ip": ip, "session_id": sid})
                 log.warning("session:mac_mismatch ip=%s mac=%s stored_mac=%s sid=%s path=%s ua=%s", ip, mac, stored_mac, sid, self.path, self.headers.get("User-Agent", ""))
                 try:
                     create_or_update_session(
@@ -661,6 +679,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if count >= limit:
                 if sec:
                     sec.error("RateLimitExceeded", ip=ip, mac=mac, msg="rate limit exceeded", session_id=sid, count=count, limit=limit, path=path)
+                _record_telemetry_event(self.server.db_cfg, "rate_limit", {"session_id": sid})
                 remaining = 0
                 _json(self, 429, {"error": "rate limit exceeded", "posts_remaining": remaining, "limit": limit, "window_sec": 3600})
                 return
