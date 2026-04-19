@@ -403,7 +403,7 @@ function renderMessages(msgs) {
     var isFailed = m.source === "wifi" && m.status === "failed";
     var div = document.createElement("div");
     div.className = "msg-bubble" +
-      (isOwn || isPending || isFailed ? " msg-bubble--own" : "") +
+      (isOwn ? " msg-bubble--own" : "") +
       (isPending ? " msg-bubble--pending" : "") +
       (isFailed ? " msg-bubble--failed" : "");
 
@@ -425,7 +425,7 @@ function renderMessages(msgs) {
     }
 
     var timeText = isPending ? "Queued for mesh" : isFailed ? "Failed to send" : fmtTime(m.ts);
-    var senderText = (isPending || isFailed) ? "You" : escapeHtml(m.sender || "unknown");
+    var senderText = isOwn && (isPending || isFailed) ? "You" : escapeHtml(m.sender || "unknown");
 
     var detailRows = "";
     if (isPending) {
