@@ -708,15 +708,28 @@ function applyNameMax() {
 }
 
 function setConnectionStatus(connected) {
-  var dot = $("statusDot");
-  var label = $("sessionStatus");
-  if (!dot || !label) return;
-  if (connected) {
-    label.textContent = "Connected";
-    dot.className = "topbar__dot topbar__dot--ok";
-  } else {
-    label.textContent = "Offline";
-    dot.className = "topbar__dot topbar__dot--bad";
+  // Update the stacked radio status indicators (mobile + desktop)
+  var radioDots = [
+    $("topbarRadioDot"),
+    $("desktopRadioDot"),
+  ];
+  var radioLines = [
+    $("topbarRadioLine"),
+    $("desktopRadioLine"),
+  ];
+  for (var i = 0; i < radioDots.length; i++) {
+    var dot = radioDots[i];
+    var line = radioLines[i];
+    if (!dot) continue;
+    if (connected) {
+      dot.className = "topbar__mini-dot topbar__mini-dot--ok";
+      dot.innerHTML = "";
+      if (line) line.className = "topbar__status-line";
+    } else {
+      dot.className = "topbar__mini-dot topbar__mini-dot--off";
+      dot.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      if (line) line.className = "topbar__status-line topbar__status-line--muted";
+    }
   }
 }
 
