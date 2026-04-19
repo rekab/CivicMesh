@@ -16,9 +16,9 @@
   --green: #2e7d32;
   --green-light: #e8f5e9;
   --green-dark: #1b5e20;
-  --brown: #4e342e;
-  --brown-light: #efebe9;
-  --brown-medium: #6d4c41;
+  --brown: #1e2a3a;
+  --brown-light: #eef2f7;
+  --brown-medium: #3a4a5f;
   --local-color: #e65100;
   --local-light: #fff3e0;
   --mesh-color: #2e7d32;
@@ -65,7 +65,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 8px 14px;
   background: var(--brown);
   flex-shrink: 0;
   z-index: 10;
@@ -73,15 +73,15 @@ body {
 .topbar__brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 18px;
+  gap: 7px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.3px;
   color: #ffffff;
 }
 .topbar__logo {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   color: #a5d6a7;
 }
 .topbar__debug {
@@ -814,7 +814,7 @@ body {
   --stats-ink: #1c2b33;
   --stats-ink-dim: #6d4c41;
   --stats-ink-hint: #9c8279;
-  --stats-brown: #4e342e;
+  --stats-brown: #1e2a3a;
   --stats-blue: #1e4f8a;
   --stats-green: #2e7d32;
   --stats-green-live: #43a047;
