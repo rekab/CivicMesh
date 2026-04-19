@@ -19,8 +19,8 @@ from database import (
     mark_outbox_failed,
     prune_heard_packets,
     prune_terminal_outbox,
+    reconcile_message_status,
     record_outbox_send,
-    update_message_status,
     update_outbox_sender_ts,
     upsert_status,
 )
@@ -129,7 +129,6 @@ async def _outbox_task(
                     # Permanent failure: channel not in config. Will never succeed.
                     log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
-                    update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                     consecutive_errors = 0
                 else:
                     # Check for echoes before retrying — an echo that
@@ -137,7 +136,6 @@ async def _outbox_task(
                     if item["retry_count"] > 0:
                         row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
                         if row and row["heard_count"] > 0:
-                            update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                             record_outbox_send(
                                 db_cfg, outbox_id=int(item["id"]),
                                 sender_ts=row.get("sender_ts") or int(time.time()),
@@ -197,7 +195,6 @@ async def _outbox_task(
                             row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
                             if row and row["heard_count"] > 0:
                                 # Echo confirmed — treat as successful send
-                                update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                                 record_outbox_send(
                                     db_cfg, outbox_id=int(item["id"]),
                                     sender_ts=sender_ts, log=log,
@@ -227,7 +224,6 @@ async def _outbox_task(
                         )
                         if new_count >= max_retries:
                             mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
-                            update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                             log.warning(
                                 "outbox:giving_up id=%s channel=%s after %d attempts",
                                 item["id"], channel, new_count,
@@ -240,7 +236,6 @@ async def _outbox_task(
                             )
                             await asyncio.sleep(consecutive_error_cooldown)
                     else:
-                        update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                         record_outbox_send(
                             db_cfg,
                             outbox_id=int(item["id"]),
@@ -253,7 +248,6 @@ async def _outbox_task(
                 new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
                 if new_count >= max_retries:
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
-                    update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                 consecutive_errors += 1
                 if consecutive_errors >= consecutive_error_pause:
                     log.warning(
@@ -277,6 +271,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
     db_cfg = DBConfig(path=cfg.db_path)
     init_db(db_cfg, log=log)
+    reconcile_message_status(db_cfg, log=log)
 
     global EventType
     global MeshCore

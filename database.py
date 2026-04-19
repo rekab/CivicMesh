@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS heard_packets (
     rssi INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_heard_packets_ts ON heard_packets(ts);
+
 """
 
 
@@ -189,7 +190,10 @@ def init_db(cfg: DBConfig, log=None) -> None:
             WHERE status IS NULL OR status NOT IN ('queued', 'sent', 'failed')
             """
         )
-        # If old rows were never marked sent, reconcile using the messages table.
+        # Legacy migration: reconcile old outbox rows that were sent before
+        # the status column existed. Only matches messages WITHOUT a status
+        # (pre-Strategy-A rows inserted by mesh_bot on success). Messages
+        # with status='queued' are Strategy A rows — do NOT treat as sent.
         conn.execute(
             """
             UPDATE outbox
@@ -203,6 +207,7 @@ def init_db(cfg: DBConfig, log=None) -> None:
                   AND m.sender = outbox.sender
                   AND m.content = outbox.content
                   AND m.source = 'wifi'
+                  AND m.status IS NULL
               )
             """
         )
@@ -255,6 +260,35 @@ def insert_message(
             (ts, channel, sender, content, source, session_id, fingerprint, outbox_id, status),
         )
         return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def reconcile_message_status(cfg: DBConfig, log=None) -> int:
+    """Fix messages whose status is out of sync with their outbox row.
+
+    This handles the case where mesh_bot is killed after outbox status
+    changes but before the messages row is updated, or any other
+    inconsistency between the two tables."""
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN")
+        cur1 = conn.execute(
+            "UPDATE messages SET status='sent' WHERE outbox_id IN "
+            "(SELECT id FROM outbox WHERE status='sent') AND status='queued'"
+        )
+        cur2 = conn.execute(
+            "UPDATE messages SET status='failed' WHERE outbox_id IN "
+            "(SELECT id FROM outbox WHERE status='failed') AND status='queued'"
+        )
+        conn.execute("COMMIT")
+        total = (cur1.rowcount or 0) + (cur2.rowcount or 0)
+        if total and log:
+            log.info("db:reconcile_message_status fixed=%d", total)
+        return total
+    except:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
@@ -322,20 +356,22 @@ def get_recent_messages_filtered(
         conditions = []
         params: list[Any] = []
         if channel:
-            conditions.append("channel=?")
+            conditions.append("messages.channel=?")
             params.append(channel)
         if source:
-            conditions.append("source=?")
+            conditions.append("messages.source=?")
             params.append(source)
         if session_id:
-            conditions.append("session_id=?")
+            conditions.append("messages.session_id=?")
             params.append(session_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
-            "SELECT * FROM messages"
+            "SELECT messages.*, outbox.retry_count"
+            " FROM messages"
+            " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
             f"{where} "
-            "ORDER BY ts DESC "
+            "ORDER BY messages.ts DESC "
             "LIMIT ?"
         )
         params.append(limit)
@@ -475,6 +511,46 @@ def queue_outbox(
         conn.close()
 
 
+def queue_outbox_and_message(
+    cfg: DBConfig,
+    *,
+    ts: int,
+    channel: str,
+    sender: str,
+    content: str,
+    session_id: str,
+    fingerprint: Optional[str] = None,
+    log=None,
+) -> tuple[int, int]:
+    """Atomically create an outbox row and its linked messages row.
+
+    Uses an explicit transaction so mesh_bot cannot see the outbox row
+    before the messages row exists — prevents the race where
+    update_message_status matches 0 rows."""
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:queue_outbox_and_message channel=%s sender=%s session=%s len=%d", channel, sender, session_id, len(content))
+        conn.execute("BEGIN")
+        cur = conn.execute(
+            "INSERT INTO outbox (ts, channel, sender, content, session_id, fingerprint, sent) VALUES (?,?,?,?,?,?,0)",
+            (ts, channel, sender, content, session_id, fingerprint),
+        )
+        oid = int(cur.lastrowid)
+        cur2 = conn.execute(
+            "INSERT INTO messages (ts, channel, sender, content, source, session_id, fingerprint, outbox_id, status) VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, channel, sender, content, "wifi", session_id, fingerprint, oid, "queued"),
+        )
+        mid = int(cur2.lastrowid)
+        conn.execute("COMMIT")
+        return oid, mid
+    except:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
 def get_pending_outbox(cfg: DBConfig, *, limit: int, log=None) -> list[dict[str, Any]]:
     conn = _connect(cfg)
     try:
@@ -581,7 +657,7 @@ def mark_outbox_sent(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("db:mark_outbox_sent count=%d", len(outbox_ids))
+            log.warning("db:mark_outbox_sent UNEXPECTED count=%d ids=%s", len(outbox_ids), outbox_ids)
         q = "UPDATE outbox SET sent=1, status='sent' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
         conn.execute(q, outbox_ids)
     finally:
@@ -603,8 +679,9 @@ def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, lo
 
 
 def record_outbox_send(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=None) -> None:
-    """Mark a single outbox row as sent and persist the sender_timestamp
-    that the firmware will stamp on the transmitted packet.
+    """Mark a single outbox row as sent and update the linked messages row
+    atomically.  Uses an explicit transaction so a process kill between
+    the two UPDATEs can't leave them out of sync.
 
     `sender_ts` is captured by the caller as `int(time.time())` around
     the moment of the `send_chan_msg` call. It's used as the matching
@@ -614,11 +691,22 @@ def record_outbox_send(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=Non
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("db:record_outbox_send id=%d sender_ts=%d", outbox_id, sender_ts)
+            log.info("db:record_outbox_send id=%d sender_ts=%d", outbox_id, sender_ts)
+        conn.execute("BEGIN")
         conn.execute(
             "UPDATE outbox SET sent=1, status='sent', sender_ts=? WHERE id=?",
             (int(sender_ts), int(outbox_id)),
         )
+        cur = conn.execute(
+            "UPDATE messages SET status='sent' WHERE outbox_id=?",
+            (int(outbox_id),),
+        )
+        if log:
+            log.info("db:record_outbox_send id=%d messages_updated=%d", outbox_id, cur.rowcount)
+        conn.execute("COMMIT")
+    except:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
@@ -677,18 +765,31 @@ def increment_heard(
 
 
 def mark_outbox_failed(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
-    """Mark outbox rows as permanently failed (will not be retried)."""
+    """Mark outbox rows as permanently failed and update linked messages
+    atomically."""
     if not outbox_ids:
         return
     conn = _connect(cfg)
     try:
         if log:
             log.debug("db:mark_outbox_failed count=%d", len(outbox_ids))
-        q = "UPDATE outbox SET status='failed' WHERE id IN (%s)" % ",".join("?" for _ in outbox_ids)
-        conn.execute(q, outbox_ids)
+        conn.execute("BEGIN")
+        placeholders = ",".join("?" for _ in outbox_ids)
+        conn.execute(
+            "UPDATE outbox SET status='failed' WHERE id IN (%s)" % placeholders,
+            outbox_ids,
+        )
+        conn.execute(
+            "UPDATE messages SET status='failed' WHERE outbox_id IN (%s)" % placeholders,
+            outbox_ids,
+        )
+        conn.execute("COMMIT")
         for oid in outbox_ids:
             if log:
                 log.warning("outbox:marked_failed id=%d", oid)
+    except:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
