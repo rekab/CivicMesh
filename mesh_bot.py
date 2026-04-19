@@ -18,7 +18,9 @@ from database import (
     insert_message,
     mark_outbox_failed,
     prune_heard_packets,
+    prune_terminal_outbox,
     record_outbox_send,
+    update_message_status,
     update_outbox_sender_ts,
     upsert_status,
 )
@@ -50,6 +52,11 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                 prune_heard_packets(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
             except Exception as e:
                 log.error("retention:heard_packets_error %s", e, exc_info=True)
+            # Prune terminal outbox rows older than 8 days
+            try:
+                prune_terminal_outbox(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
+            except Exception as e:
+                log.error("retention:outbox_error %s", e, exc_info=True)
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
@@ -122,6 +129,7 @@ async def _outbox_task(
                     # Permanent failure: channel not in config. Will never succeed.
                     log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                    update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                     consecutive_errors = 0
                 else:
                     # Check for echoes before retrying — an echo that
@@ -129,13 +137,7 @@ async def _outbox_task(
                     if item["retry_count"] > 0:
                         row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
                         if row and row["heard_count"] > 0:
-                            insert_message(
-                                db_cfg, ts=item["ts"], channel=channel,
-                                sender=sender, content=content, source="wifi",
-                                session_id=item.get("session_id"),
-                                fingerprint=item.get("fingerprint"),
-                                outbox_id=int(item["id"]), log=log,
-                            )
+                            update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                             record_outbox_send(
                                 db_cfg, outbox_id=int(item["id"]),
                                 sender_ts=row.get("sender_ts") or int(time.time()),
@@ -195,13 +197,7 @@ async def _outbox_task(
                             row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
                             if row and row["heard_count"] > 0:
                                 # Echo confirmed — treat as successful send
-                                insert_message(
-                                    db_cfg, ts=item["ts"], channel=channel,
-                                    sender=sender, content=content, source="wifi",
-                                    session_id=item.get("session_id"),
-                                    fingerprint=item.get("fingerprint"),
-                                    outbox_id=int(item["id"]), log=log,
-                                )
+                                update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                                 record_outbox_send(
                                     db_cfg, outbox_id=int(item["id"]),
                                     sender_ts=sender_ts, log=log,
@@ -231,6 +227,7 @@ async def _outbox_task(
                         )
                         if new_count >= max_retries:
                             mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                            update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                             log.warning(
                                 "outbox:giving_up id=%s channel=%s after %d attempts",
                                 item["id"], channel, new_count,
@@ -243,18 +240,7 @@ async def _outbox_task(
                             )
                             await asyncio.sleep(consecutive_error_cooldown)
                     else:
-                        insert_message(
-                            db_cfg,
-                            ts=item["ts"],
-                            channel=channel,
-                            sender=sender,
-                            content=content,
-                            source="wifi",
-                            session_id=item.get("session_id"),
-                            fingerprint=item.get("fingerprint"),
-                            outbox_id=int(item["id"]),
-                            log=log,
-                        )
+                        update_message_status(db_cfg, outbox_id=int(item["id"]), status="sent", log=log)
                         record_outbox_send(
                             db_cfg,
                             outbox_id=int(item["id"]),
@@ -267,6 +253,7 @@ async def _outbox_task(
                 new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
                 if new_count >= max_retries:
                     mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                    update_message_status(db_cfg, outbox_id=int(item["id"]), status="failed", log=log)
                 consecutive_errors += 1
                 if consecutive_errors >= consecutive_error_pause:
                     log.warning(
