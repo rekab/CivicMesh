@@ -1472,13 +1472,26 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
 
     # 24h hourly series: disk and net
     hourly_disk = {}  # bucket -> [free_kb values]
-    hourly_net = {}   # bucket -> (last_rx, last_tx)  for delta computation
+    # Store first and last cumulative net bytes per hourly bucket so we can
+    # compute the delta *within* each bucket (not just between buckets).
+    # This produces a chart point as soon as 2 samples exist in one hour.
+    hourly_net = {}   # bucket -> {"first_rx", "first_tx", "last_rx", "last_tx", "dt"}
     for s in samples_24h:
         bucket = (s["ts"] // 3600) * 3600
         if s.get("disk_free_kb") is not None:
             hourly_disk.setdefault(bucket, []).append(s["disk_free_kb"])
         if s.get("net_rx_bytes") is not None:
-            hourly_net[bucket] = (s["net_rx_bytes"], s["net_tx_bytes"])
+            if bucket not in hourly_net:
+                hourly_net[bucket] = {
+                    "first_rx": s["net_rx_bytes"], "first_tx": s["net_tx_bytes"],
+                    "first_ts": s["ts"],
+                    "last_rx": s["net_rx_bytes"], "last_tx": s["net_tx_bytes"],
+                    "last_ts": s["ts"],
+                }
+            else:
+                hourly_net[bucket]["last_rx"] = s["net_rx_bytes"]
+                hourly_net[bucket]["last_tx"] = s["net_tx_bytes"]
+                hourly_net[bucket]["last_ts"] = s["ts"]
 
     # Disk: average free per hour bucket
     end_bucket = (now_ts // 3600) * 3600
@@ -1491,26 +1504,26 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
         else:
             disk_24h_values.append(None)
 
-    # Net: hourly byte deltas
-    sorted_net_buckets = sorted(hourly_net.keys())
-    net_deltas = {}
-    for j in range(1, len(sorted_net_buckets)):
-        b_prev = sorted_net_buckets[j - 1]
-        b_curr = sorted_net_buckets[j]
-        rx_prev, tx_prev = hourly_net[b_prev]
-        rx_curr, tx_curr = hourly_net[b_curr]
-        drx = rx_curr - rx_prev
-        dtx = tx_curr - tx_prev
-        net_deltas[b_curr] = (max(0, drx), max(0, dtx))
-
+    # Net: intra-bucket byte deltas, normalized to bytes/sec.
+    # For the current hour bucket, if only 1 sample exists (not enough for
+    # an intra-bucket delta), fall back to the instantaneous rate computed
+    # from the last two 1h samples above. This avoids a blank chart for the
+    # first hour after boot.
     rx_24h_values = []
     tx_24h_values = []
     for i in range(24):
         b = end_bucket - (23 - i) * 3600
-        if b in net_deltas:
-            rx_delta, tx_delta = net_deltas[b]
-            rx_24h_values.append(rx_delta // 3600)
-            tx_24h_values.append(tx_delta // 3600)
+        hn = hourly_net.get(b)
+        if hn and hn["last_ts"] > hn["first_ts"]:
+            dt = hn["last_ts"] - hn["first_ts"]
+            drx = max(0, hn["last_rx"] - hn["first_rx"])
+            dtx = max(0, hn["last_tx"] - hn["first_tx"])
+            rx_24h_values.append(drx // dt)
+            tx_24h_values.append(dtx // dt)
+        elif b == end_bucket and (rx_Bps or tx_Bps):
+            # Current hour, single sample — use instantaneous rate
+            rx_24h_values.append(rx_Bps)
+            tx_24h_values.append(tx_Bps)
         else:
             rx_24h_values.append(None)
             tx_24h_values.append(None)
