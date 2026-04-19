@@ -24,7 +24,8 @@ from database import (
     init_db,
     insert_message,
     posts_in_last_window,
-    queue_outbox,
+    queue_outbox_and_message,
+    reconcile_message_status,
     record_post_for_session,
     touch_session_last_seen,
     update_vote,
@@ -693,7 +694,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             now = _now_ts()
-            oid = queue_outbox(
+            oid, mid = queue_outbox_and_message(
                 self.server.db_cfg,
                 ts=now,
                 channel=channel,
@@ -701,19 +702,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 content=content,
                 session_id=sid,
                 fingerprint=fingerprint or None,
-                log=log,
-            )
-            mid = insert_message(
-                self.server.db_cfg,
-                ts=now,
-                channel=channel,
-                sender=name,
-                content=content,
-                source="wifi",
-                session_id=sid,
-                fingerprint=fingerprint or None,
-                outbox_id=oid,
-                status="queued",
                 log=log,
             )
             record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=now, log=log)
@@ -778,6 +766,7 @@ def run():
 
     db_cfg = DBConfig(path=cfg.db_path)
     init_db(db_cfg, log=log)
+    reconcile_message_status(db_cfg, log=log)
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
     os.makedirs(static_dir, exist_ok=True)

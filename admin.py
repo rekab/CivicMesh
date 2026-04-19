@@ -55,7 +55,9 @@ def _format_recent_messages(rows: list[dict[str, object]]) -> str:
         f"{'ID':<{RECENT_ID_WIDTH}} "
         f"{'TS':<{RECENT_TS_WIDTH}} "
         f"{'CH':<{RECENT_CHANNEL_WIDTH}} "
-        "SRC "
+        "SRC  "
+        "ST   "
+        "RT "
         f"{'SESSION':<{session_width}} "
         f"{'SENDER':<{RECENT_SENDER_WIDTH}} "
         "CONTENT"
@@ -65,6 +67,9 @@ def _format_recent_messages(rows: list[dict[str, object]]) -> str:
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(row["ts"])))
         channel = str(row["channel"])
         source = str(row["source"])
+        status = str(row.get("status") or "-")
+        retry = row.get("retry_count")
+        retry_str = str(retry) if retry is not None else "-"
         session_id = str(row.get("session_id") or "")
         sender = log_safe(repr(str(row["sender"])))
         content = log_safe(repr(str(row["content"])))
@@ -72,7 +77,9 @@ def _format_recent_messages(rows: list[dict[str, object]]) -> str:
             f"{row['id']:<{RECENT_ID_WIDTH}} "
             f"{ts:<{RECENT_TS_WIDTH}} "
             f"{channel:<{RECENT_CHANNEL_WIDTH}} "
-            f"{source} "
+            f"{source:<4} "
+            f"{status:<4} "
+            f"{retry_str:<2} "
             f"{session_id:<{session_width}} "
             f"{sender:<{RECENT_SENDER_WIDTH}} "
             f"{content}"
@@ -272,6 +279,9 @@ def main():
     p_sessions_show = sub_sessions.add_parser("show")
     p_sessions_show.add_argument("session_id")
 
+    p_sessions_reset = sub_sessions.add_parser("reset")
+    p_sessions_reset.add_argument("session_id")
+
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -367,6 +377,22 @@ def main():
             print("session not found")
             return
         print(_format_session_detail(row))
+        return
+    if args.cmd == "sessions" and args.sessions_cmd == "reset":
+        row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
+        if not row:
+            print("session not found")
+            return
+        import sqlite3
+        conn = sqlite3.connect(cfg.db_path, timeout=5, isolation_level=None)
+        try:
+            conn.execute(
+                "UPDATE sessions SET post_count_hour=0 WHERE session_id=?",
+                (args.session_id,),
+            )
+        finally:
+            conn.close()
+        print(f"Reset post_count_hour for session {args.session_id}")
         return
 
 
