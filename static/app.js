@@ -770,6 +770,27 @@ function fmtStatNum(n) {
   return String(n);
 }
 
+function fmtUptime(s) {
+  if (s == null) return "\u2014";
+  var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d > 0) return d + "d " + h + "h";
+  if (h > 0) return h + "h " + m + "m";
+  return m + "m";
+}
+
+function fmtMb(mb) {
+  if (mb == null) return "\u2014";
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
+  return mb + " MB";
+}
+
+function fmtBps(bps) {
+  if (bps == null) return "\u2014";
+  if (bps >= 1e6) return (bps / 1e6).toFixed(1) + " MB/s";
+  if (bps >= 1e3) return (bps / 1e3).toFixed(1) + " KB/s";
+  return bps + " B/s";
+}
+
 function statsRangeMeta(r) {
   switch (r) {
     case "5min": return { label: "5 minutes", bucket: "30 s", axisStart: "\u22125m", axisEnd: "now" };
@@ -786,6 +807,298 @@ function tickTile(el, newVal) {
   if (el.textContent !== nv) {
     el.textContent = nv;
     el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick");
+  }
+}
+
+/* ---- Diagnostic mini sparklines (area+line SVGs) ---- */
+
+function renderDiagSpark(hostId, values, opts) {
+  var host = $(hostId);
+  if (!host) return;
+  if (!values || !values.length) return;
+  var filtered = [];
+  for (var i = 0; i < values.length; i++) {
+    if (values[i] != null) filtered.push({ i: i, v: values[i] });
+  }
+  if (filtered.length < 1) return;
+  // Single point: duplicate it so we draw a flat line
+  if (filtered.length === 1) filtered.push({ i: Math.max(filtered[0].i + 1, values.length - 1), v: filtered[0].v });
+  opts = opts || {};
+  var color = opts.color || "#1e4f8a";
+  var min = 0;
+  var max = filtered[0].v;
+  for (var j = 1; j < filtered.length; j++) {
+    if (filtered[j].v > max) max = filtered[j].v;
+  }
+  if (max <= min) max = min + 1;
+  var w = host.clientWidth || 200, h = host.clientHeight || 22;
+  var pts = [];
+  for (var k = 0; k < filtered.length; k++) {
+    var x = (filtered[k].i / Math.max(values.length - 1, 1)) * w;
+    var y = h - ((filtered[k].v - min) / (max - min)) * (h - 4) - 2;
+    pts.push(x.toFixed(1) + "," + y.toFixed(1));
+  }
+  var area = "M0," + h + " L" + pts.join(" L") + " L" + w + "," + h + " Z";
+  var line = "M" + pts.join(" L");
+  host.innerHTML =
+    '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" width="100%" height="100%">' +
+    '<path d="' + area + '" fill="' + color + '" fill-opacity="0.14"/>' +
+    '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-linejoin="round"/>' +
+    '</svg>';
+}
+
+function renderDiagNetSpark(hostId, rx, tx) {
+  var host = $(hostId);
+  if (!host || !rx || !tx) return;
+  var rxF = [], txF = [];
+  for (var i = 0; i < rx.length; i++) {
+    if (rx[i] != null) rxF.push({ i: i, v: rx[i] });
+  }
+  for (var j = 0; j < tx.length; j++) {
+    if (tx[j] != null) txF.push({ i: j, v: tx[j] });
+  }
+  if (rxF.length < 1 && txF.length < 1) return;
+  // Single point: duplicate for flat line
+  if (rxF.length === 1) rxF.push({ i: Math.max(rxF[0].i + 1, rx.length - 1), v: rxF[0].v });
+  if (txF.length === 1) txF.push({ i: Math.max(txF[0].i + 1, tx.length - 1), v: txF[0].v });
+  var allVals = rxF.map(function(p) { return p.v; }).concat(txF.map(function(p) { return p.v; }));
+  var max = Math.max.apply(null, allVals.concat([1]));
+  var len = Math.max(rx.length, tx.length);
+  var w = host.clientWidth || 380, h = host.clientHeight || 54;
+
+  function toPath(points) {
+    var pts = [];
+    for (var k = 0; k < points.length; k++) {
+      var x = (points[k].i / Math.max(len - 1, 1)) * w;
+      var y = h - (points[k].v / max) * (h - 4) - 2;
+      pts.push(x.toFixed(1) + "," + y.toFixed(1));
+    }
+    return { line: "M" + pts.join(" L"), area: "M0," + h + " L" + pts.join(" L") + " L" + w + "," + h + " Z" };
+  }
+  var rxP = rxF.length >= 2 ? toPath(rxF) : null;
+  var txP = txF.length >= 2 ? toPath(txF) : null;
+  var svg = '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" width="100%" height="100%">';
+  if (rxP) {
+    svg += '<path d="' + rxP.area + '" fill="#1e4f8a" fill-opacity="0.14"/>';
+    svg += '<path d="' + rxP.line + '" fill="none" stroke="#1e4f8a" stroke-width="1.4" stroke-linejoin="round"/>';
+  }
+  if (txP) {
+    svg += '<path d="' + txP.line + '" fill="none" stroke="#e06713" stroke-width="1.4" stroke-linejoin="round" stroke-dasharray="2.5,2"/>';
+  }
+  svg += '</svg>';
+  host.innerHTML = svg;
+}
+
+/* ---- Health thresholds ---- */
+
+function healthOf(metric, value) {
+  if (value == null || (typeof value === "number" && isNaN(value))) return "n/a";
+  switch (metric) {
+    case "cpu_temp":     return value > 80 ? "crit" : value > 70 ? "warn" : "ok";
+    case "cpu_load":     return value > 3.5 ? "crit" : value > 2.0 ? "warn" : "ok";
+    case "mem":          return value < 50 ? "crit" : value < 100 ? "warn" : "ok";
+    case "disk_pct":     return value < 5 ? "crit" : value < 10 ? "warn" : "ok";
+    case "outbox_depth": return value > 5 ? "warn" : "ok";
+    case "outbox_age":   return value > 60 ? "warn" : "ok";
+    case "rate_limit":   return value > 10 ? "warn" : "ok";
+    case "http_5xx":     return value > 0 ? "warn" : "ok";
+  }
+  return "ok";
+}
+
+function worstHealth(a, b) {
+  var order = { "n/a": 0, ok: 1, warn: 2, crit: 3 };
+  return (order[a] || 0) >= (order[b] || 0) ? a : b;
+}
+
+function sparkColor(health) {
+  if (health === "crit") return "#a4201d";
+  if (health === "warn") return "#b5390a";
+  return "#1e4f8a";
+}
+
+/* ---- Render system health card ---- */
+
+function renderSysHealth(sys) {
+  if (!sys || !sys.cpu) return;
+
+  // Compute health per metric
+  var h = {
+    load: healthOf("cpu_load", sys.cpu.load_1m),
+    temp: healthOf("cpu_temp", sys.cpu.temp_c),
+    mem:  healthOf("mem", sys.mem && sys.mem.available_mb),
+    disk: healthOf("disk_pct", sys.disk ? (sys.disk.free_mb / sys.disk.total_mb) * 100 : null),
+    outboxDepth: healthOf("outbox_depth", sys.outbox && sys.outbox.depth_now),
+    outboxAge:   healthOf("outbox_age",   sys.outbox && sys.outbox.oldest_age_s),
+    rate:  healthOf("rate_limit", sys.events_24h && sys.events_24h.rate_limit),
+    http5: healthOf("http_5xx", sys.events_24h && sys.events_24h.http_errors && sys.events_24h.http_errors["500"]),
+  };
+  var throttleEvents = sys.throttle_events_24h || [];
+  h.throttle = throttleEvents.length > 0 ? "warn" : "ok";
+
+  // Overall status chip
+  var worst = "ok";
+  var keys = Object.keys(h);
+  for (var i = 0; i < keys.length; i++) worst = worstHealth(worst, h[keys[i]]);
+
+  var chip = $("sysStatusChip");
+  var chipLabel = $("sysStatusLabel");
+  if (chip) {
+    chip.dataset.status = worst;
+    var warnCount = 0, critCount = 0;
+    for (var j = 0; j < keys.length; j++) {
+      if (h[keys[j]] === "warn") warnCount++;
+      if (h[keys[j]] === "crit") critCount++;
+    }
+    var text = "Healthy";
+    if (critCount) text = critCount + " critical" + (critCount > 1 ? "s" : "");
+    else if (warnCount) text = warnCount + " warning" + (warnCount > 1 ? "s" : "");
+    if (chipLabel) chipLabel.textContent = text;
+  }
+
+  // Metric cards
+  function applyMetric(rootId, valId, sparkId, value, health, fmt, series, color) {
+    var root = $(rootId);
+    var valEl = $(valId);
+    if (root) root.dataset.status = health;
+    if (valEl) valEl.textContent = fmt(value);
+    if (series) renderDiagSpark(sparkId, series, { color: color });
+  }
+
+  applyMetric("mCpuLoad", "mCpuLoadVal", "mCpuLoadSpark",
+    sys.cpu.load_1m, h.load,
+    function(v) { return v == null ? "\u2014" : v.toFixed(2); },
+    sys.cpu.load_1h_series && sys.cpu.load_1h_series.values, sparkColor(h.load));
+
+  applyMetric("mCpuTemp", "mCpuTempVal", "mCpuTempSpark",
+    sys.cpu.temp_c, h.temp,
+    function(v) { return v == null ? "\u2014" : v.toFixed(1) + "\u00b0C"; },
+    sys.cpu.temp_1h_series && sys.cpu.temp_1h_series.values, sparkColor(h.temp));
+
+  applyMetric("mMem", "mMemVal", "mMemSpark",
+    sys.mem.available_mb, h.mem, fmtMb,
+    sys.mem.available_1h_series && sys.mem.available_1h_series.values, sparkColor(h.mem));
+  var mMemSub = $("mMemSub");
+  if (mMemSub) mMemSub.textContent = "of " + fmtMb(sys.mem.total_mb);
+
+  var diskPct = sys.disk ? (sys.disk.free_mb / sys.disk.total_mb) * 100 : null;
+  applyMetric("mDisk", "mDiskVal", "mDiskSpark",
+    sys.disk.free_mb, h.disk, fmtMb,
+    sys.disk.series_24h && sys.disk.series_24h.values, sparkColor(h.disk));
+  var mDiskSub = $("mDiskSub");
+  if (mDiskSub && diskPct != null) mDiskSub.textContent = diskPct.toFixed(0) + "% of " + fmtMb(sys.disk.total_mb);
+
+  // Network
+  var sysNetIn = $("sysNetIn");
+  var sysNetOut = $("sysNetOut");
+  if (sysNetIn) sysNetIn.textContent = fmtBps(sys.net.rx_now_Bps);
+  if (sysNetOut) sysNetOut.textContent = fmtBps(sys.net.tx_now_Bps);
+  renderDiagNetSpark("sysNetSpark",
+    (sys.net.rx_24h && sys.net.rx_24h.values) || [],
+    (sys.net.tx_24h && sys.net.tx_24h.values) || []);
+
+  // Outbox
+  var outboxRow = $("sysOutboxRow");
+  var outboxVal = $("sysOutboxVal");
+  var depth = sys.outbox.depth_now, age = sys.outbox.oldest_age_s;
+  var outboxHealth = worstHealth(h.outboxDepth, h.outboxAge);
+  if (outboxRow) outboxRow.dataset.status = outboxHealth;
+  if (outboxVal) {
+    if (depth === 0) {
+      outboxVal.textContent = "drained";
+      outboxVal.className = "sys-row__value sys-row__muted";
+    } else {
+      outboxVal.textContent = depth + " queued \u00b7 oldest " + age + "s";
+      outboxVal.className = "sys-row__value";
+    }
+  }
+
+  // Throttle events
+  var tCount = $("sysThrottleCount");
+  var tList = $("sysThrottleList");
+  var tRow = $("sysThrottleRow");
+  if (tRow) tRow.dataset.status = throttleEvents.length ? "warn" : "ok";
+  var throttledNow = sys.cpu.throttled_now;
+  if (throttledNow === null) {
+    if (tCount) { tCount.textContent = "not available on this host"; tCount.className = "sys-row__value sys-row__value--muted"; }
+    if (tList) tList.hidden = true;
+  } else if (!throttleEvents.length) {
+    if (tCount) { tCount.textContent = "none in last 24h"; tCount.className = "sys-row__value sys-row__value--muted"; }
+    if (tList) tList.hidden = true;
+  } else {
+    if (tCount) { tCount.textContent = throttleEvents.length + " event" + (throttleEvents.length > 1 ? "s" : ""); tCount.className = "sys-row__value sys-row__value--warn"; }
+    if (tList) {
+      tList.hidden = false;
+      tList.innerHTML = "";
+      for (var ti = 0; ti < throttleEvents.length; ti++) {
+        var ev = throttleEvents[ti];
+        var dt = new Date(ev.ts * 1000);
+        var hh = dt.getHours(), mm = String(dt.getMinutes()).padStart(2, "0");
+        var ap = hh >= 12 ? "pm" : "am"; hh = hh % 12 || 12;
+
+        var li = document.createElement("li");
+        // Determine kind from changed_bits: any (+) means something turned on
+        var hasOn = (ev.changed_bits || []).some(function(b) { return b.indexOf("(+)") >= 0; });
+        var hasOff = (ev.changed_bits || []).some(function(b) { return b.indexOf("(-)") >= 0; });
+        li.className = "diag-events__item" + (hasOn ? " diag-events__item--on" : (hasOff ? " diag-events__item--off" : ""));
+
+        var timeSpan = document.createElement("span");
+        timeSpan.className = "diag-events__time";
+        timeSpan.textContent = hh + ":" + mm + " " + ap;
+        li.appendChild(timeSpan);
+
+        var labelSpan = document.createElement("span");
+        labelSpan.className = "diag-events__label";
+        var label = (ev.changed_bits || []).join(", ");
+        if (!label && ev.active_now) label = (ev.active_now || []).join(", ") || "Cleared";
+        labelSpan.textContent = label || "State changed";
+        li.appendChild(labelSpan);
+
+        tList.appendChild(li);
+      }
+    }
+  }
+
+  // Footer counters
+  var evts = sys.events_24h || { rate_limit: 0, mac_mismatch: 0, http_errors: {} };
+
+  var rateItem = $("sysRateItem");
+  if (rateItem) rateItem.dataset.status = evts.rate_limit === 0 ? "zero" : (h.rate === "ok" ? "nonzero" : "warn");
+  var rateNum = $("sysRateNum");
+  if (rateNum) rateNum.textContent = evts.rate_limit;
+
+  var macItem = $("sysMacItem");
+  if (macItem) macItem.dataset.status = evts.mac_mismatch === 0 ? "zero" : "warn";
+  var macNum = $("sysMacNum");
+  if (macNum) macNum.textContent = evts.mac_mismatch;
+
+  var httpPills = $("sysHttpPills");
+  var httpItem = $("sysHttpItem");
+  if (httpPills) {
+    var entries = Object.keys(evts.http_errors || {}).filter(function(k) { return evts.http_errors[k] > 0; });
+    if (!entries.length) {
+      httpPills.innerHTML = "";
+      var none = document.createElement("span");
+      none.className = "sys-footer__none";
+      none.textContent = "none";
+      httpPills.appendChild(none);
+      if (httpItem) httpItem.dataset.status = "zero";
+    } else {
+      httpPills.innerHTML = "";
+      var has5xx = false;
+      for (var pi = 0; pi < entries.length; pi++) {
+        var code = entries[pi];
+        var pill = document.createElement("span");
+        pill.className = "http-pill http-pill--" + code[0] + "xx";
+        pill.textContent = code + " ";
+        var b = document.createElement("b");
+        b.textContent = evts.http_errors[code];
+        pill.appendChild(b);
+        httpPills.appendChild(pill);
+        if (code[0] === "5") has5xx = true;
+      }
+      if (httpItem) httpItem.dataset.status = has5xx ? "warn" : "nonzero";
+    }
   }
 }
 
@@ -811,8 +1124,18 @@ function renderStats() {
   var nameEl = $("statsNodeName");
   if (nameEl && state.hubName) nameEl.textContent = state.hubName;
 
+  var sys = d.system || {};
+
   var uptimeEl = $("statsUptime");
-  if (uptimeEl) uptimeEl.textContent = "Healthy \u00b7 radio " + (state.radioStatus || "unknown");
+  if (uptimeEl) {
+    var radioLabel = "radio " + (state.radioStatus || "unknown");
+    uptimeEl.textContent = (sys.cpu ? "Healthy" : "Collecting\u2026") + " \u00b7 " + radioLabel;
+  }
+
+  var uv = $("statsUptimeVal");
+  if (uv) uv.textContent = fmtUptime(sys.uptime_s);
+
+  renderSysHealth(sys);
 
   var updated = $("statsUpdated");
   if (updated) {

@@ -313,7 +313,9 @@
         <span id="statsNodeName">CivicMesh</span>
       </h2>
       <div class="stats-sheet__sub">
-        <span id="statsUptime">Healthy</span>
+        <span id="statsUptime">Healthy &middot; radio online</span>
+        <span class="stats-sheet__sep">&middot;</span>
+        <span>uptime <span id="statsUptimeVal">&mdash;</span></span>
         <span class="stats-sheet__sep">&middot;</span>
         <span id="statsUpdated">updated just now</span>
       </div>
@@ -402,6 +404,80 @@
         <div class="stat-tile stat-tile--compact"><div class="stat-tile__label">7&thinsp;d</div><div class="stat-tile__big" id="repWeek">&mdash;</div></div>
       </div>
     </section>
+    <!-- System health -->
+    <section class="stats-card syshealth" id="sysHealthCard">
+      <div class="stats-card__head">
+        <h3 class="stats-card__title">System health</h3>
+        <span class="syshealth__chip" id="sysStatusChip"><span class="syshealth__chip-dot"></span><span id="sysStatusLabel">&mdash;</span></span>
+      </div>
+
+      <div class="syshealth__grid">
+        <div class="sys-metric" id="mCpuLoad">
+          <div class="sys-metric__lbl">CPU load <span class="sys-metric__unit">1 min</span></div>
+          <div class="sys-metric__val" id="mCpuLoadVal">&mdash;</div>
+          <div class="sys-metric__spark" id="mCpuLoadSpark"></div>
+        </div>
+        <div class="sys-metric" id="mCpuTemp">
+          <div class="sys-metric__lbl">CPU temp</div>
+          <div class="sys-metric__val" id="mCpuTempVal">&mdash;</div>
+          <div class="sys-metric__spark" id="mCpuTempSpark"></div>
+        </div>
+        <div class="sys-metric" id="mMem">
+          <div class="sys-metric__lbl">Memory free</div>
+          <div class="sys-metric__val" id="mMemVal">&mdash;</div>
+          <div class="sys-metric__sub" id="mMemSub">of &mdash;</div>
+          <div class="sys-metric__spark" id="mMemSpark"></div>
+        </div>
+        <div class="sys-metric" id="mDisk">
+          <div class="sys-metric__lbl">Disk free</div>
+          <div class="sys-metric__val" id="mDiskVal">&mdash;</div>
+          <div class="sys-metric__sub" id="mDiskSub">&mdash;</div>
+          <div class="sys-metric__spark" id="mDiskSpark"></div>
+        </div>
+      </div>
+
+      <div class="sys-row sys-row--net">
+        <div class="sys-row__head">
+          <span class="sys-row__title">Network throughput</span>
+          <span class="sys-row__value">
+            <span class="diag-dot diag-dot--in"></span><span id="sysNetIn">&mdash;</span>
+            <span class="sys-row__sep">&middot;</span>
+            <span class="diag-dot diag-dot--out"></span><span id="sysNetOut">&mdash;</span>
+          </span>
+        </div>
+        <div class="diag-spark diag-spark--net" id="sysNetSpark"></div>
+        <div class="diag-spark__axis"><span>&minus;24h</span><span>now</span></div>
+      </div>
+
+      <div class="sys-row sys-row--outbox" id="sysOutboxRow">
+        <span class="sys-row__title">Outbox</span>
+        <span class="sys-row__value" id="sysOutboxVal">&mdash;</span>
+      </div>
+
+      <div class="sys-row sys-row--throttle" id="sysThrottleRow">
+        <div class="sys-row__head">
+          <span class="sys-row__title">Throttle events <span class="sys-row__sub">24h</span></span>
+          <span class="sys-row__value sys-row__value--muted" id="sysThrottleCount">none</span>
+        </div>
+        <ul class="diag-events" id="sysThrottleList" hidden></ul>
+      </div>
+
+      <div class="sys-footer">
+        <div class="sys-footer__item" id="sysRateItem">
+          <span class="sys-footer__num" id="sysRateNum">&mdash;</span>
+          <span class="sys-footer__lbl">rate-limit</span>
+        </div>
+        <div class="sys-footer__item" id="sysMacItem">
+          <span class="sys-footer__num" id="sysMacNum">&mdash;</span>
+          <span class="sys-footer__lbl">MAC mismatch</span>
+        </div>
+        <div class="sys-footer__item sys-footer__item--http" id="sysHttpItem">
+          <span class="sys-footer__lbl">HTTP errors</span>
+          <span class="sys-footer__pills" id="sysHttpPills"><span class="sys-footer__none">none</span></span>
+        </div>
+      </div>
+    </section>
+
     <section class="stats-card stats-card--raw">
       <button type="button" class="stats-raw__toggle" id="statsRawToggle" aria-expanded="false">
         <svg class="stats-raw__chev" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 l4 3 -4 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
