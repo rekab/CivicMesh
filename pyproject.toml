@@ -27,6 +27,9 @@ dependencies = [
   "tomli; python_version < '3.11'",
 ]
 
+[project.optional-dependencies]
+diagnostics = ["psutil"]
+
 [project.scripts]
 civicmesh-web = "web_server:run"
 civicmesh-mesh = "mesh_bot:main"
