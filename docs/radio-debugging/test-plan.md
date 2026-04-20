@@ -223,6 +223,8 @@ When a test calls for "scope/LA," flag it clearly — we do not assume we have a
 
 **Priority:** Medium — doesn't answer the hang question but sets up the observation framework we need for Phase 3 recovery design.
 
+**Findings:** See `diagnostics/radio/FINDINGS.md` § "T9 — Liveness ping latency characterization".
+
 ---
 
 ## T10 — Does a pre-reset SPI quiesce prevent the B3 class of hang?
