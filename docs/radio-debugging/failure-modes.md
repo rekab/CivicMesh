@@ -82,6 +82,8 @@ Supply voltage falls below threshold (default ~2.44V on S3). On a Pi Zero 2W pow
 
 ## B — SX1262 radio
 
+> **In-band recovery is not available for B-family failures.** Every mode below that lists "VEXT cycle" as a recovery path has no corresponding serial command on V3 companion firmware v1.15.0. The firmware exposes `CMD_REBOOT` (`MyMesh.cpp:1439-1443`), which calls `board.reboot()` → `esp_restart()` on ESP32 (`src/helpers/ESP32Board.h:124-126`) — a software reset of the ESP32 core only. `PIN_VEXT_EN` (GPIO36) is not toggled by reboot, so SX1262 state survives the ESP32 reset. There is no `CMD_POWER_CYCLE_RADIO`, no command that drives `HeltecV3Board::periph_power` (`variants/heltec_v3/HeltecV3Board.h:27`), and nothing in meshcore_py that can request one. The only ways to VEXT-cycle the SX1262 today are: (a) VBUS disconnect (physical unplug or host-side USB port disable), or (b) a firmware change adding a command that does `periph_power.release(); delay; periph_power.claim();` and re-runs `radio_init()`. Option (b) is noted as a design option for the later recovery phase; it is not implemented in the analyzed firmware.
+
 ### B1. SX1262 stuck in TX state
 
 After `startTransmit()`, the SX1262's DIO1 interrupt fails to fire (either because the IRQ mask is misconfigured, the packet never actually leaves the chip, or the chip enters an undefined substate). State machine stays `STATE_TX_WAIT` in `RadioLibWrappers.cpp:147` forever — `isSendComplete()` never returns true (`RadioLibWrappers.cpp:156-163`).
