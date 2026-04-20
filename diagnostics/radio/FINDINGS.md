@@ -215,6 +215,46 @@ from other operators; matching by `message.startswith(f"{my_name}:
 The smoke test does not contradict any assumption in the design doc.
 Cleared for implementation.
 
+## T9 — Liveness ping latency characterization
+
+**Run:** 2026-04-19 (20:40–21:40 PDT) on civicmesh-toorcamp-01 (Pi Zero 2W), 3601s total, meshcore_py 2.3.6, mesh_bot stopped.
+**Radio:** public_key `1864e4638b788f1a…`, name `1864E463`, params 910.525 MHz / 62.5 kHz BW / SF7 / CR5.
+**Firmware version:** not captured — `self_info` does not carry a firmware version field.
+**Script:** `diagnostics/radio/t9_liveness_latency.py`, command timeout 2.0s.
+**Data:** `diagnostics/t9_run_20260419_234008.jsonl` (185 lines).
+
+**Results:**
+
+| Interval | n | ok | timeout | p50 ms | p95 ms | p99 ms | min ms | max ms |
+|----------|----|----|---------|--------|--------|--------|--------|--------|
+| 10s | 120 | 117 | 3 | 5.94 | 6.33 | 8.15 | 5.32 | 1106.9 |
+| 30s | 40 | 40 | 0 | 5.95 | 6.22 | 6.32 | 5.36 | 6.32 |
+| 60s | 20 | 18 | 2 | 5.67 | 24.39 | 106.14 | 5.24 | 126.58 |
+
+**Key observations:**
+
+1. Baseline latency is ~5.9 ms p50 across all three polling frequencies. The local USB-serial command path is healthy and fast.
+2. Five timeouts (>2000 ms) in 180 total calls: 3 at the 10s interval, 0 at 30s, 2 at 60s. Timeouts occur even with no mesh_bot contention on the serial port.
+3. The 10s interval's max of 1106.9 ms is a single sample within the 2s timeout but three orders of magnitude above p50. Occasional multi-second command latencies happen on this hardware.
+4. Zero `silence_detected` events in the entire run (the script emits these at 3+ consecutive timeouts). All five timeouts were isolated — timeout gaps were 240s–540s apart.
+5. `cpu_percent_delta` is null in all three summaries; psutil was not installed for this run. Load-average deltas are available: effectively zero at 30s and 60s intervals, slightly negative at 10s (−0.108 on 1-min average, meaning load was already declining). This is an instrumentation gap — future runs should install psutil.
+6. `public_key` unchanged across the hour (drift dict empty in `self_info_end`). No SPIFFS identity drift on this run. One hour is a weak check — T6 needs sustained reset cycling to properly evaluate identity stability.
+7. `get_stats_core` returns `payload_keys: ["battery_mv", "uptime_secs", "errors", "queue_len"]` on every successful call.
+
+**Design implications for Phase 3:**
+
+1. **Per-command timeout should be ≥5s, not 2s.** Max latency on a healthy radio was 1106.9 ms; meshcore_py's own `DEFAULT_TIMEOUT` is 5s. A 2s timeout generated 5 false timeouts in one hour of idle operation.
+2. **Hang detection should require multiple consecutive timeouts, not a single one.** Five isolated timeouts occurred in healthy operation; zero consecutive triplets. A 3-consecutive-timeout rule fires zero times on this run.
+3. **Polling interval of 30s is a good default.** At 30s: zero timeouts in 1200s, tight p99 (6.32 ms). 10s triples USB traffic with no detection benefit. 60s slows worst-case detection to 3×60s = 180s before the consecutive-timeout rule fires.
+4. **Worst-case hang detection latency with 30s polling + 3-consecutive rule = ~90s.** This is the design target for Phase 3.
+
+**Caveats:**
+
+- Single run on a single device. Numbers are not a distribution.
+- mesh_bot stopped during run — no TX contention on the serial channel. Real deployment has mesh_bot holding the port and issuing commands concurrently; T9 did not measure that scenario. Latency and timeout rates under load could be worse.
+- n=20 at 60s is too few for reliable p99. The 106.14 ms figure is one sample of 20 being slow, not statistically meaningful.
+- Firmware version not captured. Future runs should record it manually (log line from mesh_bot startup, or `git describe` in the firmware tree at flash time).
+
 ## Test-environment caveats
 
   - **Clock skew**: zero2w's clock runs ~12 seconds behind pi4 (no
