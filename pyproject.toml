@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-diagnostics = ["psutil"]
+diagnostics = ["psutil", "pyusb"]
 
 [project.scripts]
 civicmesh-web = "web_server:run"
