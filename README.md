@@ -66,11 +66,32 @@ Two processes share state via SQLite:
 
 ## Project Docs
 
+Specs and planning:
 - Spec skeleton: `docs/spec_skeleton.md`
 - Invariants: `docs/invariants.md`
 - Open questions: `docs/open_questions.md`
 - Staged hardening plan: `docs/staged_plan.md`
+
+Deployment and operations:
 - Captive portal setup: `docs/captive_portal_setup.md`
+- iOS captive portal notes: `docs/ios-captive-portal-notes.md`
+- Power budget: `docs/power-budget.md`
+- Telemetry: `docs/telemetry.md`
+
+Feature designs:
+- Message lifecycle (outbox state machine): `docs/message_lifecycle.md`
+- Heard-count / echo tracking: `docs/heard_count_design.md`
+
+Radio / hardware:
+- Heltec V3 recovery notes: `docs/heltec-recovery.md`
+- Radio-debugging deep dive (failure modes, boot, reset domains, test plan): `docs/radio-debugging/` — start at its [README](docs/radio-debugging/README.md)
+
+## Diagnostics
+
+`diagnostics/` holds ad-hoc bench tooling, separate from the runtime code in the repo root. It is **not** installed as part of the Python package.
+
+- `diagnostics/radio/` — Mac-side test harness that drives both CivicMesh nodes' radios over SSH via the `meshcore_py` library, bypassing `mesh_bot`. Used to isolate library/radio bugs from app-layer behavior. See `diagnostics/radio/README.md` and `diagnostics/radio/FINDINGS.md`.
+- `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` — load-test helpers used during power-budget work. See `docs/power-budget.md` for context.
 
 ## Scope Notes (v0)
 
@@ -78,17 +99,6 @@ Two processes share state via SQLite:
 - HTTP-only captive portal for device compatibility.
 - `sent-to-radio` indicates the message was handed to the radio, not delivered to recipients.
 - Offline-first: UI loads without radio; cached messages remain readable.
-
-## Configuration
-
-Edit `config.toml`.
-
-### Logging
-
-Logs are written to `logs/` by default:
-- `logs/web_server.log`
-- `logs/mesh_bot.log`
-- `logs/security.log` (ERROR+ security events, rate-limited to reduce log flooding)
 
 ## Initial Setup (dev or deployment)
 
