@@ -119,6 +119,11 @@ The structural gap is worse than it first appears: **on the Pi Zero 2W, there is
 2. **Test whether `radio_init()` after RTS reset recovers common SX1262 stuck states** (CIV-40). If it does, step 1 may cover most real-world radio failures even without VEXT control. This is the most important empirical question.
 3. **Battery swap schedule as implicit recovery.** If battery swaps happen every ~36 hours and require unplugging USB, every swap is a full power cycle. A stuck radio can't persist longer than one swap interval.
 4. **Nightly 4am cron reboot + watchdog** still helps recover ESP32 and CP2102 hangs, even if it can't reach the SX1262.
+5. **Interpose a downstream powered USB hub with per-port power control** (uhubctl-compatible, e.g., certain small OEM hubs). Pi Zero 2W → hub → Heltec V3. `uhubctl -a off -p <port>; sleep 1; uhubctl -a on -p <port>` then drops VBUS at the downstream port while leaving the Zero 2W's root port alone. This is the only fully automated software-driven true VBUS cycle possible on the Zero 2W, and it works regardless of which of the three chips is stuck. Cost: one BOM line item per deployment; modest current overhead on the Pi's upstream port.
+
+**Rejected alternatives:**
+
+- **Adding VEXT power-cycle logic inside `radio_init()` itself** (so every ESP32 reset transitively power-cycles the SX1262). Self-healing on every boot, no new command, variant-local. Rejected because it pollutes the codepath that millions of non-CivicMesh V3 devices run on every boot with recovery logic that should only run in rare failure scenarios. A discrete `CMD_POWER_CYCLE_RADIO` (mitigation 1) keeps the recovery mechanism opt-in and off the hot path.
 
 ## Recovery ladder summary
 
