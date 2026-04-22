@@ -68,6 +68,21 @@ class DebugConfig:
 
 
 @dataclass(frozen=True)
+class RecoveryConfig:
+    liveness_interval_sec: float = 30.0
+    liveness_timeout_sec: float = 5.0
+    liveness_consecutive_threshold: int = 3
+    outbox_consecutive_threshold: int = 3
+    verify_timeout_sec: float = 5.0
+    post_rts_settle_sec: float = 5.0
+    rts_pulse_width_sec: float = 0.1
+    flapping_window_sec: int = 3600
+    flapping_max_recoveries: int = 6
+    backoff_base_sec: float = 60.0
+    backoff_cap_sec: float = 3600.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hub: HubConfig
     radio: RadioConfig
@@ -77,6 +92,7 @@ class AppConfig:
     limits: LimitsConfig
     logging: LoggingConfig
     debug: DebugConfig
+    recovery: RecoveryConfig
     db_path: str = "civic_mesh.db"
 
 
@@ -110,6 +126,7 @@ def load_config(path: str) -> AppConfig:
     limits = raw.get("limits", {})
     logging_raw = raw.get("logging", {})
     debug_raw = raw.get("debug", {})
+    recovery_raw = raw.get("recovery", {})
 
     db_path = raw.get("db_path") or raw.get("db", {}).get("path") or "civic_mesh.db"
     db_path = os.path.expanduser(db_path)
@@ -159,6 +176,19 @@ def load_config(path: str) -> AppConfig:
         ),
         debug=DebugConfig(
             allow_eth0=bool(debug_raw.get("allow_eth0", False)),
+        ),
+        recovery=RecoveryConfig(
+            liveness_interval_sec=float(recovery_raw.get("liveness_interval_sec", 30.0)),
+            liveness_timeout_sec=float(recovery_raw.get("liveness_timeout_sec", 5.0)),
+            liveness_consecutive_threshold=int(recovery_raw.get("liveness_consecutive_threshold", 3)),
+            outbox_consecutive_threshold=int(recovery_raw.get("outbox_consecutive_threshold", 3)),
+            verify_timeout_sec=float(recovery_raw.get("verify_timeout_sec", 5.0)),
+            post_rts_settle_sec=float(recovery_raw.get("post_rts_settle_sec", 5.0)),
+            rts_pulse_width_sec=float(recovery_raw.get("rts_pulse_width_sec", 0.1)),
+            flapping_window_sec=int(recovery_raw.get("flapping_window_sec", 3600)),
+            flapping_max_recoveries=int(recovery_raw.get("flapping_max_recoveries", 6)),
+            backoff_base_sec=float(recovery_raw.get("backoff_base_sec", 60.0)),
+            backoff_cap_sec=float(recovery_raw.get("backoff_cap_sec", 3600.0)),
         ),
         db_path=db_path,
     )
