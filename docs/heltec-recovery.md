@@ -1,7 +1,10 @@
 # Heltec V3 recovery reference
 
-Reference doc for implementing silent-hang detection and recovery (CIV-41).
+Hardware reference for silent-hang detection and recovery (CIV-41).
 Written for Pi Zero 2W deployment target.
+
+**Implementation:** see `docs/recovery.md` for the software design,
+configuration, state machine, and observability.
 
 ## The three chips
 
