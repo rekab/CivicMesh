@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS status (
     process TEXT PRIMARY KEY,
     last_seen_ts INTEGER NOT NULL,
-    radio_connected INTEGER NOT NULL DEFAULT 0
+    radio_connected INTEGER NOT NULL DEFAULT 0,
+    state TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel, ts DESC);
@@ -286,6 +287,13 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add sessions.last_seen_ts")
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen_ts INTEGER")
+
+        # -- status.state (recovery state) --
+        status_cols = [r["name"] for r in conn.execute("PRAGMA table_info(status)").fetchall()]
+        if "state" not in status_cols:
+            if log:
+                log.info("db:migrate add status.state")
+            conn.execute("ALTER TABLE status ADD COLUMN state TEXT")
     finally:
         conn.close()
 
@@ -510,6 +518,7 @@ def upsert_status(
     *,
     process: str,
     radio_connected: bool,
+    state: Optional[str] = None,
     now_ts: Optional[int] = None,
     log=None,
 ) -> None:
@@ -517,13 +526,18 @@ def upsert_status(
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("status:upsert process=%s connected=%s ts=%d", process, bool(radio_connected), now_ts)
+            log.debug("status:upsert process=%s connected=%s state=%s ts=%d",
+                       process, bool(radio_connected), state, now_ts)
         conn.execute(
             """
-            INSERT OR REPLACE INTO status(process, last_seen_ts, radio_connected)
-            VALUES (?, ?, ?)
+            INSERT INTO status(process, last_seen_ts, radio_connected, state)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(process) DO UPDATE SET
+                last_seen_ts=excluded.last_seen_ts,
+                radio_connected=excluded.radio_connected,
+                state=COALESCE(excluded.state, status.state)
             """,
-            (process, now_ts, 1 if radio_connected else 0),
+            (process, now_ts, 1 if radio_connected else 0, state),
         )
     finally:
         conn.close()
