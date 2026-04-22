@@ -1161,12 +1161,16 @@ def insert_heard_packet(cfg: DBConfig, *, ts, payload_type, route_type, path_len
         conn.close()
 
 
+TOUCH_DEBOUNCE_SEC = 30  # skip write if last_seen_ts is already within this window
+
+
 def touch_session_last_seen(cfg: DBConfig, session_id, ts, log=None):
     conn = _connect(cfg)
     try:
         conn.execute(
-            "UPDATE sessions SET last_seen_ts = ? WHERE session_id = ?",
-            (ts, session_id),
+            "UPDATE sessions SET last_seen_ts = ? "
+            "WHERE session_id = ? AND (last_seen_ts IS NULL OR last_seen_ts < ? - ?)",
+            (ts, session_id, ts, TOUCH_DEBOUNCE_SEC),
         )
     finally:
         conn.close()
