@@ -255,6 +255,81 @@ Cleared for implementation.
 - n=20 at 60s is too few for reliable p99. The 106.14 ms figure is one sample of 20 being slow, not statistically meaningful.
 - Firmware version not captured. Future runs should record it manually (log line from mesh_bot startup, or `git describe` in the firmware tree at flash time).
 
+## Recovery characterization — April 20–21, 2026
+
+**Setup:**
+
+- Host: `civicmesh` (Raspberry Pi 4, dev bench)
+- Radio: Heltec V3, firmware 1.15.0 (from OLED boot screen), `self_info.name = 6AA0BD72`
+- meshcore_py 2.3.6
+- Serial path: `/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`
+- mesh_bot stopped during runs (exclusive serial access)
+- Polling interval 2s, command timeout 3s, hang threshold 10 consecutive timeouts
+- Reset methods available: RTS pulse, pyusb `device.reset()`. sysfs authorize toggle deliberately excluded after it was observed to leave the device unreachable for 30 minutes during earlier bench work.
+- Script: `diagnostics/radio/recovery_characterization.py`, `--mode run`
+- Data: `diagnostics/radio/runs/recovery_20260420_215400.jsonl` (14,375 lines), `diagnostics/radio/runs/recovery_20260421_082715.jsonl` (14,304 lines)
+
+**Runs:**
+
+| Run | Duration | Probes | Timeouts | Slow probes (>100ms) | Hangs | p50 | p95 | p99 | max |
+|-----|----------|--------|----------|----------------------|-------|-----|-----|-----|-----|
+| Overnight (quiet) | 8h | 14,361 | 11 | 25 | 0 | 5.47ms | 5.60ms | 5.75ms | 2887.62ms |
+| Daytime (busy) | 8h | 14,184 | 117 | 276 | 0 | 5.46ms | 5.70ms | 627.42ms | 2997.93ms |
+
+**Slow probe distribution, daytime run** (276 probes with latency > 100ms):
+
+| Bucket | Count |
+|--------|-------|
+| 100–250ms | 56 |
+| 250–500ms | 54 |
+| 500–1000ms | 72 |
+| 1000–2000ms | 21 |
+| 2000–3000ms | 73 |
+
+**Sanity test recovery times** (from `recovery_20260420_214914.jsonl`, the successful sanity run immediately before the overnight run):
+
+| Method | Duration |
+|--------|----------|
+| RTS pulse | 2669.7ms |
+| pyusb `device.reset()` | 532.2ms |
+
+Two earlier sanity runs failed: the first because pyusb lacked permissions (`[Errno 13] Access denied` — fixed by adding a udev rule for VID `10c4`), the second because `/dev/ttyUSB0` was renamed to `/dev/ttyUSB1` after re-enumeration (fixed by switching `config.toml` to the stable `/dev/serial/by-id/...` symlink).
+
+**Key observations:**
+
+1. **Baseline is extremely consistent.** p50 and p95 are nearly identical between quiet and busy runs (within 0.1ms). The radio responds in ~5.5ms when it responds promptly, regardless of mesh activity.
+
+2. **Tail extends proportional to mesh activity.** p99 jumped from 5.75ms (quiet) to 627.42ms (busy). p99.9 from 530.06ms to 2807.83ms. Only the tail moves — the body of the distribution stays put. This is consistent with firmware being periodically busy servicing mesh traffic, not with steady-state degradation.
+
+3. **Zero consecutive timeouts in either run.** All 128 timeouts across both runs had `consecutive_timeouts: 1`. Even in the busiest hour of the daytime run (21 timeouts in hour 2, ~1 every 3 min), none chained. The 10-consecutive-timeout hang detector never fired.
+
+4. **The slow-probe distribution is bimodal.** Daytime run: 56+54+72 = 182 probes in the 100–1000ms range, but 73 probes in the 2000–3000ms range, with a dip (21 probes) at 1000–2000ms. Two distinct "busy" regimes — one that resolves in under a second, and one that butts up against the command timeout.
+
+5. **Timeouts are isolated, not clustered into hangs.** Busy periods produced bursts of slow probes interspersed with healthy ones. No sustained silence, ever. Timeout hourly distribution in the daytime run: hours 0–7 had [2, 14, 21, 19, 10, 20, 16, 15] timeouts — spread across the entire run, not concentrated.
+
+6. **pyusb reset was never exercised in production polling.** The sanity test confirmed it works (RTS recovered in ~2.7s, pyusb in ~0.5s), but production polling never invoked it because no hang was detected.
+
+**Design implications for CIV-41:**
+
+1. **Raise command timeout from 3s to 5s.** Of 117 daytime timeouts, most were near the 3s boundary (73 "slow successes" landed in 2000–3000ms). A 5s timeout would have converted most into successful slow probes, yielding a cleaner "timeout = actual hang signal" property. meshcore_py's own `DEFAULT_TIMEOUT` is 5s. Low-risk change.
+
+2. **Keep 10-consecutive-timeout detector rule.** Zero false positives across 28,545 probes over 16 hours, including daytime traffic. The threshold is conservative and correct.
+
+3. **Liveness-ping alone misses the April 19 failure class.** The `no_event_received` errors observed in mesh_bot logs on April 19 were almost certainly latency spikes during active TX, not silent hangs. A liveness ping probing between sends would have seen a healthy radio. CIV-41's secondary trigger on outbox send failures is therefore not optional — it's how you detect the dominant failure mode on this hardware.
+
+4. **Consider dropping pyusb from the production recovery ladder.** It was built and verified, but never invoked across 16h of real polling. pyusb guards against CP2102 bridge hangs (failure mode D1 from `failure-modes.md`), which this hardware does not appear to exhibit at the rates that matter. RTS + the CIV-46 Arduino watchdog (hardware power cycle) may be sufficient. Keep pyusb as a path in CIV-41 but treat it as untested in production.
+
+5. **The "alive but slow" failure mode is the dominant one, not silent hangs.** 276 slow probes vs 128 timeouts vs 0 hangs across 16 hours. CIV-41's job in production will mostly be riding out busy windows, not resetting dead radios. Design accordingly: outbox retries, patience, and liveness-ping confirmation before any escalation.
+
+**Caveats:**
+
+- mesh_bot stopped during both runs — no TX contention on the serial port. Real production has mesh_bot actively sending and receiving concurrently with the liveness ping. The interaction between TX and the slow-response tail is not characterized here.
+- Single device under test. Two 8h samples on one Pi 4 + one Heltec V3 is a small N. Numbers are directional, not distributional.
+- Passive RX only. Whatever is making the radio's firmware busy during daytime windows (RX processing? routing? adverts?) is inferred, not measured.
+- Both runs were on a Pi 4. The deployment target is a Pi Zero 2W. Pi Zero 2W has a weaker CPU and a different USB architecture; recovery times and failure modes may differ.
+- Firmware version captured from the OLED boot screen, not programmatically. `self_info` does not carry a firmware version field.
+- No attempt was made to reproduce the April 19 `no_event_received` hang or the original 1.11.0 hang. Those were in-mesh_bot observations that the diagnostic harness cannot reproduce (exclusive-port constraint).
+
 ## Test-environment caveats
 
   - **Clock skew**: zero2w's clock runs ~12 seconds behind pi4 (no

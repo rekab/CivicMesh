@@ -225,6 +225,8 @@ When a test calls for "scope/LA," flag it clearly — we do not assume we have a
 
 **Findings:** See `diagnostics/radio/FINDINGS.md` § "T9 — Liveness ping latency characterization".
 
+**Findings (recovery characterization):** See `diagnostics/radio/FINDINGS.md` § "Recovery characterization — April 20–21, 2026".
+
 ---
 
 ## T10 — Does a pre-reset SPI quiesce prevent the B3 class of hang?
