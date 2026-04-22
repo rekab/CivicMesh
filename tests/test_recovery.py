@@ -329,6 +329,69 @@ class TestRecoveryTask(unittest.IsolatedAsyncioTestCase):
                     except asyncio.CancelledError:
                         pass
 
+    async def test_pre_recovery_health_check_skips_second_attempt(self):
+        """First attempt fails (rung action raises), the client is
+        disconnected.  During the NEEDS_HUMAN backoff, a healthy client
+        is re-attached (simulating the radio recovering on its own).
+        On re-entry, the health check finds the radio alive and skips
+        the ladder — the rung should only be invoked once."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = RecoveryConfig(
+                post_rts_settle_sec=0.01,
+                verify_timeout_sec=2.0,
+                backoff_base_sec=0.05,
+                backoff_cap_sec=0.1,
+            )
+            c = _make_controller(d, cfg)
+            mc = FakeMeshCore()
+            mc.commands.healthy = True
+            c.set_client(mc)
+            c.mark_healthy()
+
+            call_count = 0
+
+            async def counting_action(ctx):
+                nonlocal call_count
+                call_count += 1
+                raise RuntimeError("rung failed")
+
+            fake_ladder = [Rung(name="counting", action=counting_action)]
+
+            task = asyncio.create_task(
+                recovery_task(c, AsyncMock(), c._log, ladder=fake_ladder)
+            )
+            try:
+                c.request_recovery(source="test", reason="test")
+                # Wait for the first attempt to fail and enter NEEDS_HUMAN
+                for _ in range(100):
+                    if c.get_state() == RecoveryState.NEEDS_HUMAN:
+                        break
+                    await asyncio.sleep(0.02)
+                assert c.get_state() == RecoveryState.NEEDS_HUMAN
+                assert call_count == 1
+
+                # Simulate the radio recovering during backoff: attach a
+                # healthy client so the health check can probe it.
+                healthy_mc = FakeMeshCore()
+                healthy_mc.commands.healthy = True
+                c.set_client(healthy_mc)
+
+                # Wait for the health check to detect the healthy radio
+                for _ in range(200):
+                    if c.get_state() == RecoveryState.HEALTHY:
+                        break
+                    await asyncio.sleep(0.05)
+                # Give extra time for any spurious second rung invocation
+                await asyncio.sleep(0.2)
+                assert c.get_state() == RecoveryState.HEALTHY
+                assert call_count == 1, f"expected 1 rung invocation, got {call_count}"
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
     async def test_rung_failure_enters_needs_human(self):
         """All rungs fail → enters NEEDS_HUMAN."""
         with tempfile.TemporaryDirectory() as d:

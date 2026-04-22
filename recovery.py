@@ -308,6 +308,29 @@ async def recovery_task(
 
         attempt = 1
         while True:  # ladder retry loop
+            # Pre-recovery health check: if we're re-entering the ladder
+            # after a backoff (attempt > 1) and a client exists, probe it
+            # before resetting.  The radio may have recovered on its own
+            # (e.g. after a flapping-cap backoff period).
+            if attempt > 1 and controller.get_client() is not None:
+                try:
+                    from meshcore import EventType as _ET
+                    result = await asyncio.wait_for(
+                        controller.get_client().commands.get_stats_core(),
+                        timeout=cfg.verify_timeout_sec,
+                    )
+                    if result.type != _ET.ERROR:
+                        controller.mark_healthy()
+                        controller._emit_telemetry(
+                            "recovery_skipped_healthy", {"attempt": attempt},
+                        )
+                        log.info(
+                            "recovery:skipped_healthy attempt=%d", attempt,
+                        )
+                        break  # exit ladder retry loop
+                except Exception:
+                    pass  # probe failed — proceed with recovery as normal
+
             controller._transition(
                 RecoveryState.RECOVERING, radio_connected=False,
             )
