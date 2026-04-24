@@ -28,8 +28,9 @@
 - There is no formatter or linter configured yet; follow existing file style.
 
 ## Testing Guidelines
-- No automated test suite is present in the repository.
-- If you add tests, introduce a `tests/` directory and document how to run them.
+- Tests live in `tests/` and use the `unittest` framework (stdlib, no extra dependency).
+- Run all tests: `python3 -m unittest`
+- Run a single test module: `python3 -m unittest tests.test_db_lock_retry -v`
 - When making changes, perform manual smoke checks (start both processes and verify UI flows).
 
 ## Commit & Pull Request Guidelines
