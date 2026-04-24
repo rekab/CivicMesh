@@ -24,7 +24,7 @@ comment block there for the rationale and re-test procedure.
 
 ## CivicMesh channel-secret derivation
 
-`mesh_bot.py:274-277` derives the shared channel secret as
+`_setup_mesh_client` in `mesh_bot.py` derives the shared channel secret as
 `sha256(channel_name)[:16]` and asserts it via
 `mc.commands.set_channel(idx, name, secret_bytes)` on every startup.
 Any code path that opens a fresh meshcore session and expects channel
@@ -254,6 +254,8 @@ Cleared for implementation.
 - mesh_bot stopped during run — no TX contention on the serial channel. Real deployment has mesh_bot holding the port and issuing commands concurrently; T9 did not measure that scenario. Latency and timeout rates under load could be worse.
 - n=20 at 60s is too few for reliable p99. The 106.14 ms figure is one sample of 20 being slow, not statistically meaningful.
 - Firmware version not captured. Future runs should record it manually (log line from mesh_bot startup, or `git describe` in the firmware tree at flash time).
+
+**Outcome (2026-04-21):** CIV-41 adopted all four recommendations: 30s poll interval, 5s per-ping timeout, 3-consecutive-timeout threshold (≈90s worst-case detection). The implementation also added an independent outbox-failure trigger (3 consecutive `send_chan_msg` failures) because the April 19 hang pattern was "alive but slow during TX" — liveness pings alone would have seen a healthy radio while sends were failing. See `recovery.py` and `docs/recovery.md`.
 
 ## Recovery characterization — April 20–21, 2026
 

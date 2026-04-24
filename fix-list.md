@@ -3,6 +3,14 @@
 Known issues, mitigations, and deferred work items. Checked boxes are
 resolved; unchecked boxes are open.
 
+## Radio Reliability
+
+- [x] **CIV-41: Silent-hang detection and software recovery** (resolved 2026-04-21, commits 89d7114, 9a5cdbc): mesh_bot had no way to detect or recover from a silent radio hang — the radio appeared connected but all commands timed out and no events arrived. Added `RecoveryController` in `recovery.py` with two detection triggers (liveness ping timeouts, outbox send failures) and an RTS-pulse recovery ladder. See `docs/recovery.md` and `docs/heltec-recovery.md`.
+
+- [ ] **CIV-44: VEXT power-cycle firmware command**: The RTS pulse (step 1) resets the ESP32 but cannot reset the SX1262 radio chip. A stuck SX1262 requires a VEXT power cycle, which needs a new `CMD_POWER_CYCLE_RADIO` serial command in the MeshCore companion firmware. Deferred to post-Toorcamp. See `docs/heltec-recovery.md` § "VEXT power cycle".
+
+- [ ] **CIV-30: GPIO EN toggle hardware mod**: Direct GPIO wire from Pi to Heltec CHIP_PU (EN) pin, bypassing the CP2102. Adds a recovery path when the USB-serial bridge is hung. Not yet wired.
+
 ## Hardware & Deployment
 
 - [ ] **USB serial port can rename after re-enumeration**: `/dev/ttyUSB0` becomes `/dev/ttyUSB1` (or higher) after any USB re-enumeration event — pyusb `device.reset()`, cable wiggle, CP2102 glitch. Config using `/dev/ttyUSB0` will fail to reconnect until physical unplug.

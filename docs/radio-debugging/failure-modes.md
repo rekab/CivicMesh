@@ -88,7 +88,7 @@ Supply voltage falls below threshold (default ~2.44V on S3). On a Pi Zero 2W pow
 
 After `startTransmit()`, the SX1262's DIO1 interrupt fails to fire (either because the IRQ mask is misconfigured, the packet never actually leaves the chip, or the chip enters an undefined substate). State machine stays `STATE_TX_WAIT` in `RadioLibWrappers.cpp:147` forever — `isSendComplete()` never returns true (`RadioLibWrappers.cpp:156-163`).
 
-- **Pi symptom:** outbound channel messages succeed at the `send_chan_msg` level (the firmware just queues them) but never emit an actual `MSG_SENT`/`RX_LOG_DATA` echo. The library's `send_chan_msg` normally returns `MSG_SENT` from the firmware after enqueue, not after airtime, so this may still *appear* to succeed at the API level. CivicMesh's echo counter (`_on_rx_log_data` at `mesh_bot.py:425`) never increments.
+- **Pi symptom:** outbound channel messages succeed at the `send_chan_msg` level (the firmware just queues them) but never emit an actual `MSG_SENT`/`RX_LOG_DATA` echo. The library's `send_chan_msg` normally returns `MSG_SENT` from the firmware after enqueue, not after airtime, so this may still *appear* to succeed at the API level. CivicMesh's echo counter (`_on_rx_log_data` in `_setup_mesh_client`) never increments.
 - **Radio symptom:** TX LED (GPIO35, via `onBeforeTransmit` in ESP32Board.h:88) stuck **ON**. OLED UI may show "transmitting" permanently.
 - **Recovery:** Software warm-reset via SPI (the `sx126xResetAGC` helper at `SX126xReset.h:8-37` exists but is only invoked from `doResetAGC()` which is called by `resetAGC()` which is called… need to trace). If software can issue the warm-reset sequence, ESP32 reset followed by `radio_init()` recovers. If the SPI bus itself is wedged, only VEXT power-cycle recovers. VBUS cycle recovers.
 - **Detection:** Stuck-on TX LED (only observable if visible to operator). No `MSG_SENT` ack within airtime budget. SX1262 `getIrqFlags()` could be polled but isn't by the current firmware.
@@ -173,11 +173,11 @@ The Pi's kernel has a stale `/dev/ttyUSB0` FD — typically happens after a diso
 
 ### D3. `meshcore_py` holds port open but firmware stopped responding
 
-Umbrella for any of A1/B1/B2/C1/D1 seen from the Pi. The `connection_lost` callback (`serial_cx.py:42-47`) only fires when pyserial's protocol reports the serial port itself closed — which happens on USB disconnect, not on radio-side hangs. So mesh_bot's `_connect_loop` at `mesh_bot.py:303` has already returned (connect succeeded once, then `return`) — there is no code path on the Pi that detects a silent radio hang.
+Umbrella for any of A1/B1/B2/C1/D1 seen from the Pi. The `connection_lost` callback (`serial_cx.py:42-47`) only fires when pyserial's protocol reports the serial port itself closed — which happens on USB disconnect, not on radio-side hangs. So mesh_bot's `_connect_loop` has already returned (connect succeeded once, then `return`).
 
-- **Pi symptom:** mesh_bot is "connected" per its heartbeat (`upsert_status(..., radio_connected=True)` at `mesh_bot.py:404`), but all outbound commands time out and no inbound events arrive. **There is no code on the Pi that will re-connect or reset in this scenario today.** The only recovery is a process restart or external RTS-reset tool.
-- **Recovery:** whichever reset recovers the actual underlying mode (A, B, C, or D subclass).
-- **Detection:** gap between "radio_connected=true" and actual command responsiveness. A liveness ping (e.g. periodic `get_stats_core` with short timeout) would expose this but does not currently exist.
+- **Pi symptom:** mesh_bot is "connected" per its heartbeat (`upsert_status` in `_heartbeat_task`), but all outbound commands time out and no inbound events arrive. **As of CIV-41 (2026-04-21), this scenario is detected and recovered automatically.** A `liveness_task` polls `get_stats_core` every 30s; 3 consecutive timeouts (≈90s) triggers recovery. An independent outbox trigger fires after 3 consecutive `send_chan_msg` failures. Both feed `RecoveryController` in `recovery.py`, which runs an RTS pulse to reset the ESP32, reconnects, and verifies via `get_stats_core` before declaring healthy. If the RTS reset doesn't clear the hang, the controller enters NEEDS_HUMAN and retries on exponential backoff (capped at 1 hour). See `docs/recovery.md`.
+- **Recovery:** RTS pulse is the automated first step (resets ESP32; SX1262 may recover via `radio_init()` on reboot). Process restart or VBUS cycle (USB unplug, battery swap) remain the human-intervention fallbacks for hangs that RTS doesn't clear.
+- **Detection:** `liveness_task` and outbox-failure trigger (see above). Status table `state` column reflects `recovering` or `needs_human`.
 - **Likelihood:** H over multi-day deployment — it's the observable surface of every silent-hang failure.
 
 ## E — Storage / prefs
@@ -186,7 +186,7 @@ Umbrella for any of A1/B1/B2/C1/D1 seen from the Pi. The `connection_lost` callb
 
 `SPIFFS.begin(true)` at main.cpp:186 mounts with `formatOnFail=true`. On corruption the filesystem is wiped without warning. Identity (`self_id`), contacts, channels, and prefs are all lost; the firmware generates a new identity in `MyMesh::begin` at `MyMesh.cpp:884-892`.
 
-- **Pi symptom:** connect succeeds. `self_info.public_key` is different from before. CivicMesh currently does not check for identity change. `self_info.radio_*` returns the firmware defaults (LORA_FREQ/LORA_BW/LORA_SF/LORA_CR build flags) — these may or may not match `cfg.radio.*` so the `_radio_matches` check at mesh_bot.py:330-335 might trigger `set_radio` or might skip it.
+- **Pi symptom:** connect succeeds. `self_info.public_key` is different from before. CivicMesh currently does not check for identity change. `self_info.radio_*` returns the firmware defaults (LORA_FREQ/LORA_BW/LORA_SF/LORA_CR build flags) — these may or may not match `cfg.radio.*` so the `_radio_matches` check in `_setup_mesh_client` might trigger `set_radio` or might skip it.
 - **Radio symptom:** normal — OLED shows new node name (first 4 hex bytes of new pubkey).
 - **Recovery:** N/A — damage is done. Re-provisioning required to restore identity.
 - **Detection:** self_info.public_key change, or the node's advert name changes, or nobody can reach it at its old pubkey.
@@ -196,7 +196,7 @@ Umbrella for any of A1/B1/B2/C1/D1 seen from the Pi. The `connection_lost` callb
 
 A pref file is unreadable but SPIFFS mount succeeds. `loadPrefs` returns defaults. Radio params may revert to build flags, which for CivicMesh means 869 MHz 250kHz SF11 CR5 (need to confirm in `LORA_*` defaults).
 
-- **Pi symptom:** radio params mismatch → `_radio_matches` fails → `set_radio` is called. If `set_radio` succeeds, operation resumes. If it fails (happened on 1.11.0 per mesh_bot.py:320-321 comment), the session breaks.
+- **Pi symptom:** radio params mismatch → `_radio_matches` fails → `set_radio` is called. If `set_radio` succeeds, operation resumes. If it fails (happened on 1.11.0 — see comment in `_setup_mesh_client`), the session breaks.
 - **Likelihood:** L.
 
 ## F — BLE / Wi-Fi stacks
