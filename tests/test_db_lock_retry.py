@@ -159,6 +159,7 @@ class TestEventLoopResponsiveDuringLock(unittest.IsolatedAsyncioTestCase):
 
             # Hold the write lock from a separate connection
             blocker = sqlite3.connect(db_path, timeout=0)
+            self.addCleanup(blocker.close)
             blocker.execute("BEGIN IMMEDIATE")
             blocker.execute(
                 "INSERT INTO messages (ts, channel, sender, content, source) "
@@ -223,47 +224,59 @@ class TestRetryFiresDuringLockContention(unittest.IsolatedAsyncioTestCase):
     decorator fires and the write eventually succeeds.
 
     This validates the full path: to_thread + decorator retry + real
-    SQLite lock contention.
+    SQLite lock contention.  Uses a threading.Event to release the lock
+    after the first retry fires, avoiding timing-fragile fixed delays.
     """
 
     async def test_retry_succeeds_after_lock_released(self):
+        import threading
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
-            # Short timeout so retries happen quickly.  The decorator
-            # retries at 50ms/150ms/450ms, so the total window is ~650ms.
-            # We set busy_timeout=0.1s so each attempt gives up fast.
-            db_cfg = DBConfig(path=db_path, timeout_sec=0.1)
+            # Short timeout so the first attempt gives up fast, but
+            # long enough that after the lock is released during the
+            # retry sleep, subsequent attempts can acquire it.
+            db_cfg = DBConfig(path=db_path, timeout_sec=0.2)
             init_db(db_cfg)
 
-            # Hold the write lock
-            blocker = sqlite3.connect(db_path, timeout=0)
+            # Hold the write lock.  check_same_thread=False because
+            # the ROLLBACK will be issued from the worker thread
+            # inside the patched sleep.
+            blocker = sqlite3.connect(
+                db_path, timeout=0, check_same_thread=False,
+            )
+            self.addCleanup(blocker.close)
             blocker.execute("BEGIN IMMEDIATE")
             blocker.execute(
                 "INSERT INTO messages (ts, channel, sender, content, source) "
                 "VALUES (1, 'ch', 's', 'block', 'test')"
             )
 
-            async def release_after_delay():
-                await asyncio.sleep(0.3)
-                blocker.execute("ROLLBACK")
-                blocker.close()
+            # Release the lock when the first retry fires.  The patched
+            # sleep runs in the worker thread (via to_thread), so we
+            # issue ROLLBACK there — the lock is released before the
+            # retry sleep finishes, and the next attempt succeeds.
+            released = threading.Event()
+            _real_sleep = time.sleep
 
-            release_task = asyncio.create_task(release_after_delay())
+            def _releasing_sleep(secs):
+                if not released.is_set():
+                    blocker.execute("ROLLBACK")
+                    released.set()
+                _real_sleep(secs)
 
-            # insert_message runs in a worker thread.  First attempt(s)
-            # will hit the lock and retry; after 0.3s the lock is
-            # released and a retry should succeed.
-            msg_id = await asyncio.to_thread(
-                insert_message,
-                db_cfg,
-                ts=100,
-                channel="test",
-                sender="tester",
-                content="retry works",
-                source="test",
-            )
+            with patch("database.time.sleep", side_effect=_releasing_sleep):
+                msg_id = await asyncio.to_thread(
+                    insert_message,
+                    db_cfg,
+                    ts=100,
+                    channel="test",
+                    sender="tester",
+                    content="retry works",
+                    source="test",
+                )
 
-            await release_task
+            self.assertTrue(released.is_set())
             self.assertIsInstance(msg_id, int)
             self.assertGreater(msg_id, 0)
 
@@ -309,8 +322,9 @@ class TestExecutorDbSuccessNoLog(unittest.IsolatedAsyncioTestCase):
         def good_fn():
             results.append("ok")
 
-        _executor_db(good_fn)
-        await asyncio.sleep(0.2)
+        with self.assertNoLogs("mesh_bot", level="ERROR"):
+            _executor_db(good_fn)
+            await asyncio.sleep(0.2)
         self.assertEqual(results, ["ok"])
 
 
