@@ -152,6 +152,7 @@ def _retry_on_locked(attempts=3, base_delay=0.05):
                         "db:retry_on_locked fn=%s attempt=%d", fn.__name__, i + 1,
                     )
                     time.sleep(base_delay * (3 ** i))
+            raise AssertionError("unreachable")
         return wrapper
     return decorator
 

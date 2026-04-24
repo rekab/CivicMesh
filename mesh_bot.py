@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import functools
 import hashlib
+import logging
 import time
 from typing import Optional
 
@@ -34,6 +35,22 @@ EventType = None
 MeshCore = None
 
 DEFAULT_BAUDRATE = 115200
+
+_log_db = logging.getLogger(__name__)
+
+
+def _on_executor_done(fut):
+    """done-callback for fire-and-forget DB futures."""
+    exc = fut.exception()
+    if exc is not None:
+        _log_db.error("executor:db_error %s", exc, exc_info=exc)
+
+
+def _executor_db(fn, *args, **kwargs):
+    """Fire-and-forget DB call on the default executor. Logs exceptions."""
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+    fut.add_done_callback(_on_executor_done)
 
 
 def _now_ts() -> int:
@@ -404,18 +421,6 @@ async def _setup_mesh_client(
         log.info("mesh:decrypt_channel_logs_enabled")
     except Exception as e:
         log.error("mesh:decrypt_channel_logs_failed err=%s", e, exc_info=True)
-
-    # Fire-and-forget DB helper: offloads a sync DB call to the
-    # default executor and logs exceptions via done-callback.
-    def _on_executor_done(fut):
-        exc = fut.exception()
-        if exc is not None:
-            log.error("executor:db_error %s", exc, exc_info=exc)
-
-    def _executor_db(fn, *args, **kwargs):
-        loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
-        fut.add_done_callback(_on_executor_done)
 
     # RX_LOG_DATA handler — increments heard_count on the
     # outbox row whose echo we just observed. Filter on
