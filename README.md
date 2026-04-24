@@ -83,7 +83,8 @@ Feature designs:
 - Heard-count / echo tracking: `docs/heard_count_design.md`
 
 Radio / hardware:
-- Heltec V3 recovery notes: `docs/heltec-recovery.md`
+- Recovery implementation (state machine, ladder, observability): `docs/recovery.md`
+- Heltec V3 recovery hardware reference: `docs/heltec-recovery.md`
 - Radio-debugging deep dive (failure modes, boot, reset domains, test plan): `docs/radio-debugging/` — start at its [README](docs/radio-debugging/README.md)
 
 ## Diagnostics
@@ -92,6 +93,10 @@ Radio / hardware:
 
 - `diagnostics/radio/` — Mac-side test harness that drives both CivicMesh nodes' radios over SSH via the `meshcore_py` library, bypassing `mesh_bot`. Used to isolate library/radio bugs from app-layer behavior. See `diagnostics/radio/README.md` and `diagnostics/radio/FINDINGS.md`.
 - `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` — load-test helpers used during power-budget work. See `docs/power-budget.md` for context.
+
+## Recovery
+
+mesh_bot includes a silent-hang detector that watches for radio unresponsiveness via a periodic `get_stats_core` ping (3 consecutive timeouts ≈ 90s) and sustained outbox send failures (3 consecutive errors). When either trigger fires, the `RecoveryController` resets the Heltec V3's ESP32 via an RTS pulse on the serial port, reconnects, and verifies before declaring healthy. If recovery fails, the process enters `NEEDS_HUMAN` state (visible via the `status` table's `state` column) and keeps retrying on exponential backoff capped at 1 hour — the process never exits. See `recovery.py` for the implementation and `docs/heltec-recovery.md` for the hardware context.
 
 ## Scope Notes (v0)
 

@@ -100,10 +100,26 @@ Systemd watchdog or explicit `reboot` command. Restarts all services and reiniti
 
 ### Step 6: "Needs human"
 
-If the ladder has been exhausted (or the Pi has rebooted and the problem persists), surface a visible alert on the captive portal and in logs. Stop escalating.
+If the ladder has been exhausted (or the Pi has rebooted and the problem persists), surface a visible alert on the captive portal and in logs.
 
 - **When:** all automated recovery has failed, or the node is in a reboot loop.
 - **Surface:** captive portal banner, structured log entry, admin CLI status.
+- **Not terminal:** as of CIV-41 (2026-04-21), `RecoveryController` does not stop trying in NEEDS_HUMAN. It retries the full ladder on exponential backoff (60s → 2 min → 4 min → … → 1 hour cap). The process never exits. NEEDS_HUMAN means "automated recovery has not worked yet and a human should look," not "the system has given up."
+
+## Implementation status (2026-04-21)
+
+CIV-41 implemented automated detection and step 1 (RTS pulse) in `recovery.py`. Detection uses two independent triggers: a liveness task that polls `get_stats_core` every 30s (3 consecutive timeouts ≈ 90s worst-case) and an outbox-failure trigger (3 consecutive `send_chan_msg` errors). Both feed a single `RecoveryController` that owns the `mesh_client` reference and runs the ladder.
+
+| Step | Status |
+|------|--------|
+| 1 — RTS pulse | **Implemented.** Single rung in the recovery ladder. |
+| 2 — GPIO EN toggle | Not implemented. Requires CIV-30 hardware mod (soldered jumper wire). |
+| 3 — VEXT power cycle | Not implemented. Requires firmware patch (CIV-44). |
+| 4 — USB logical reset | Not implemented. Removed from scope — pyusb `device.reset()` caused ttyUSB renaming and 30-minute unreachability on test hardware. |
+| 5 — Pi reboot | Not automated. A stuck radio that survives RTS enters NEEDS_HUMAN; operator intervention (process restart, USB unplug, or battery swap) is the fallback. |
+| 6 — Needs human | **Implemented** as the NEEDS_HUMAN state with exponential-backoff retry (see step 6 description above). |
+
+See `docs/recovery.md` for the software design, state machine, and observability.
 
 ## What the ladder cannot reach
 
