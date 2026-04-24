@@ -96,7 +96,7 @@ Radio / hardware:
 
 ## Recovery
 
-mesh_bot includes a silent-hang detector that watches for radio unresponsiveness via a periodic `get_stats_core` ping (3 consecutive timeouts ≈ 90s) and sustained outbox send failures (3 consecutive errors). When either trigger fires, the `RecoveryController` resets the Heltec V3's ESP32 via an RTS pulse on the serial port, reconnects, and verifies before declaring healthy. If recovery fails, the process enters `NEEDS_HUMAN` state (visible via the `status` table's `state` column) and keeps retrying on exponential backoff capped at 1 hour — the process never exits. See `recovery.py` for the implementation and `docs/heltec-recovery.md` for the hardware context.
+mesh_bot includes a silent-hang detector that watches for radio unresponsiveness via a periodic `get_stats_core` ping (3 consecutive timeouts ≈ 90s) and sustained outbox send failures (3 consecutive `send_chan_msg` errors — echo-confirmed sends and successful sends both reset the counter, so transient errors don't trigger recovery). When either trigger fires, the `RecoveryController` resets the Heltec V3's ESP32 via an RTS pulse on the serial port, reconnects, and verifies before declaring healthy. If recovery fails, the process enters `NEEDS_HUMAN` state (visible via the `status` table's `state` column) and keeps retrying on exponential backoff capped at 1 hour — the process never exits. See `recovery.py` for the implementation and `docs/heltec-recovery.md` for the hardware context.
 
 ## Scope Notes (v0)
 
