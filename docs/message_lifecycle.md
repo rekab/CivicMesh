@@ -116,6 +116,29 @@ All database functions use `isolation_level=None` (autocommit mode) via
 `_connect()`. Explicit `BEGIN`/`COMMIT` blocks are used only where
 multi-statement atomicity is required (the two cases above).
 
+### Lock-contention resilience
+
+Two processes (web_server, mesh_bot) share the database via WAL mode.
+The `@_retry_on_locked` decorator in `database.py` retries on
+`sqlite3.OperationalError("database is locked")` with sequential
+backoff (50ms / 150ms / 450ms, 3 attempts).  Applied to the four
+data-critical write functions where a lock failure would cause data
+loss or duplicate sends:
+
+- `insert_message` — inbound mesh message
+- `queue_outbox_and_message` — user portal post
+- `record_outbox_send` — marking an outbox row as sent
+- `increment_heard` — echo count tracking
+
+Not applied to best-effort writes (heartbeat, touch_session,
+votes) where a missed write is harmless.
+
+All mesh_bot DB calls run off the asyncio event loop: sync callbacks
+use `_executor_db` (fire-and-forget with error logging via
+`add_done_callback`), and `_outbox_task` uses `asyncio.to_thread`.
+The decorator's `time.sleep` runs in the worker thread, not on the
+event loop.
+
 ## Startup reconciliation
 
 On startup, both mesh_bot and web_server call

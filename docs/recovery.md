@@ -161,6 +161,8 @@ Key log lines to grep for:
 - `recovery:needs_human` — all rungs failed (WARNING)
 - `recovery:rung_action_failed` — individual rung failure (ERROR)
 - `liveness:miss` — single liveness timeout (WARNING)
+- `db:retry_on_locked` — SQLite write retried due to lock contention (WARNING)
+- `executor:db_error` — fire-and-forget DB call failed in worker thread (ERROR)
 
 ## Architecture
 
@@ -171,7 +173,7 @@ mesh_bot.py
     │     └── _setup_mesh_client()   radio params, channels, handlers
     │
     └── asyncio.gather()
-          ├── _outbox_task()       reads controller.get_client()
+          ├── _outbox_task()       reads controller.get_client(); DB via to_thread
           ├── _retention_task()    unchanged
           ├── _heartbeat_task()    reads controller.get_state()
           ├── telemetry_loop()     unchanged
@@ -189,6 +191,13 @@ The controller is the single owner of `mesh_client`.  This fixes the
 prior bug where `_outbox_task` captured `mesh_client` as a parameter
 and would not see a new client after reconnection.
 
+All DB writes from mesh_bot run off the event loop: `_outbox_task`
+uses `asyncio.to_thread`, and sync callbacks (`_on_channel_message`,
+`_on_rx_log_data`, `_on_rx_log_stats`) use `_executor_db` — a
+fire-and-forget helper that logs exceptions via `add_done_callback`.
+See `docs/message_lifecycle.md` § "Lock-contention resilience" for
+the retry decorator details.
+
 ## Files
 
 | File | Role |
@@ -196,6 +205,7 @@ and would not see a new client after reconnection.
 | `recovery.py` | Controller, state machine, ladder, liveness/recovery tasks |
 | `mesh_bot.py` | Wiring: creates controller, passes to all tasks |
 | `config.py` | `RecoveryConfig` dataclass, `[recovery]` TOML section |
-| `database.py` | `status.state` column, updated `upsert_status` |
-| `tests/test_recovery.py` | 24 unit tests |
+| `database.py` | `status.state` column, `upsert_status`, `@_retry_on_locked` |
+| `tests/test_recovery.py` | 24 unit tests for recovery controller |
+| `tests/test_db_lock_retry.py` | 9 tests: retry decorator, event-loop responsiveness, executor error logging |
 | `docs/heltec-recovery.md` | Hardware reference (which resets affect which chips) |
