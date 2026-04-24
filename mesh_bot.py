@@ -128,7 +128,7 @@ async def _outbox_task(
             if last_send_time is not None and now - last_send_time > idle_reset_sec:
                 backoff_level = 0
 
-            pending = get_pending_outbox(db_cfg, limit=1, log=log)
+            pending = await asyncio.to_thread(get_pending_outbox, db_cfg, limit=1, log=log)
             # Nothing pending: avoid hot loop but don't alter backoff state.
             if not pending:
                 await asyncio.sleep(1)
@@ -152,15 +152,16 @@ async def _outbox_task(
                 if channel_idx is None:
                     # Permanent failure: channel not in config. Will never succeed.
                     log.error("outbox:unknown_channel id=%s channel=%s", item["id"], channel)
-                    mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                    await asyncio.to_thread(mark_outbox_failed, db_cfg, outbox_ids=[int(item["id"])], log=log)
                     consecutive_send_failures = 0
                 else:
                     # Check for echoes before retrying — an echo that
                     # arrived between attempts proves the prior send worked.
                     if item["retry_count"] > 0:
-                        row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
+                        row = await asyncio.to_thread(get_outbox_message, db_cfg, outbox_id=int(item["id"]), log=log)
                         if row and row["heard_count"] > 0:
-                            record_outbox_send(
+                            await asyncio.to_thread(
+                                record_outbox_send,
                                 db_cfg, outbox_id=int(item["id"]),
                                 sender_ts=row.get("sender_ts") or int(time.time()),
                                 log=log,
@@ -182,7 +183,8 @@ async def _outbox_task(
                     # Persist sender_ts so echo-confirmed retries can
                     # reference the original timestamp. IS NULL guard
                     # in the query prevents retries from overwriting.
-                    update_outbox_sender_ts(
+                    await asyncio.to_thread(
+                        update_outbox_sender_ts,
                         db_cfg, outbox_id=int(item["id"]),
                         sender_ts=sender_ts, log=log,
                     )
@@ -216,10 +218,11 @@ async def _outbox_task(
                             await asyncio.sleep(echo_wait)
 
                             # Re-read outbox row to check if echoes arrived during wait
-                            row = get_outbox_message(db_cfg, outbox_id=int(item["id"]), log=log)
+                            row = await asyncio.to_thread(get_outbox_message, db_cfg, outbox_id=int(item["id"]), log=log)
                             if row and row["heard_count"] > 0:
                                 # Echo confirmed — treat as successful send
-                                record_outbox_send(
+                                await asyncio.to_thread(
+                                    record_outbox_send,
                                     db_cfg, outbox_id=int(item["id"]),
                                     sender_ts=sender_ts, log=log,
                                 )
@@ -241,13 +244,13 @@ async def _outbox_task(
                             )
 
                         # Normal error path (non-no_event, or no_event without echo)
-                        new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
+                        new_count = await asyncio.to_thread(increment_outbox_retry, db_cfg, outbox_id=int(item["id"]), log=log)
                         log.error(
                             "outbox:send_failed id=%s channel=%s attempt=%d/%d err=%s",
                             item["id"], channel, new_count, max_retries, result.payload,
                         )
                         if new_count >= max_retries:
-                            mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                            await asyncio.to_thread(mark_outbox_failed, db_cfg, outbox_ids=[int(item["id"])], log=log)
                             log.warning(
                                 "outbox:giving_up id=%s channel=%s after %d attempts",
                                 item["id"], channel, new_count,
@@ -260,7 +263,8 @@ async def _outbox_task(
                             )
                             consecutive_send_failures = 0
                     else:
-                        record_outbox_send(
+                        await asyncio.to_thread(
+                            record_outbox_send,
                             db_cfg,
                             outbox_id=int(item["id"]),
                             sender_ts=sender_ts,
@@ -269,9 +273,9 @@ async def _outbox_task(
                         consecutive_send_failures = 0
             except Exception as e:
                 log.error("outbox:send_exception id=%s err=%s", item["id"], e, exc_info=True)
-                new_count = increment_outbox_retry(db_cfg, outbox_id=int(item["id"]), log=log)
+                new_count = await asyncio.to_thread(increment_outbox_retry, db_cfg, outbox_id=int(item["id"]), log=log)
                 if new_count >= max_retries:
-                    mark_outbox_failed(db_cfg, outbox_ids=[int(item["id"])], log=log)
+                    await asyncio.to_thread(mark_outbox_failed, db_cfg, outbox_ids=[int(item["id"])], log=log)
                 consecutive_send_failures += 1
                 if consecutive_send_failures >= cfg.recovery.outbox_consecutive_threshold:
                     controller.request_recovery(
@@ -401,6 +405,18 @@ async def _setup_mesh_client(
     except Exception as e:
         log.error("mesh:decrypt_channel_logs_failed err=%s", e, exc_info=True)
 
+    # Fire-and-forget DB helper: offloads a sync DB call to the
+    # default executor and logs exceptions via done-callback.
+    def _on_executor_done(fut):
+        exc = fut.exception()
+        if exc is not None:
+            log.error("executor:db_error %s", exc, exc_info=exc)
+
+    def _executor_db(fn, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+        fut.add_done_callback(_on_executor_done)
+
     # RX_LOG_DATA handler — increments heard_count on the
     # outbox row whose echo we just observed. Filter on
     # `message != None && chan_name in our channels` per
@@ -428,7 +444,8 @@ async def _setup_mesh_client(
             )
             if outbox_id is None:
                 return  # not one of our active sends
-            increment_heard(
+            _executor_db(
+                increment_heard,
                 db_cfg,
                 outbox_id=outbox_id,
                 path_len=p.get("path_len"),
@@ -466,16 +483,12 @@ async def _setup_mesh_client(
                 last_path_byte = int(path_hex[-2:], 16)
             snr = p.get("snr")
             rssi = p.get("rssi")
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(
-                None,
-                functools.partial(
-                    insert_heard_packet,
-                    db_cfg, ts=_now_ts(),
-                    payload_type=payload_type, route_type=route_type,
-                    path_len=path_len, last_path_byte=last_path_byte,
-                    snr=snr, rssi=rssi, log=log,
-                ),
+            _executor_db(
+                insert_heard_packet,
+                db_cfg, ts=_now_ts(),
+                payload_type=payload_type, route_type=route_type,
+                path_len=path_len, last_path_byte=last_path_byte,
+                snr=snr, rssi=rssi, log=log,
             )
         except Exception as e:
             log.error("stats:rx_log_error %s", e, exc_info=True)
@@ -501,7 +514,7 @@ async def _setup_mesh_client(
                     sender = name
                     content = rest
             log.debug("mesh:rx channel=%s sender=%s len=%d", channel, sender, len(content))
-            insert_message(db_cfg, ts=_now_ts(), channel=channel, sender=sender, content=content, source="mesh", log=log)
+            _executor_db(insert_message, db_cfg, ts=_now_ts(), channel=channel, sender=sender, content=content, source="mesh", log=log)
         except Exception as e:
             log.error("mesh:rx_error %s", e, exc_info=True)
 

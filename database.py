@@ -1,4 +1,6 @@
+import functools
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -126,6 +128,32 @@ CREATE INDEX IF NOT EXISTS idx_telemetry_events_ts ON telemetry_events(ts);
 CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_ts ON telemetry_events(kind, ts);
 
 """
+
+
+_lock_retry_log = logging.getLogger("civicmesh.db")
+
+
+def _retry_on_locked(attempts=3, base_delay=0.05):
+    """Retry on sqlite3.OperationalError('database is locked').
+
+    Sequential backoff: 50ms / 150ms / 450ms.  Applied only to
+    data-critical writes where a lock failure means data loss.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            for i in range(attempts):
+                try:
+                    return fn(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if "database is locked" not in str(e) or i == attempts - 1:
+                        raise
+                    _lock_retry_log.warning(
+                        "db:retry_on_locked fn=%s attempt=%d", fn.__name__, i + 1,
+                    )
+                    time.sleep(base_delay * (3 ** i))
+        return wrapper
+    return decorator
 
 
 def _connect(cfg: DBConfig) -> sqlite3.Connection:
@@ -298,6 +326,7 @@ def init_db(cfg: DBConfig, log=None) -> None:
         conn.close()
 
 
+@_retry_on_locked()
 def insert_message(
     cfg: DBConfig,
     *,
@@ -578,6 +607,7 @@ def queue_outbox(
         conn.close()
 
 
+@_retry_on_locked()
 def queue_outbox_and_message(
     cfg: DBConfig,
     *,
@@ -745,6 +775,7 @@ def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, lo
         conn.close()
 
 
+@_retry_on_locked()
 def record_outbox_send(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=None) -> None:
     """Mark a single outbox row as sent and update the linked messages row
     atomically.  Uses an explicit transaction so a process kill between
@@ -778,6 +809,7 @@ def record_outbox_send(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=Non
         conn.close()
 
 
+@_retry_on_locked()
 def increment_heard(
     cfg: DBConfig,
     *,
