@@ -77,10 +77,12 @@ pyusb logical reset, systemd watchdog notify.
 2. Run the rung's reset action (RTS pulse runs in a thread executor
    since pyserial is synchronous).
 3. Sleep `post_rts_settle_sec` (default 5 s) for the ESP32 to boot.
-4. Reconnect: `MeshCore.create_serial` + full radio setup (params,
-   channels, subscriptions).
-5. Verify: one `get_stats_core` call with `verify_timeout_sec` timeout.
-6. On success → `mark_healthy()`.  On failure → try next rung.
+4. Reconnect + verify: `MeshCore.create_serial` + full radio setup
+   (params, channels, subscriptions).  Setup calls `get_stats_core`
+   internally — successful completion is the verification.  (A
+   separate verify step after setup would race with the auto-fetch
+   event pump for the response, causing spurious timeouts.)
+5. On success → `mark_healthy()`.  On failure → try next rung.
 
 ### Pre-recovery health check
 

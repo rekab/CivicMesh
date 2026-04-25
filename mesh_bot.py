@@ -569,6 +569,8 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                     DEFAULT_BAUDRATE,
                     debug=meshcore_debug,
                 )
+                if mesh_client is None or getattr(mesh_client, "commands", None) is None:
+                    raise RuntimeError("create_serial returned unusable client (appstart likely failed)")
                 log.info("mesh:connected port=%s baudrate=%d", cfg.radio.serial_port, DEFAULT_BAUDRATE)
 
                 await _setup_mesh_client(

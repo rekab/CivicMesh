@@ -88,7 +88,10 @@ DEFAULT_LADDER: list[Rung] = [
 async def _connect_once(serial_port: str, log: logging.Logger):
     """Create a fresh MeshCore serial connection (no setup/subscribe)."""
     from meshcore import MeshCore
-    return await MeshCore.create_serial(serial_port, 115200, debug=False)
+    mc = await MeshCore.create_serial(serial_port, 115200, debug=False)
+    if mc is None or getattr(mc, "commands", None) is None:
+        raise RuntimeError("create_serial returned unusable client (appstart likely failed)")
+    return mc
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +367,13 @@ async def recovery_task(
                 # 3. Settle
                 await asyncio.sleep(cfg.post_rts_settle_sec)
 
-                # 4. Reconnect
+                # 4. Reconnect + verify
+                # setup_fn runs _setup_mesh_client which calls
+                # get_stats_core internally — if that succeeds, the
+                # radio is verified.  A separate verify step after
+                # setup would race with the auto-fetch event pump
+                # (which consumes the response), causing spurious
+                # TimeoutErrors.
                 try:
                     new_client = await asyncio.wait_for(
                         _connect_once(controller._serial_port, log),
@@ -380,35 +389,13 @@ async def recovery_task(
                         "rung": rung.name, "attempt": attempt,
                         "stage": "reconnect", "err": repr(e),
                     })
-                    continue
-
-                # 5. Verify
-                try:
-                    from meshcore import EventType
-                    result = await asyncio.wait_for(
-                        new_client.commands.get_stats_core(),
-                        timeout=cfg.verify_timeout_sec,
-                    )
-                    if result.type == EventType.ERROR:
-                        raise RuntimeError(
-                            f"verify returned ERROR: {result.payload}"
-                        )
-                except Exception as e:
-                    log.error(
-                        "recovery:verify_failed rung=%s err=%s",
-                        rung.name, e, exc_info=True,
-                    )
-                    controller._emit_telemetry("recovery_rung_failed", {
-                        "rung": rung.name, "attempt": attempt,
-                        "stage": "verify", "err": repr(e),
-                    })
                     try:
                         await new_client.disconnect()
                     except Exception:
                         pass
                     continue
 
-                # 6. Success
+                # 5. Success
                 controller.set_client(new_client)
 
                 # Check flapping cap
