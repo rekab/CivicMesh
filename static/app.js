@@ -358,7 +358,7 @@ function updateComposeLabels(ch) {
   var isLocal = ch && ch.scope === "on-site";
   $("composeTitle").textContent = ch ? "Post to " + ch.name : "Post";
   $("composeSubtitle").textContent = isLocal
-    ? "Your message will stay at this hub"
+    ? "Your message will stay at this node"
     : "Your message will be relayed across the mesh network";
   $("postBtn").textContent = isLocal ? "Post On-site" : "Post to Mesh";
 }
@@ -539,7 +539,7 @@ async function refreshRadioStatus() {
     var data = await fetchJSON(API.status, { method: "GET" });
     state.radioStatus = data.radio_status || "offline";
     state.recoveryState = data.recovery_state || null;
-    if (data.hub_name) state.hubName = data.hub_name;
+    state.nodeName = data.node_name || data.hub_name || state.nodeName;
   } catch {
     state.radioStatus = "offline";
     state.recoveryState = null;
@@ -1238,7 +1238,7 @@ function renderStats() {
 
   // Header info
   var nameEl = $("statsNodeName");
-  if (nameEl && state.hubName) nameEl.textContent = state.hubName;
+  if (nameEl && state.nodeName) nameEl.textContent = state.nodeName;
 
   var sys = d.system || {};
 
