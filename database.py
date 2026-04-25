@@ -1278,6 +1278,16 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
             ).fetchone()
             sent[label] = row["n"] if row else 0
 
+        # -- messages_failed --
+        failed = {}
+        for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages "
+                "WHERE source = 'wifi' AND status = 'failed' AND ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            failed[label] = row["n"] if row else 0
+
         # -- direct_repeaters --
         repeaters = {}
         for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
@@ -1288,12 +1298,24 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
             ).fetchone()
             repeaters[label] = row["n"] if row else 0
 
+        # -- radio_restarts (recovery_succeeded events) --
+        restarts = {}
+        for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM telemetry_events "
+                "WHERE kind = 'recovery_succeeded' AND ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            restarts[label] = row["n"] if row else 0
+
         result = {
             "now_ts": now_ts,
             "wifi_sessions": wifi,
             "messages_seen": seen,
             "messages_sent": sent,
+            "messages_failed": failed,
             "direct_repeaters": repeaters,
+            "radio_restarts": restarts,
         }
         result["system"] = _build_system_telemetry(cfg, now_ts, log=log)
         return result
