@@ -282,7 +282,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             "/ncsi.txt",
         ):
             ip = self._client_ip()
-            if self._is_portal_accepted(ip):
+            accepted = self._is_portal_accepted(ip)
+            log.info(
+                "probe:hit path=%s ip=%s host=%s accepted=%s ua=%r",
+                path, ip, host, accepted, self.headers.get("User-Agent", ""),
+            )
+            if accepted:
                 if path in ("/generate_204", "/gen_204"):
                     self.send_response(HTTPStatus.NO_CONTENT)
                     self.end_headers()
@@ -498,10 +503,18 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     return
                 return super().do_GET()
             if host not in accepted_hosts and not allow_any_host:
+                log.info(
+                    "catchall:wrong_host path=%s ip=%s host=%s ua=%r",
+                    path, client_ip, host, self.headers.get("User-Agent", ""),
+                )
                 self.send_response(HTTPStatus.FOUND)
                 self.send_header("Location", f"{portal_url}/")
                 self.end_headers()
                 return
+            log.info(
+                "catchall:redirect path=%s ip=%s host=%s ua=%r",
+                path, client_ip, host, self.headers.get("User-Agent", ""),
+            )
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", "/")
             self.end_headers()
@@ -516,26 +529,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "channel_details": self._channel_entries(),
                 },
             )
-            return
-
-        # RFC 8908 Captive Portal API (advertised via DHCP Option 114 / RFC 8910).
-        # Android 11+ shows a persistent "Tap to view website" notification when
-        # captive:false is paired with a venue-info-url. RFC requires HTTPS, but
-        # we serve HTTP on an offline .local domain; this is an intentional experiment.
-        # If ignored by the OS, captive-portal probe redirects remain the fallback.
-        if path == "/api/captive-portal":
-            body = json.dumps(
-                {
-                    "captive": False,
-                    "venue-info-url": f"{portal_url}/",
-                }
-            ).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/captive+json")
-            self.send_header("Cache-Control", "private")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
             return
 
         if path == "/api/messages":
@@ -654,6 +647,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # Captive portal: send everything else to index.html (302, not 301)
+        log.info(
+            "api:unknown path=%s ip=%s ua=%r",
+            path, self._client_ip(), self.headers.get("User-Agent", ""),
+        )
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", "/")
         self.end_headers()
@@ -801,10 +798,15 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 def run():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument(
+        "--log-level",
+        default=None,
+        help="Override config log level (DEBUG, INFO, WARNING, ERROR).",
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    log, sec = setup_logging("web_server", cfg.logging)
+    log, sec = setup_logging("web_server", cfg.logging, level_override=args.log_level)
     log.info("Civic Mesh web_server starting")
 
     db_cfg = DBConfig(path=cfg.db_path)
