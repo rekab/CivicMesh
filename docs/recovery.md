@@ -102,6 +102,36 @@ enters NEEDS_HUMAN instead of HEALTHY — the radio technically works but
 something is causing it to fail repeatedly.  Exponential backoff gives
 it time to stabilize.
 
+## Operational thresholds
+
+The recovery counter on the portal stats sheet (Radio status row,
+"N restart(s) (24h)") is the at-a-glance health signal. Use it as
+follows:
+
+| 24h restart count | Interpretation                                     | Action                              |
+|-------------------|----------------------------------------------------|-------------------------------------|
+| 0                 | Healthy                                            | None                                |
+| 1                 | Single transient event                             | None — radio recovered itself       |
+| 2                 | Borderline — two unrelated events or one flap      | Note it; check trend tomorrow       |
+| 3+                | Degraded — radio is flapping or environment hostile| At Toorcamp: swap the unit         |
+
+The 6/hour flapping cap inside `RecoveryController` is a separate
+mechanism — that protects against thrashing within a tight window.
+The 24h count above is the human-facing signal for "is this node
+stable enough to leave deployed."
+
+For deeper triage, query `telemetry_events` directly:
+
+    sqlite3 civic_mesh.db "
+      SELECT datetime(ts, 'unixepoch', 'localtime') AS when_local,
+             kind, detail
+      FROM telemetry_events
+      WHERE kind LIKE 'recovery_%'
+      ORDER BY ts DESC LIMIT 20"
+
+The event timestamps and detail JSON give you the rung that fired,
+which attempt succeeded, and any flapping-cap trips.
+
 ## Configuration
 
 All fields are optional.  Defaults apply if the `[recovery]` section
