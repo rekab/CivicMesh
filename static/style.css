@@ -492,14 +492,24 @@ body {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-  padding: 12px 16px;
-  padding-bottom: 80px;
+  background: var(--surface);
+  min-height: 0;
+}
+.chat__messages::-webkit-scrollbar { width: 14px; }
+.chat__messages::-webkit-scrollbar-track { background: transparent; }
+.chat__messages::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.25);
+  border-radius: 4px;
+}
+.chat__messages::-webkit-scrollbar-thumb:active {
+  background: rgba(0,0,0,0.4);
+}
+.chat__messages-inner {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--surface);
-  min-height: 0;
+  padding: 12px 16px;
+  padding-bottom: 80px;
 }
 
 /* Date separator */

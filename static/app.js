@@ -392,7 +392,7 @@ function sourceLabel(source) {
 }
 
 function renderMessages(msgs) {
-  var wrap = $("messages");
+  var wrap = $("messageInner") || $("messages");
   wrap.innerHTML = "";
 
   // Radio banner is now a separate element outside the scroll area
