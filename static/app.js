@@ -1202,6 +1202,12 @@ function renderRadioStatusRow() {
   if (rec && rec !== status && rec !== "healthy") {
     label += " (" + rec + ")";
   }
+  var restarts24h = (statsState.data
+                     && statsState.data.radio_restarts
+                     && statsState.data.radio_restarts.day) || 0;
+  if (restarts24h > 0) {
+    label += " \u00b7 " + restarts24h + " restart" + (restarts24h === 1 ? "" : "s") + " (24h)";
+  }
   row.dataset.status = statusAttr;
   val.textContent = label;
 }
@@ -1216,6 +1222,12 @@ function renderStats() {
   tickTile($("sentHour"), d.messages_sent.hour);
   tickTile($("sentDay"),  d.messages_sent.day);
   tickTile($("sentWeek"), d.messages_sent.week);
+
+  tickTile($("failedHour"), d.messages_failed && d.messages_failed.hour);
+  tickTile($("failedDay"),  d.messages_failed && d.messages_failed.day);
+  tickTile($("failedWeek"), d.messages_failed && d.messages_failed.week);
+  var fh = $("failedHour"); if (fh) fh.classList.toggle("stat-tile__big--warn", ((d.messages_failed && d.messages_failed.hour) || 0) > 0);
+  var fd = $("failedDay");  if (fd) fd.classList.toggle("stat-tile__big--warn", ((d.messages_failed && d.messages_failed.day) || 0) > 0);
 
   tickTile($("repHour"),  d.direct_repeaters.hour);
   tickTile($("repDay"),   d.direct_repeaters.day);

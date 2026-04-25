@@ -1090,6 +1090,7 @@ body {
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
 }
+.stat-tile__big--warn { color: #b5390a; }
 .stat-tile__hint {
   font-size: 10.5px;
   color: var(--stats-ink-hint);
