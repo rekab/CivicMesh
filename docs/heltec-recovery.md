@@ -119,7 +119,7 @@ CIV-41 implemented automated detection and step 1 (RTS pulse) in `recovery.py`. 
 | 5 — Pi reboot | Not automated. A stuck radio that survives RTS enters NEEDS_HUMAN; operator intervention (process restart, USB unplug, or battery swap) is the fallback. |
 | 6 — Needs human | **Implemented** as the NEEDS_HUMAN state with exponential-backoff retry (see step 6 description above). |
 
-See `docs/recovery.md` for the software design, state machine, and observability.
+See `docs/recovery.md` for the software design, state machine, observability, and operational thresholds (swap criteria for Toorcamp).
 
 ## What the ladder cannot reach
 
