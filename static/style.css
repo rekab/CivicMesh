@@ -39,7 +39,7 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { height: 100%; }
+html { height: 100%; overscroll-behavior: none; }
 [hidden] { display: none !important; }
 body {
   height: 100%;
@@ -48,6 +48,7 @@ body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 /* ---- App Shell ---- */
@@ -489,6 +490,7 @@ body {
 .chat__messages {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   padding: 12px 16px;
