@@ -238,7 +238,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         self.server.db_cfg,
                         session_id=sid,
                         name=sess.get("name") or "",
-                        location=sess.get("location") or self.server.cfg.hub.location,
+                        location=sess.get("location") or self.server.cfg.node.location,
                         mac_address=mac,
                         fingerprint=sess.get("fingerprint"),
                         log=log,
@@ -317,7 +317,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/welcome":
-            hub_name = self.server.cfg.hub.name
+            node_name = self.server.cfg.node.name
             url = f"{portal_url}/"
             portal_aliases = self.server.cfg.web.portal_aliases
             alias_hint = ""
@@ -328,7 +328,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>{hub_name}</title>
+    <title>{node_name}</title>
     <style>
       :root {{
         --bg: #f8f6f1;
@@ -391,7 +391,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
   </head>
   <body>
     <div class="wrap">
-      <h1>{hub_name}</h1>
+      <h1>{node_name}</h1>
       <p>This is a neighborhood mesh radio chat board. No internet connection is needed.</p>
       <div class="url">{url}</div>
       <noscript>
@@ -486,7 +486,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         self.server.db_cfg,
                         session_id=sid,
                         name="",
-                        location=self.server.cfg.hub.location,
+                        location=self.server.cfg.node.location,
                         mac_address=mac,
                         log=log,
                     )
@@ -558,7 +558,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
-            hub_name = self.server.cfg.hub.name
+            node_name = self.server.cfg.node.name
             now = _now_ts()
 
             if not row or not row.get("last_seen_ts"):
@@ -567,7 +567,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "recovery_state": None,
                     "radio": "offline",  # deprecated — use radio_status
                     "mesh_bot_seen": False,
-                    "hub_name": hub_name,
+                    "node_name": node_name,
+                    "hub_name": node_name,  # deprecated — use node_name
                 })
                 return
 
@@ -596,7 +597,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "mesh_bot_seen": True,
                     "last_seen_ts": int(row["last_seen_ts"]),
                     "age_sec": int(age),
-                    "hub_name": hub_name,
+                    "node_name": node_name,
+                    "hub_name": node_name,  # deprecated — use node_name
                 },
             )
             return
@@ -711,7 +713,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 self.server.db_cfg,
                 session_id=sid,
                 name=name,
-                location=self.server.cfg.hub.location,
+                location=self.server.cfg.node.location,
                 mac_address=mac or sess.get("mac_address"),
                 fingerprint=fingerprint or None,
                 log=log,

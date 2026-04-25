@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover
 
 
 @dataclass(frozen=True)
-class HubConfig:
+class NodeConfig:
     name: str
     location: str
 
@@ -84,7 +84,7 @@ class RecoveryConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    hub: HubConfig
+    node: NodeConfig
     radio: RadioConfig
     channels: ChannelsConfig
     local: LocalConfig
@@ -118,7 +118,7 @@ def _validate_portal_host(raw: Any) -> str:
 def load_config(path: str) -> AppConfig:
     raw = _load_toml(path)
 
-    hub = raw.get("hub", {})
+    node = raw.get("node") or raw.get("hub") or {}  # [hub] accepted as fallback
     radio = raw.get("radio", {})
     channels = raw.get("channels", {})
     local = raw.get("local", {})
@@ -136,9 +136,9 @@ def load_config(path: str) -> AppConfig:
         local_names = ["#local"]
 
     return AppConfig(
-        hub=HubConfig(
-            name=str(hub.get("name", "Civic Mesh Hub")),
-            location=str(hub.get("location", "")),
+        node=NodeConfig(
+            name=str(node.get("name", "CivicMesh")),
+            location=str(node.get("location", "")),
         ),
         radio=RadioConfig(
             serial_port=str(radio.get("serial_port", "/dev/ttyUSB0")),

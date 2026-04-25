@@ -162,7 +162,7 @@ async def _outbox_task(
             sender = item["sender"]
             content = item["content"]
             try:
-                outbound = f"<{sender}@{cfg.hub.name}> {content}"
+                outbound = f"<{sender}@{cfg.node.name}> {content}"
                 log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
                 channel_idx = channel_name_to_idx.get(channel)
 
