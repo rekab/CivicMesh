@@ -274,8 +274,8 @@ function scopeLabel(scope) {
 
 function scopeDescription(scope) {
   return scope === "on-site"
-    ? "Messages stay at this hub"
-    : "Messages relayed across the mesh network";
+    ? "Stays on site"
+    : "Reaches the wider network";
 }
 
 function getChannel(name) {
@@ -293,27 +293,41 @@ function renderChannels() {
   var wrap = $("channelList");
   wrap.innerHTML = "";
 
-  for (var i = 0; i < state.channels.length; i++) {
-    var ch = state.channels[i];
-    var card = document.createElement("div");
-    card.className = "channel-card" + (ch.name === state.activeChannel ? " channel-card--active" : "");
-    var iconClass = ch.scope === "mesh" ? "channel-card__icon--mesh" : "channel-card__icon--local";
-    var badgeClass = ch.scope === "mesh" ? "channel-card__badge--mesh" : "channel-card__badge--local";
-    card.innerHTML =
-      '<div class="channel-card__icon ' + iconClass + '">' + channelIconSvg(ch.scope) + '</div>' +
-      '<div class="channel-card__body">' +
-        '<div class="channel-card__name">' + escapeHtml(ch.name) + '</div>' +
-        '<div class="channel-card__desc">' + escapeHtml(scopeDescription(ch.scope)) + '</div>' +
-      '</div>' +
-      '<div class="channel-card__meta">' +
-        '<div class="channel-card__badge ' + badgeClass + '">' + scopeLabel(ch.scope) + '</div>' +
-      '</div>';
-    card.setAttribute("data-channel", ch.name);
-    card.addEventListener("click", (function(name) {
-      return function() { setActiveChannel(name); };
-    })(ch.name));
-    wrap.appendChild(card);
+  var locals = state.channels.filter(function(c){ return c.scope !== "mesh"; });
+  var meshes = state.channels.filter(function(c){ return c.scope === "mesh"; });
+
+  function appendGroup(title, list) {
+    if (!list.length) return;
+    var header = document.createElement("div");
+    header.className = "channel-group__header";
+    header.innerHTML = '<div class="channel-group__title">' + escapeHtml(title) + '</div>';
+    wrap.appendChild(header);
+
+    for (var i = 0; i < list.length; i++) {
+      var ch = list[i];
+      var card = document.createElement("div");
+      card.className = "channel-card" + (ch.name === state.activeChannel ? " channel-card--active" : "");
+      var iconClass = ch.scope === "mesh" ? "channel-card__icon--mesh" : "channel-card__icon--local";
+      var badgeClass = ch.scope === "mesh" ? "channel-card__badge--mesh" : "channel-card__badge--local";
+      card.innerHTML =
+        '<div class="channel-card__icon ' + iconClass + '">' + channelIconSvg(ch.scope) + '</div>' +
+        '<div class="channel-card__body">' +
+          '<div class="channel-card__name">' + escapeHtml(ch.name) + '</div>' +
+          '<div class="channel-card__desc">' + escapeHtml(scopeDescription(ch.scope)) + '</div>' +
+        '</div>' +
+        '<div class="channel-card__meta">' +
+          '<div class="channel-card__badge ' + badgeClass + '">' + scopeLabel(ch.scope) + '</div>' +
+        '</div>';
+      card.setAttribute("data-channel", ch.name);
+      card.addEventListener("click", (function(name) {
+        return function() { setActiveChannel(name); };
+      })(ch.name));
+      wrap.appendChild(card);
+    }
   }
+
+  appendGroup("Channels on this hotspot", locals);
+  appendGroup("MeshCore channels", meshes);
 }
 
 /* ---- Active channel ---- */
@@ -956,6 +970,34 @@ function renderSysHealth(sys) {
     if (chipLabel) chipLabel.textContent = text;
   }
 
+  // Build health tip content
+  var tipEl = $("sysHealthTip");
+  if (tipEl) {
+    var checks = [
+      { key: "load", label: "CPU load", val: sys.cpu.load_1m, fmt: function(v) { return v != null ? v.toFixed(2) : "n/a"; } },
+      { key: "temp", label: "CPU temp", val: sys.cpu.temp_c, fmt: function(v) { return v != null ? v.toFixed(1) + "\u00b0C" : "n/a"; } },
+      { key: "mem",  label: "Memory free", val: sys.mem && sys.mem.available_mb, fmt: function(v) { return v != null ? fmtMb(v) : "n/a"; } },
+      { key: "disk", label: "Disk free", val: sys.disk ? (sys.disk.free_mb / sys.disk.total_mb) * 100 : null, fmt: function(v) { return v != null ? v.toFixed(0) + "%" : "n/a"; } },
+      { key: "outboxDepth", label: "Outbox depth", val: sys.outbox && sys.outbox.depth_now, fmt: function(v) { return v != null ? String(v) : "n/a"; } },
+    ];
+    var lines = [];
+    var okCount = 0;
+    for (var ci = 0; ci < checks.length; ci++) {
+      var c = checks[ci];
+      var st = h[c.key];
+      if (st === "warn" || st === "crit") {
+        lines.push('<div class="syshealth__tip-line"><span class="syshealth__tip-dot syshealth__tip-dot--' + st + '"></span>' + c.label + ' ' + c.fmt(c.val) + '</div>');
+      } else if (st === "ok") {
+        okCount++;
+      }
+    }
+    if (!lines.length) {
+      tipEl.innerHTML = '<div class="syshealth__tip-line"><span class="syshealth__tip-dot syshealth__tip-dot--ok"></span>All ' + okCount + ' checks passing</div>';
+    } else {
+      tipEl.innerHTML = lines.join("");
+    }
+  }
+
   // Metric cards
   function applyMetric(rootId, valId, sparkId, value, health, fmt, series, color) {
     var root = $(rootId);
@@ -1266,6 +1308,14 @@ function initStats() {
     b.addEventListener("click", function() { setStatsRange(b.dataset.range); });
   });
   $("statsRawToggle").addEventListener("click", toggleStatsRaw);
+  var healthChip = $("sysStatusChip");
+  if (healthChip) healthChip.addEventListener("click", function() {
+    var tip = $("sysHealthTip");
+    if (!tip) return;
+    var show = tip.hidden;
+    tip.hidden = !show;
+    healthChip.setAttribute("aria-expanded", String(show));
+  });
 }
 
 /* ---- Init ---- */
