@@ -178,6 +178,13 @@ body {
   margin-bottom: 10px;
   letter-spacing: -0.5px;
 }
+.welcome__tagline {
+  font-size: 14px;
+  color: var(--brown-medium);
+  margin: 4px 0 18px;
+  letter-spacing: 0.1px;
+}
+.welcome__tagline em { font-style: italic; }
 .welcome__subtitle {
   font-size: 15px;
   color: #1e4f8a;
@@ -331,6 +338,23 @@ body {
 }
 .channels__info-link:active {
   background: var(--accent-light);
+}
+
+/* Channel group headers */
+.channel-group__header {
+  padding: 14px 4px 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+.channel-group__header:first-child { padding-top: 2px; }
+.channel-group__title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--brown-medium);
 }
 
 /* Channel cards (interactive) */
@@ -1331,6 +1355,8 @@ body {
   color: #1e7a3a;
   border: 1px solid #cfe4d0;
   white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
 }
 .syshealth__chip-dot {
   width: 7px; height: 7px; border-radius: 50%;
@@ -1349,6 +1375,30 @@ body {
 .syshealth__chip[data-status="crit"] .syshealth__chip-dot {
   background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,0.22);
 }
+
+.syshealth__tip {
+  font-size: 12px;
+  line-height: 1.5;
+  background: #fff;
+  border: 1px solid #ece3d4;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  color: #3d2b1f;
+}
+.syshealth__tip-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+}
+.syshealth__tip-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.syshealth__tip-dot--ok { background: #43a047; }
+.syshealth__tip-dot--warn { background: #e06713; }
+.syshealth__tip-dot--crit { background: #c62828; }
 
 .syshealth__grid {
   display: grid;
@@ -1379,9 +1429,6 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: #6d4c41;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .sys-metric__unit {
   font-family: var(--mono);
@@ -1413,7 +1460,7 @@ body {
 }
 .sys-metric__spark {
   height: 22px;
-  margin-top: 2px;
+  margin-top: auto;
 }
 
 /* ---- System rows (network, outbox, throttle) ---- */
