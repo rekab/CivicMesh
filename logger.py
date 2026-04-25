@@ -68,13 +68,24 @@ class LoggingConfig:
     rotate_backup_count: int = 5
 
 
-def setup_logging(service_name: str, cfg: LoggingConfig) -> tuple[logging.Logger, Optional[_RateLimitedSecurityLogger]]:
+def setup_logging(
+    service_name: str,
+    cfg: LoggingConfig,
+    level_override: Optional[str] = None,
+) -> tuple[logging.Logger, Optional[_RateLimitedSecurityLogger]]:
     os.makedirs(cfg.log_dir, exist_ok=True)
 
-    level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+    file_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+    # Console defaults to INFO regardless of config: the config's level governs
+    # the durable rotating file, not the operator's terminal. --log-level lets
+    # the operator opt into more (or less) verbosity on stdout for one run.
+    console_level = (
+        getattr(logging, level_override.upper(), logging.INFO)
+        if level_override else logging.INFO
+    )
 
     logger = logging.getLogger(service_name)
-    logger.setLevel(level)
+    logger.setLevel(min(file_level, console_level))
     logger.propagate = False
 
     # Avoid duplicate handlers on reload
@@ -86,20 +97,18 @@ def setup_logging(service_name: str, cfg: LoggingConfig) -> tuple[logging.Logger
         datefmt="%Y-%m-%dT%H:%M:%S%z",
     )
 
-    # Console (systemd/journalctl)
     sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(logging.INFO)
+    sh.setLevel(console_level)
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
-    # Service file log (DEBUG+)
     fh = logging.handlers.RotatingFileHandler(
         filename=os.path.join(cfg.log_dir, f"{service_name}.log"),
         maxBytes=cfg.rotate_max_bytes,
         backupCount=cfg.rotate_backup_count,
         encoding="utf-8",
     )
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(file_level)
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
