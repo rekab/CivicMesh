@@ -180,6 +180,7 @@ let state = {
   postsRemaining: null,
   windowSec: 3600,
   radioStatus: "unknown",
+  recoveryState: null,
   liveSize: 80,
   pageSize: 80,
   loadingOlder: false,
@@ -515,17 +516,35 @@ function updateRadioBanner() {
   var banner = $("radioStatusBanner");
   if (!banner) return;
   var isMesh = state.meshChannelNames.has(state.activeChannel);
-  banner.hidden = !(isMesh && state.radioStatus !== "online");
+  if (!isMesh || state.radioStatus === "online") {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  if (state.radioStatus === "recovering") {
+    banner.textContent = "Radio reconnecting \u2014 messages will queue and send when it\u2019s back.";
+  } else if (state.radioStatus === "needs_human") {
+    banner.textContent = "Radio needs attention \u2014 messages will queue and send once it\u2019s working.";
+  } else {
+    banner.textContent = "Radio offline \u2014 messages will queue but won\u2019t transmit yet.";
+  }
 }
 
+// Radio status is the sole driver of the header indicator. When the
+// browser can't reach the Pi (fetch throws), the indicator goes stale
+// for up to ~15s until this function runs again. This is acceptable —
+// adding a separate connectivity indicator would conflate two signals.
 async function refreshRadioStatus() {
   try {
     var data = await fetchJSON(API.status, { method: "GET" });
-    state.radioStatus = data.radio || "unknown";
+    state.radioStatus = data.radio_status || "offline";
+    state.recoveryState = data.recovery_state || null;
     if (data.hub_name) state.hubName = data.hub_name;
   } catch {
-    state.radioStatus = "unknown";
+    state.radioStatus = "offline";
+    state.recoveryState = null;
   }
+  setRadioStatus(state.radioStatus);
   updateRadioBanner();
 }
 
@@ -535,7 +554,6 @@ async function refreshSession() {
   var debug = $("debugBanner");
   try {
     var data = await fetchJSON(API.session, { method: "GET" });
-    setConnectionStatus(true);
     state.postsRemaining = data.posts_remaining;
     updateCharCount();
     if (debug) {
@@ -560,7 +578,6 @@ async function refreshSession() {
       }
     }
   } catch (e) {
-    setConnectionStatus(false);
     state.postsRemaining = null;
     updateCharCount();
     if (debug) {
@@ -591,9 +608,6 @@ async function refreshLive(scrollBottom) {
     }
   } catch (e) {
     $("postError").textContent = e.message || "Failed to load messages";
-    if (e && e.message && String(e.message).includes("Failed to fetch")) {
-      setConnectionStatus(false);
-    }
   }
 }
 
@@ -721,30 +735,57 @@ function applyNameMax() {
   }
 }
 
-function setConnectionStatus(connected) {
-  // Update the stacked radio status indicators (mobile + desktop)
-  var radioDots = [
-    $("topbarRadioDot"),
-    $("desktopRadioDot"),
+function setRadioStatus(status) {
+  var pairs = [
+    { dot: $("topbarRadioDot"), line: $("topbarRadioLine") },
+    { dot: $("desktopRadioDot"), line: $("desktopRadioLine") },
   ];
-  var radioLines = [
-    $("topbarRadioLine"),
-    $("desktopRadioLine"),
-  ];
-  for (var i = 0; i < radioDots.length; i++) {
-    var dot = radioDots[i];
-    var line = radioLines[i];
-    if (!dot) continue;
-    if (connected) {
-      dot.className = "topbar__mini-dot topbar__mini-dot--ok";
-      dot.innerHTML = "";
-      if (line) line.className = "topbar__status-line";
-    } else {
-      dot.className = "topbar__mini-dot topbar__mini-dot--off";
-      dot.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-      if (line) line.className = "topbar__status-line topbar__status-line--muted";
-    }
+  var label, dotClass, lineClass, alertGlyph;
+  switch (status) {
+    case "online":
+      label = "Mesh Radio";
+      dotClass = "topbar__mini-dot topbar__mini-dot--ok";
+      lineClass = "topbar__status-line";
+      alertGlyph = "";
+      break;
+    case "recovering":
+      label = "Mesh Radio reconnecting";
+      dotClass = "topbar__mini-dot topbar__mini-dot--warn";
+      lineClass = "topbar__status-line";
+      alertGlyph = "";
+      break;
+    case "offline":
+      label = "Mesh Radio offline";
+      dotClass = "topbar__mini-dot topbar__mini-dot--alert";
+      lineClass = "topbar__status-line topbar__status-line--muted";
+      alertGlyph = "";
+      break;
+    case "needs_human":
+      label = "Mesh Radio needs attention";
+      dotClass = "topbar__mini-dot topbar__mini-dot--alert";
+      lineClass = "topbar__status-line topbar__status-line--muted";
+      alertGlyph = '<svg class="topbar__warn-glyph" viewBox="0 0 12 12" aria-hidden="true">'
+                 + '<path d="M6 1.5 L11 10.5 L1 10.5 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
+                 + '<line x1="6" y1="5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+                 + '<circle cx="6" cy="9" r="0.6" fill="currentColor"/>'
+                 + '</svg>';
+      break;
+    default:
+      label = "Mesh Radio offline";
+      dotClass = "topbar__mini-dot topbar__mini-dot--alert";
+      lineClass = "topbar__status-line topbar__status-line--muted";
+      alertGlyph = "";
   }
+  pairs.forEach(function(p) {
+    if (!p.dot || !p.line) return;
+    p.dot.className = dotClass;
+    p.dot.innerHTML = "";
+    p.line.className = lineClass;
+    p.line.innerHTML = "";
+    p.line.appendChild(p.dot);
+    if (alertGlyph) p.line.insertAdjacentHTML("beforeend", alertGlyph);
+    p.line.insertAdjacentText("beforeend", label);
+  });
 }
 
 function validateNameLive() {
@@ -1144,6 +1185,27 @@ function renderSysHealth(sys) {
   }
 }
 
+function renderRadioStatusRow() {
+  var row = $("sysRadioRow");
+  var val = $("sysRadioVal");
+  if (!row || !val) return;
+  var status = state.radioStatus || "offline";
+  var rec = state.recoveryState;
+  var label, statusAttr;
+  switch (status) {
+    case "online":      label = "Online";       statusAttr = "ok";   break;
+    case "recovering":  label = "Reconnecting"; statusAttr = "warn"; break;
+    case "needs_human": label = "Needs attention (auto-retry continues)"; statusAttr = "warn"; break;
+    case "offline":     label = "Offline";      statusAttr = "warn"; break;
+    default:            label = "Unknown";      statusAttr = "warn";
+  }
+  if (rec && rec !== status && rec !== "healthy") {
+    label += " (" + rec + ")";
+  }
+  row.dataset.status = statusAttr;
+  val.textContent = label;
+}
+
 function renderStats() {
   var d = statsState.data; if (!d) return;
 
@@ -1170,13 +1232,15 @@ function renderStats() {
 
   var uptimeEl = $("statsUptime");
   if (uptimeEl) {
-    var radioLabel = "radio " + (state.radioStatus || "unknown");
+    var radioLabels = { online: "radio online", recovering: "radio reconnecting", offline: "radio offline", needs_human: "radio needs attention" };
+    var radioLabel = radioLabels[state.radioStatus] || "radio " + (state.radioStatus || "unknown");
     uptimeEl.textContent = (sys.cpu ? "Healthy" : "Collecting\u2026") + " \u00b7 " + radioLabel;
   }
 
   var uv = $("statsUptimeVal");
   if (uv) uv.textContent = fmtUptime(sys.uptime_s);
 
+  renderRadioStatusRow();
   renderSysHealth(sys);
 
   var updated = $("statsUpdated");
