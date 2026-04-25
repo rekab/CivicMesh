@@ -166,7 +166,7 @@ See `docs/message_lifecycle.md` for the full state machine.
 - `/api/post` atomically creates both an outbox row and a messages row (`status='queued'`).
 - mesh_bot's `_outbox_task` polls `outbox WHERE status='queued'`, sends via radio, and atomically updates both tables on success or failure.
 - Echo-aware retry: after `no_event_received`, waits for mesh echoes before retrying. Pre-retry echo check on each subsequent attempt.
-- Backoff: `[0, 2, 5, max_delay_sec]` sequence, reset after idle period. Consecutive error pause (30s) after 5 sustained failures.
+- Backoff: `[0, 2, 5, max_delay_sec]` sequence, reset after idle period. 3 consecutive send failures trigger `RecoveryController` (see `docs/recovery.md`).
 - Max retries: 3 (configurable via `outbox_max_retries`).
 
 ## MeshCore Integration Assumptions

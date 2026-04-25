@@ -166,8 +166,10 @@ heartbeat task updates every 10 seconds:
 | `recovering` | false | reset ladder in progress |
 | `needs_human` | false | all resets failed, backing off |
 
-The web server reads this via `get_status()`.  CIV-42 will surface
-the state on the captive portal.
+The web server returns `radio_status` and `recovery_state` via
+`/api/status`.  CIV-42 (2026-04-25) surfaced these on the captive
+portal: header indicator (four visual states), in-chat banner, and
+a "Radio status" row in the stats sheet with 24h restart count.
 
 ### Telemetry events
 
