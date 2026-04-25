@@ -559,20 +559,42 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/status":
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
             hub_name = self.server.cfg.hub.name
-            if not row:
-                _json(self, 200, {"radio": "unknown", "mesh_bot_seen": False, "hub_name": hub_name})
-                return
             now = _now_ts()
-            age = now - int(row.get("last_seen_ts") or 0)
+
+            if not row or not row.get("last_seen_ts"):
+                _json(self, 200, {
+                    "radio_status": "needs_human",
+                    "recovery_state": None,
+                    "radio": "offline",  # deprecated — use radio_status
+                    "mesh_bot_seen": False,
+                    "hub_name": hub_name,
+                })
+                return
+
+            age = now - int(row["last_seen_ts"])
+            state = row.get("state")
             connected = bool(row.get("radio_connected"))
-            online = connected and age <= 30
+
+            if age > 30:
+                radio_status = "needs_human"
+            elif state == "healthy" and connected:
+                radio_status = "online"
+            elif state in ("recovering", "disconnected"):
+                radio_status = "recovering"
+            elif state == "needs_human":
+                radio_status = "needs_human"
+            else:
+                radio_status = "offline"
+
             _json(
                 self,
                 200,
                 {
-                    "radio": "online" if online else "offline",
+                    "radio_status": radio_status,
+                    "recovery_state": state,
+                    "radio": "online" if radio_status == "online" else "offline",  # deprecated — use radio_status
                     "mesh_bot_seen": True,
-                    "last_seen_ts": int(row.get("last_seen_ts") or 0),
+                    "last_seen_ts": int(row["last_seen_ts"]),
                     "age_sec": int(age),
                     "hub_name": hub_name,
                 },

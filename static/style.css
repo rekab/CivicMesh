@@ -147,6 +147,21 @@ body {
   color: #c85f4a;
 }
 .topbar__mini-dot--off svg { width: 9px; height: 9px; display: block; }
+.topbar__mini-dot--warn {
+  background: #e06713;
+  box-shadow: 0 0 0 2px rgba(224,103,19,0.18);
+}
+.topbar__mini-dot--alert {
+  background: var(--danger);
+  box-shadow: 0 0 0 2px rgba(198,40,40,0.2);
+}
+.topbar__warn-glyph {
+  width: 12px;
+  height: 12px;
+  color: var(--danger);
+  vertical-align: middle;
+  margin-right: 2px;
+}
 
 /* ---- Views ---- */
 .view { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
@@ -1511,6 +1526,7 @@ body {
   gap: 10px;
 }
 .sys-row--outbox[data-status="warn"] .sys-row__value { color: #b5390a; }
+.sys-row--radio[data-status="warn"] .sys-row__value { color: #b5390a; }
 
 /* ---- Diagnostic mini sparklines ---- */
 .diag-spark {
