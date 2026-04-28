@@ -1,24 +1,31 @@
+# Identity and location. Tier 1 — civicmesh configure will prompt for these.
 [node]
 name = "CivicMesh"
-location = "Fremont, Seattle" # Used for session location metadata; changing it will only affect new/updated sessions.
+location = "Your Hub, Your City"  # Used for session location metadata; changing it will only affect new/updated sessions.
 
+# Radio hardware. serial_port is Tier 1 (auto-detected by civicmesh configure);
+# freq/bw/sf/cr are Tier 2 (hand-edit only if your mesh uses non-default params).
 [radio]
 # Use the /dev/serial/by-id/... path rather than /dev/ttyUSBN — the by-id
 # symlink is stable across USB re-enumeration, so mesh_bot keeps working
 # after pyusb resets, cable wiggles, or any other event that renames ttyUSBN.
 # Find your device's by-id path with: ls -la /dev/serial/by-id/
-serial_port = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
+serial_port = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_XXXXXXXX-if00-port0"
 freq_mhz = 910.525
 bw_khz = 62.5
 sf = 7
 cr = 5
 
+# MeshCore channels to join. Tier 1 — civicmesh configure will prompt.
 [channels]
-names = ["#civicmesh", "#puget-sound", "#testing"]
+names = ["#civicmesh", "#testing"]
 
+# Device-local channels (never relayed over radio). Tier 2.
 [local]
 names = ["#local"]
 
+# Captive-portal web server. port and portal_host are Tier 1;
+# portal_aliases is Tier 2.
 [web]
 port = 8080
 # Hostname used for portal redirects and Host-header checks.
@@ -29,6 +36,7 @@ portal_host = "10.0.0.1"
 # and probe responses always use portal_host (the IP).
 portal_aliases = ["civicmesh.internal"]
 
+# Rate limits and message constraints. Tier 2.
 [limits]
 posts_per_hour = 10
 message_max_chars = 100
@@ -42,12 +50,14 @@ outbox_max_retries = 3
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240  # 10GB
 
+# Log output. Tier 2.
 [logging]
-log_level = "DEBUG"
+log_level = "INFO"
 log_dir = "logs"
 enable_security_log = true
 
+# Development/testing overrides. Tier 1 — civicmesh configure will prompt.
 [debug]
 # Allow traffic arriving on eth0 to bypass MAC validation and auto-create sessions for local testing.
 # Requires the client to set the civicmesh_session cookie (set by the web UI); only applies when ARP shows eth0.
-allow_eth0 = true
+allow_eth0 = false
