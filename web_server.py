@@ -840,7 +840,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             data = _read_json(self)
             channel = str(data.get("channel", ""))
             content = str(data.get("content", ""))
-            name = str(data.get("name", sess.get("name") or ""))
+            name = str(data.get("name", sess.get("name") or "")).strip()
             fingerprint = str(data.get("fingerprint", "") or "").strip().lower()
             if not channel or channel not in self._all_channel_names():
                 _json(self, 400, {"error": "invalid channel"})
@@ -856,7 +856,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if not re.match(self.server.cfg.limits.name_pattern, name):
                 if sec:
                     sec.error("InvalidName", ip=ip, mac=mac, msg="name invalid characters", session_id=sid, name=name)
-                _json(self, 400, {"error": "name invalid"})
+                _json(self, 400, {"error": "Pick any character but : and @. That's the ^[^:@]+$!"})
                 return
             if len(content) > self.server.cfg.limits.message_max_chars:
                 _json(self, 400, {"error": "message too long"})
