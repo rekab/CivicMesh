@@ -175,7 +175,7 @@ let state = {
   polling: null,
   maxChars: 100,
   maxNameChars: 12,
-  namePattern: /^[A-Za-z0-9_-]+$/,
+  namePattern: /^[^:@]+$/,
   expandedMeta: new Set(),
   postsRemaining: null,
   windowSec: 3600,
@@ -802,7 +802,7 @@ function validateNameLive() {
     return;
   }
   if (!state.namePattern.test(name)) {
-    errorEl.textContent = "Name can only use A-Z, a-z, 0-9, - or _.";
+    errorEl.textContent = "Pick any character but : and @. That\u2019s the ^[^:@]+$!";
     return;
   }
   if (errorEl.textContent.includes("Name")) {
