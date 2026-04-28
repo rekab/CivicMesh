@@ -5,8 +5,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any, Optional
 
@@ -48,6 +50,52 @@ def _record_telemetry_event(db_cfg, kind, detail=None):
 
 
 _stats_cache: dict = {"ts": 0.0, "data": None}
+
+_FEEDBACK_WINDOW_S = 12 * 3600
+_FEEDBACK_BUDGET_BYTES = 1_000_000
+
+
+def _recent_feedback_bytes(path, log, window_s=_FEEDBACK_WINDOW_S):
+    """Sum line lengths of feedback entries with ts within the last window_s seconds."""
+    cutoff = time.time() - window_s
+    total = 0
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                try:
+                    ts = datetime.fromisoformat(json.loads(line)["ts"]).timestamp()
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    log.warning("skipping unparseable feedback line: %s", e)
+                    continue
+                if ts >= cutoff:
+                    total += len(line)
+    except FileNotFoundError:
+        return 0
+    return total
+
+
+def _feedback_ctx(db_path):
+    """Collect lightweight server context for a feedback entry."""
+    from telemetry import read_uptime_sec
+    ctx = {}
+    uptime = read_uptime_sec()
+    if uptime is not None:
+        ctx["uptime_s"] = uptime
+    try:
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE ts >= ?",
+                (int(time.time()) - 86400,),
+            ).fetchone()
+            ctx["msg_24h"] = row[0] if row else 0
+    except Exception:
+        pass
+    try:
+        ctx["free_mb"] = shutil.disk_usage("/").free // (1024 * 1024)
+    except Exception:
+        pass
+    return ctx
 
 
 def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) -> None:
@@ -468,6 +516,126 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
+        if path == "/feedback":
+            node_name = self.server.cfg.node.name
+            html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Feedback — {html_mod.escape(node_name)}</title>
+    <style>
+      :root {{
+        --bg: #f8f6f1;
+        --text: #1f2328;
+        --muted: #4b5563;
+        --accent: #0f4c81;
+        --border: #d0d7de;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: var(--bg);
+        color: var(--text);
+        padding: 20px;
+      }}
+      .wrap {{ max-width: 640px; margin: 0 auto; }}
+      h1 {{ font-size: 22px; margin: 6px 0 12px; }}
+      p {{ margin: 8px 0; color: var(--muted); font-size: 15px; line-height: 1.5; }}
+      textarea {{
+        width: 100%;
+        min-height: 140px;
+        padding: 12px;
+        border: 1.5px solid var(--border);
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 15px;
+        resize: vertical;
+      }}
+      textarea:focus {{
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(15, 76, 129, 0.1);
+      }}
+      .btn {{
+        display: inline-block;
+        margin-top: 10px;
+        padding: 12px 24px;
+        border-radius: 10px;
+        border: none;
+        background: var(--accent);
+        color: #fff;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+      }}
+      .back {{ margin-top: 16px; font-size: 14px; }}
+      .back a {{ color: var(--accent); }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Send Feedback</h1>
+      <p>Tell the developers what's working, what's broken, or what's confusing.
+         This goes straight to the team and not posted to the mesh.</p>
+      <form method="post" action="/feedback">
+        <textarea name="text" maxlength="2000" placeholder="Your feedback&hellip;" required></textarea>
+        <br>
+        <button type="submit" class="btn">Submit</button>
+      </form>
+      <p class="back"><a href="/">&larr; Back to CivicMesh</a></p>
+    </div>
+  </body>
+</html>"""
+            body = html.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/feedback/thanks":
+            node_name = self.server.cfg.node.name
+            html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Thanks — {html_mod.escape(node_name)}</title>
+    <style>
+      :root {{ --bg: #f8f6f1; --text: #1f2328; --accent: #0f4c81; --muted: #4b5563; }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: var(--bg);
+        color: var(--text);
+        padding: 20px;
+      }}
+      .wrap {{ max-width: 640px; margin: 0 auto; }}
+      h1 {{ font-size: 22px; margin: 6px 0 12px; }}
+      p {{ margin: 8px 0; color: var(--muted); font-size: 15px; line-height: 1.5; }}
+      a {{ color: var(--accent); }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Thanks!</h1>
+      <p>Your feedback has been recorded.</p>
+      <p><a href="/">&larr; Back to CivicMesh</a></p>
+    </div>
+  </body>
+</html>"""
+            body = html.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API routes are always served regardless of Host.
         if path.startswith("/api/"):
             _sid = self._get_session_id()
@@ -792,6 +960,66 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 400, {"error": "fingerprint update failed"})
             return
 
+        if path == "/feedback":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b""
+            form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
+            text = form.get("text", [""])[0]
+
+            def _feedback_error(status, title, message):
+                node_name = self.server.cfg.node.name
+                h = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html_mod.escape(title)} — {html_mod.escape(node_name)}</title>
+<style>body{{margin:0;font-family:system-ui,sans-serif;background:#f8f6f1;color:#1f2328;padding:20px}}
+.wrap{{max-width:640px;margin:0 auto}}h1{{font-size:22px}}p{{color:#4b5563;font-size:15px;line-height:1.5}}
+a{{color:#0f4c81}}</style></head><body><div class="wrap">
+<h1>{html_mod.escape(title)}</h1><p>{html_mod.escape(message)}</p>
+<p><a href="/feedback">&larr; Try again</a></p></div></body></html>"""
+                body = h.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            if not text.strip():
+                _feedback_error(400, "Empty feedback", "Please enter some feedback.")
+                return
+
+            if len(text.encode("utf-8")) > 2048:
+                _feedback_error(413, "Too long", "Feedback must be under 2048 bytes. Please shorten your message.")
+                return
+
+            fb_path = self.server.feedback_path
+            recent = _recent_feedback_bytes(fb_path, log)
+            if recent > _FEEDBACK_BUDGET_BYTES:
+                log.warning("feedback:circuit_breaker recent_bytes=%d path=%s", recent, fb_path)
+                _feedback_error(503, "Temporarily unavailable", "Feedback temporarily unavailable \u2014 please try again later.")
+                return
+
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ip": self._client_ip(),
+                "location": self.server.cfg.node.location,
+                "text": text.strip(),
+                "ctx": _feedback_ctx(self.server.db_cfg.path),
+            }
+            try:
+                with open(fb_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    f.flush()
+                log.info("feedback:saved ip=%s len=%d", self._client_ip(), len(text))
+            except Exception as e:
+                log.error("feedback:write_failed path=%s err=%s", fb_path, e)
+                _feedback_error(500, "Error", "Could not save feedback. Please try again.")
+                return
+
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/feedback/thanks")
+            self.end_headers()
+            return
+
         _json(self, 404, {"error": "not found"})
 
 
@@ -824,6 +1052,9 @@ def run():
             self.log = log
             self.sec = sec
             self.portal_accepted = {}
+            # Feedback file lives alongside the database
+            db_dir = os.path.dirname(os.path.abspath(cfg.db_path)) or "."
+            self.feedback_path = os.path.join(db_dir, "feedback.jsonl")
 
     def _handler(*a, **kw):
         return CivicMeshHandler(*a, directory=static_dir, **kw)
