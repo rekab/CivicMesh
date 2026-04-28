@@ -7,7 +7,9 @@ name = "civic-mesh-hub-relay-bot"
 version = "0.1.0"
 description = "Civic Mesh Hub Relay Bot: WiFi captive-portal relay for MeshCore channels"
 readme = "README.md"
-requires-python = ">=3.9"
+# Both deployment targets (Pi 4 dev, Pi Zero 2W prod) run Python 3.13.5.
+# No reason to advertise broader support.
+requires-python = ">=3.13"
 dependencies = [
   # meshcore is strictly pinned, not ranged. Rationale:
   #   - CivicMesh is a deployed app, not a library; nothing downstream
@@ -33,7 +35,9 @@ diagnostics = ["psutil", "pyusb"]
 [project.scripts]
 civicmesh-web = "web_server:run"
 civicmesh-mesh = "mesh_bot:main"
-civicmesh-admin = "admin:main"
+# `civicmesh` still points at admin:main during Phase 1. CIV-59 will
+# rename admin.py → civicmesh.py and flip this to `civicmesh:main`.
+civicmesh = "admin:main"
 
 [tool.setuptools]
 py-modules = ["admin", "config", "database", "logger", "mesh_bot", "web_server"]

@@ -107,14 +107,29 @@ mesh_bot includes a silent-hang detector that watches for radio unresponsiveness
 
 ## Initial Setup (dev or deployment)
 
-Create and activate a local virtual environment (unprivileged), then install dependencies:
+### Prerequisites: install uv
+
+CivicMesh uses [uv](https://docs.astral.sh/uv/) (Astral) to manage the
+Python venv and dependencies. Install it once per developer machine:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install .
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+On macOS, `brew install uv` also works, but the standalone installer
+above is the documented path (it is what the production bootstrap
+script uses).
+
+### Sync the project venv
+
+From the repo root:
+
+```bash
+uv sync
+```
+
+This creates `.venv/` and installs everything declared in
+`pyproject.toml` against the pinned versions in `uv.lock`.
 
 ## Host Setup (deployment)
 
@@ -131,19 +146,13 @@ Reboot when prompted by the script.
 
 1. **Copy files to Raspberry Pi** (via scp, rsync, or git clone)
 
-2. **Create and activate a virtual environment (unprivileged):**
+2. **Sync the project venv with uv** (uv must already be installed; see
+   "Prerequisites: install uv" above):
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -U pip
+   uv sync
    ```
 
-3. **Install Python dependencies:**
-   ```bash
-   pip install .
-   ```
-
-4. **Edit configuration:**
+3. **Edit configuration:**
    ```bash
    nano config.toml
    ```
@@ -152,21 +161,21 @@ Reboot when prompted by the script.
    - Set hub name and location
    - Configure channels to join
 
-5. **Configure the WiFi AP and captive portal networking:**
+4. **Configure the WiFi AP and captive portal networking:**
    ```bash
    sudo ./scripts/setup_ap.sh --ssid "CivicMesh-Dev"
    # optional: --iface wlp2s0
    ```
    Reboot when prompted by the script.
 
-6. **Install systemd services:**
+5. **Install systemd services:**
    ```bash
    sudo cp systemd/*.service /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable mesh-bot.service web-server.service
    ```
 
-7. **Start services:**
+6. **Start services:**
    ```bash
    sudo systemctl start mesh-bot.service web-server.service
    ```
@@ -191,13 +200,11 @@ When deployed without internet access, administration and updates are performed 
 In two terminals:
 
 ```bash
-source .venv/bin/activate
-python3 web_server.py --config config.toml
+uv run civicmesh-web --config config.toml
 ```
 
 ```bash
-source .venv/bin/activate
-python3 mesh_bot.py --config config.toml
+uv run civicmesh-mesh --config config.toml
 ```
 
 Then browse to `http://<pi-ip>/`.
@@ -205,11 +212,11 @@ Then browse to `http://<pi-ip>/`.
 ## Admin CLI (SSH only)
 
 ```bash
-python3 admin.py --config config.toml pin 123
-python3 admin.py --config config.toml unpin 123
-python3 admin.py --config config.toml stats
-python3 admin.py --config config.toml cleanup
-python3 admin.py --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
+uv run civicmesh --config config.toml pin 123
+uv run civicmesh --config config.toml unpin 123
+uv run civicmesh --config config.toml stats
+uv run civicmesh --config config.toml cleanup
+uv run civicmesh --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
 ```
 
 ## Tests
@@ -217,7 +224,7 @@ python3 admin.py --config config.toml messages recent --channel "#fremont" --sou
 Run unit tests with:
 
 ```bash
-python3 -m unittest
+uv run python -m unittest
 ```
 
 ## Configuration
