@@ -155,7 +155,7 @@ sudo systemctl restart hostapd dnsmasq
 Run the captive portal web server on port 80. Example:
 
 ```bash
-python3 web_server.py --config config.toml
+uv run civicmesh-web --config config.toml
 ```
 
 ## Validation Checklist
