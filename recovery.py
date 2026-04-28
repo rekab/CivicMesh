@@ -331,8 +331,8 @@ async def recovery_task(
                             "recovery:skipped_healthy attempt=%d", attempt,
                         )
                         break  # exit ladder retry loop
-                except Exception:
-                    pass  # probe failed — proceed with recovery as normal
+                except Exception as e:
+                    log.debug("recovery:health_probe_failed attempt=%d err=%s", attempt, e)
 
             controller._transition(
                 RecoveryState.RECOVERING, radio_connected=False,
@@ -391,8 +391,8 @@ async def recovery_task(
                     })
                     try:
                         await new_client.disconnect()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.debug("recovery:disconnect_cleanup_failed rung=%s err=%s", rung.name, e)
                     continue
 
                 # 5. Success
