@@ -162,7 +162,9 @@ def load_config(path: str) -> AppConfig:
             posts_per_hour=int(limits.get("posts_per_hour", 10)),
             message_max_chars=int(limits.get("message_max_chars", 200)),
             name_max_chars=int(limits.get("name_max_chars", 12)),
-            name_pattern=str(limits.get("name_pattern", r"^[A-Za-z0-9_-]+$")),
+            # Allow any characters except : (receive-side parser delimiter)
+            # and @ (outbound sender@node delimiter).
+            name_pattern=str(limits.get("name_pattern", r"^[^:@]+$")),
             outbox_max_retries=int(limits.get("outbox_max_retries", 3)),
             outbox_max_delay_sec=int(limits.get("outbox_max_delay_sec", 10)),
             outbox_idle_reset_sec=int(limits.get("outbox_idle_reset_sec", 60)),
