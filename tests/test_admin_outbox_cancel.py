@@ -4,7 +4,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 
-from admin import _handle_outbox_cancel
+from civicmesh import _handle_outbox_cancel
 from database import DBConfig, get_pending_outbox_filtered, init_db, queue_outbox
 
 

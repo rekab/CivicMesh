@@ -2,7 +2,7 @@ import tempfile
 import time
 import unittest
 
-from admin import SESSION_LAST_WIDTH, SESSION_LOCATION_WIDTH, SESSION_MAC_WIDTH, SESSION_NAME_WIDTH, SESSION_POSTS_WIDTH, _format_sessions
+from civicmesh import SESSION_LAST_WIDTH, SESSION_LOCATION_WIDTH, SESSION_MAC_WIDTH, SESSION_NAME_WIDTH, SESSION_POSTS_WIDTH, _format_sessions
 from database import DBConfig, get_recent_sessions, init_db, insert_session
 
 

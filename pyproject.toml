@@ -35,10 +35,8 @@ diagnostics = ["psutil", "pyusb"]
 [project.scripts]
 civicmesh-web = "web_server:run"
 civicmesh-mesh = "mesh_bot:main"
-# `civicmesh` still points at admin:main during Phase 1. CIV-59 will
-# rename admin.py → civicmesh.py and flip this to `civicmesh:main`.
-civicmesh = "admin:main"
+civicmesh = "civicmesh:main"
 
 [tool.setuptools]
-py-modules = ["admin", "config", "database", "logger", "mesh_bot", "web_server"]
+py-modules = ["civicmesh", "config", "database", "logger", "mesh_bot", "web_server"]
 

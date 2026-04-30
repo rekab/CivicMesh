@@ -1,5 +1,9 @@
 import argparse
+import os
+import sys
 import time
+import tomllib
+from pathlib import Path
 from typing import Callable
 
 from config import load_config
@@ -17,6 +21,86 @@ from database import (
     unpin_message,
 )
 from logger import setup_logging
+
+
+PROD_TREE = Path("/usr/local/civicmesh")
+PROD_VENV = Path("/usr/local/civicmesh/app/.venv")
+EXIT_WRONG_MODE = 10
+
+
+def _find_dev_project_root() -> Path:
+    """Walk up from this file looking for the CivicMesh pyproject.toml."""
+    start = Path(__file__).resolve().parent
+    p = start
+    while True:
+        candidate = p / "pyproject.toml"
+        if candidate.is_file():
+            try:
+                with candidate.open("rb") as f:
+                    data = tomllib.load(f)
+            except Exception:
+                data = {}
+            if data.get("project", {}).get("name") == "civic-mesh-hub-relay-bot":
+                return p
+        if p == p.parent:
+            break
+        p = p.parent
+    raise RuntimeError(f"could not locate dev project root from {start}")
+
+
+def _refuse(msg: str) -> None:
+    print(f"civicmesh: {msg}", file=sys.stderr)
+    sys.exit(EXIT_WRONG_MODE)
+
+
+def _check_refusals(*, mode: str, project_root: Path, args: argparse.Namespace) -> None:
+    config_path = getattr(args, "config", None)
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+
+    if mode == "dev":
+        if config_path:
+            resolved = Path(config_path).resolve()
+            if resolved.is_relative_to(PROD_TREE):
+                _refuse(
+                    "this is the dev binary; use the prod binary at "
+                    "/usr/local/bin/civicmesh for that path"
+                )
+        if virtual_env:
+            expected = (project_root / ".venv").resolve()
+            if Path(virtual_env).resolve() != expected:
+                _refuse(
+                    "VIRTUAL_ENV points elsewhere; either unset it or 'cd' "
+                    "into the dev tree"
+                )
+    else:  # prod
+        if config_path:
+            resolved = Path(config_path).resolve()
+            if not resolved.is_relative_to(PROD_TREE):
+                _refuse(
+                    "this is the prod binary; it operates only on "
+                    "/usr/local/civicmesh/etc/config.toml"
+                )
+        if virtual_env:
+            if Path(virtual_env).resolve() != PROD_VENV.resolve():
+                _refuse(
+                    "VIRTUAL_ENV points elsewhere; open a clean shell or unset"
+                )
+
+
+def _require_config(args: argparse.Namespace) -> str:
+    if not getattr(args, "config", None):
+        print(f"civicmesh: {args.cmd}: --config is required", file=sys.stderr)
+        sys.exit(2)
+    return args.config
+
+
+def _load_runtime(args: argparse.Namespace):
+    """Common per-subcommand setup: config, logger, DBConfig."""
+    cfg = load_config(_require_config(args))
+    log, _ = setup_logging("civicmesh", cfg.logging)
+    log.info("civicmesh:cmd=%s", args.cmd)
+    db_cfg = DBConfig(path=cfg.db_path)
+    return cfg, log, db_cfg
 
 
 RECENT_ID_WIDTH = 5
@@ -230,9 +314,148 @@ def _handle_outbox_clear(
     return cleared
 
 
+def _cmd_pin(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    pin_message(db_cfg, message_id=args.message_id, pin_order=args.order, log=log)
+    print(f"Pinned message {args.message_id}")
+
+
+def _cmd_unpin(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    unpin_message(db_cfg, message_id=args.message_id, log=log)
+    print(f"Unpinned message {args.message_id}")
+
+
+def _cmd_stats(args: argparse.Namespace) -> None:
+    import sqlite3
+
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    conn = sqlite3.connect(cfg.db_path)
+    try:
+        msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        sess = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        out = conn.execute("SELECT COUNT(*) FROM outbox WHERE status='queued'").fetchone()[0]
+        votes = conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
+    finally:
+        conn.close()
+    print(f"messages={msg} sessions={sess} outbox_pending={out} votes={votes}")
+
+
+def _cmd_cleanup(args: argparse.Namespace) -> None:
+    from database import cleanup_retention_bytes_per_channel
+
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    chans = [args.channel] if args.channel else cfg.channels.names
+    total = 0
+    for ch in chans:
+        d = cleanup_retention_bytes_per_channel(
+            db_cfg, channel=ch, max_bytes=cfg.limits.retention_bytes_per_channel, log=log
+        )
+        total += d
+    print(f"deleted={total}")
+
+
+def _cmd_messages_recent(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    rows = get_recent_messages_filtered(
+        db_cfg,
+        channel=args.channel,
+        source=args.source,
+        session_id=args.session,
+        limit=args.limit,
+        log=log,
+    )
+    print(_format_recent_messages(rows))
+
+
+def _cmd_outbox_list(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    rows = get_pending_outbox_filtered(
+        db_cfg, channel=args.channel, limit=args.limit, log=log
+    )
+    print(_format_outbox_messages(rows))
+
+
+def _cmd_outbox_cancel(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    _handle_outbox_cancel(
+        db_cfg,
+        outbox_id=args.outbox_id,
+        skip_confirmation=args.skip_confirmation,
+        input_fn=input,
+        log=log,
+    )
+
+
+def _cmd_outbox_clear(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    _handle_outbox_clear(
+        db_cfg,
+        skip_confirmation=args.skip_confirmation,
+        input_fn=input,
+        log=log,
+    )
+
+
+def _cmd_sessions_list(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    rows = get_recent_sessions(db_cfg, limit=args.limit, log=log)
+    print(_format_sessions(rows))
+
+
+def _cmd_sessions_show(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
+    if not row:
+        print("session not found")
+        return
+    print(_format_session_detail(row))
+
+
+def _cmd_sessions_reset(args: argparse.Namespace) -> None:
+    import sqlite3
+
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
+    if not row:
+        print("session not found")
+        return
+    conn = sqlite3.connect(cfg.db_path, timeout=5, isolation_level=None)
+    try:
+        conn.execute(
+            "UPDATE sessions SET post_count_hour=0 WHERE session_id=?",
+            (args.session_id,),
+        )
+    finally:
+        conn.close()
+    print(f"Reset post_count_hour for session {args.session_id}")
+
+
+def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
+    def handler(args: argparse.Namespace) -> None:
+        print(f"civicmesh: {name}: not implemented; arrives in Phase {phase} (CIV-56)", file=sys.stderr)
+        sys.exit(1)
+    return handler
+
+
 def main():
+    binary = Path(sys.argv[0]).resolve()
+    mode = "prod" if str(binary).startswith(str(PROD_TREE) + "/") else "dev"
+    project_root = PROD_TREE if mode == "prod" else _find_dev_project_root()
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True)
+    ap.add_argument("--config", required=False, default=None)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_pin = sub.add_parser("pin")
@@ -242,7 +465,7 @@ def main():
     p_unpin = sub.add_parser("unpin")
     p_unpin.add_argument("message_id", type=int)
 
-    p_stats = sub.add_parser("stats")
+    sub.add_parser("stats")
 
     p_cleanup = sub.add_parser("cleanup")
     p_cleanup.add_argument("--channel", default=None)
@@ -282,118 +505,48 @@ def main():
     p_sessions_reset = sub_sessions.add_parser("reset")
     p_sessions_reset.add_argument("session_id")
 
+    sub.add_parser("configure")
+    sub.add_parser("apply")
+    sub.add_parser("promote")
+
+    p_config = sub.add_parser("config")
+    sub_config = p_config.add_subparsers(dest="config_cmd", required=True)
+    sub_config.add_parser("show")
+    sub_config.add_parser("validate")
+
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
-    log, _ = setup_logging("admin", cfg.logging)
-    log.info("admin:cmd=%s", args.cmd)
+    _check_refusals(mode=mode, project_root=project_root, args=args)
 
-    db_cfg = DBConfig(path=cfg.db_path)
-    init_db(db_cfg, log=log)
-
-    if args.cmd == "pin":
-        pin_message(db_cfg, message_id=args.message_id, pin_order=args.order, log=log)
-        print(f"Pinned message {args.message_id}")
-        return
-    if args.cmd == "unpin":
-        unpin_message(db_cfg, message_id=args.message_id, log=log)
-        print(f"Unpinned message {args.message_id}")
-        return
-    if args.cmd == "stats":
-        # lightweight stats without adding extra DB helpers
-        import sqlite3
-
-        conn = sqlite3.connect(cfg.db_path)
-        try:
-            msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            sess = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            out = conn.execute("SELECT COUNT(*) FROM outbox WHERE status='queued'").fetchone()[0]
-            votes = conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
-        finally:
-            conn.close()
-        print(f"messages={msg} sessions={sess} outbox_pending={out} votes={votes}")
-        return
-    if args.cmd == "cleanup":
-        # manual retention cleanup
-        from database import cleanup_retention_bytes_per_channel
-
-        chans = [args.channel] if args.channel else cfg.channels.names
-        total = 0
-        for ch in chans:
-            d = cleanup_retention_bytes_per_channel(
-                db_cfg, channel=ch, max_bytes=cfg.limits.retention_bytes_per_channel, log=log
-            )
-            total += d
-        print(f"deleted={total}")
-        return
     if args.cmd == "messages" and args.messages_cmd == "recent":
-        rows = get_recent_messages_filtered(
-            db_cfg,
-            channel=args.channel,
-            source=args.source,
-            session_id=args.session,
-            limit=args.limit,
-            log=log,
-        )
-        print(_format_recent_messages(rows))
-        return
-    if args.cmd == "outbox" and args.outbox_cmd == "list":
-        rows = get_pending_outbox_filtered(
-            db_cfg,
-            channel=args.channel,
-            limit=args.limit,
-            log=log,
-        )
-        print(_format_outbox_messages(rows))
-        return
-    if args.cmd == "outbox" and args.outbox_cmd == "cancel":
-        _handle_outbox_cancel(
-            db_cfg,
-            outbox_id=args.outbox_id,
-            skip_confirmation=args.skip_confirmation,
-            input_fn=input,
-            log=log,
-        )
-        return
-    if args.cmd == "outbox" and args.outbox_cmd == "clear":
-        _handle_outbox_clear(
-            db_cfg,
-            skip_confirmation=args.skip_confirmation,
-            input_fn=input,
-            log=log,
-        )
-        return
-    if args.cmd == "sessions" and args.sessions_cmd == "list":
-        rows = get_recent_sessions(
-            db_cfg,
-            limit=args.limit,
-            log=log,
-        )
-        print(_format_sessions(rows))
-        return
-    if args.cmd == "sessions" and args.sessions_cmd == "show":
-        row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
-        if not row:
-            print("session not found")
-            return
-        print(_format_session_detail(row))
-        return
-    if args.cmd == "sessions" and args.sessions_cmd == "reset":
-        row = get_session_by_id(db_cfg, session_id=args.session_id, log=log)
-        if not row:
-            print("session not found")
-            return
-        import sqlite3
-        conn = sqlite3.connect(cfg.db_path, timeout=5, isolation_level=None)
-        try:
-            conn.execute(
-                "UPDATE sessions SET post_count_hour=0 WHERE session_id=?",
-                (args.session_id,),
-            )
-        finally:
-            conn.close()
-        print(f"Reset post_count_hour for session {args.session_id}")
-        return
+        return _cmd_messages_recent(args)
+    if args.cmd == "outbox":
+        return {
+            "list": _cmd_outbox_list,
+            "cancel": _cmd_outbox_cancel,
+            "clear": _cmd_outbox_clear,
+        }[args.outbox_cmd](args)
+    if args.cmd == "sessions":
+        return {
+            "list": _cmd_sessions_list,
+            "show": _cmd_sessions_show,
+            "reset": _cmd_sessions_reset,
+        }[args.sessions_cmd](args)
+    if args.cmd == "config":
+        return {
+            "show": _stub("config show", "4"),
+            "validate": _stub("config validate", "4"),
+        }[args.config_cmd](args)
+
+    return {
+        "pin": _cmd_pin,
+        "unpin": _cmd_unpin,
+        "stats": _cmd_stats,
+        "cleanup": _cmd_cleanup,
+        "configure": _stub("configure", "4"),
+        "apply": _stub("apply", "5"),
+        "promote": _stub("promote", "6"),
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ No linter or formatter is configured. Follow existing style: 4-space indentation
 
 - **config.py** — Loads and validates `config.toml`. Hub settings, radio params, channel list, rate limits, retention policy.
 
-- **admin.py** — Operator CLI (SSH-only): pin/unpin messages, stats, outbox management, session queries.
+- **civicmesh.py** — Operator CLI (SSH-only): pin/unpin messages, stats, outbox management, session queries.
 
 - **static/** — Vanilla JS single-page app (index.html, app.js, style.css). No build step.
 
