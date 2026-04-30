@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from admin import _format_session_detail
+from civicmesh import _format_session_detail
 from database import DBConfig, get_session_by_id, init_db, insert_session
 
 

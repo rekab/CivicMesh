@@ -2,7 +2,7 @@ import tempfile
 import time
 import unittest
 
-from admin import (
+from civicmesh import (
     OUTBOX_CHANNEL_WIDTH,
     OUTBOX_CONTENT_WIDTH,
     OUTBOX_ID_WIDTH,
