@@ -547,7 +547,7 @@ inside the mode's allowed tree.
 | `node.location` | _(none)_ | E.g., `Fremont, Seattle`. Stored on sessions. |
 | `channels.names` | _(none)_ | Subprompt: add / remove / clear / done. |
 | `radio.serial_port` | auto-detected if exactly one CP2102 USB-serial device exists | Otherwise prompts with detected candidates. |
-| `ap.ssid` | derived from `node.name` + `node.location` (e.g., `CivicMesh-Fremont`) | 1–32 chars. |
+| `ap.ssid` | `CivicMesh-Messages` | 1–32 chars. |
 | `ap.channel` | `6` | Must be `1`, `6`, or `11`. |
 | `network.iface` | `wlan0` (or sole `wlan*` if exactly one) | Validated against `ip link`. |
 | `network.country_code` | `US` | Two-letter ISO 3166. |
