@@ -3,6 +3,31 @@
 name = "CivicMesh"
 location = "Your Hub, Your City"  # Used for session location metadata; changing it will only affect new/updated sessions.
 
+# Network addressing, interface, and DHCP. Consumed by `civicmesh apply`
+# to render hostapd / dnsmasq / networkd / nftables. These are pure
+# L2/L3 facts — they do not appear in the wireless beacon. Tier 1 —
+# civicmesh configure will prompt for ip and iface; the rest are Tier 2.
+[network]
+ip = "10.0.0.1"
+subnet_cidr = "10.0.0.0/24"
+iface = "wlan0"
+country_code = "US"
+dhcp_range_start = "10.0.0.10"
+dhcp_range_end = "10.0.0.250"
+# dnsmasq lease lifetime. Short leases (e.g. 15m) churn the lease table
+# faster and free addresses for walk-up clients; longer leases (1h+)
+# reduce DHCP traffic. Accepts dnsmasq syntax: 15m, 1h, infinite, etc.
+dhcp_lease = "15m"
+
+# Wireless-only concerns. Consumed by `civicmesh apply` (renders
+# hostapd.conf). SSID is operator-facing branding; pick something
+# walk-up users will recognize on a Wi-Fi list. Tier 1.
+[ap]
+ssid = "CivicMesh-Messages"
+# 2.4 GHz channel. Use 1, 6, or 11 — the non-overlapping channels for
+# 802.11. Other 1–11 values warn but load; outside 1–11 hard-errors.
+channel = 6
+
 # Radio hardware. serial_port is Tier 1 (auto-detected by civicmesh configure);
 # freq/bw/sf/cr are Tier 2 (hand-edit only if your mesh uses non-default params).
 [radio]
@@ -24,16 +49,15 @@ names = ["#civicmesh", "#testing"]
 [local]
 names = ["#local"]
 
-# Captive-portal web server. port and portal_host are Tier 1;
-# portal_aliases is Tier 2.
+# Captive-portal web server. port is Tier 1; portal_aliases is Tier 2.
+# The portal host is derived from network.ip — there is no portal_host
+# field anymore (CIV-60).
 [web]
 port = 8080
-# Hostname used for portal redirects and Host-header checks.
-# Do NOT use a .local hostname — iOS cannot resolve .local via unicast DNS.
-portal_host = "10.0.0.1"
 # Additional hostnames accepted by the portal Host-header check.
 # These are aliases for human use (bookmarks, word-of-mouth). Redirects
-# and probe responses always use portal_host (the IP).
+# and probe responses always use the portal host (network.ip).
+# Do NOT use a .local hostname — iOS cannot resolve .local via unicast DNS.
 portal_aliases = ["civicmesh.internal"]
 
 # Rate limits and message constraints. Tier 2.
