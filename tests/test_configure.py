@@ -198,6 +198,22 @@ class ConfigurePromptTest(unittest.TestCase):
             result = configure._prompt_channels(["#existing"])
         self.assertEqual(result, [])
 
+    def test_prompt_choice_rejects_invalid_baseline_default(self) -> None:
+        """Regression: a baseline channel that load_config permits with a
+        warning (e.g. 4) must not slip through configure on a bare Enter.
+        configure is the strict gate; Enter on an invalid default must
+        re-prompt rather than return."""
+        # First "" is rejected (default 4 is not in {1,6,11}); "6" accepted.
+        with patch("builtins.input", side_effect=["", "6"]):
+            result = configure._prompt_choice("ap.channel", (1, 6, 11), default=4)
+        self.assertEqual(result, 6)
+
+    def test_prompt_choice_accepts_valid_baseline_default(self) -> None:
+        # Sanity check the happy path still works after the fix.
+        with patch("builtins.input", side_effect=[""]):
+            result = configure._prompt_choice("ap.channel", (1, 6, 11), default=6)
+        self.assertEqual(result, 6)
+
 
 # ------------------------------------- subprocess tests for the CLI
 
@@ -241,6 +257,24 @@ class ConfigCliTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 10, msg=result.stdout + result.stderr)
         self.assertIn("dev binary", result.stderr)
+
+    def test_config_show_friendly_error_on_malformed_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad = Path(tmpdir) / "config.toml"
+            bad.write_text("not valid = = = TOML\n")
+            result = self._run("--config", str(bad), "config", "show")
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        self.assertIn("civicmesh: config show:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_configure_friendly_error_on_malformed_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad = Path(tmpdir) / "config.toml"
+            bad.write_text("not valid = = = TOML\n")
+            result = self._run("--config", str(bad), "configure")
+        self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+        self.assertIn("civicmesh: configure:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":
