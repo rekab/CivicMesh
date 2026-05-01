@@ -182,8 +182,12 @@ def _load_ap(raw: dict[str, Any]) -> ApConfig:
             f"ap.channel {channel} is outside the 2.4 GHz FCC range (1-11)"
         )
     if channel not in _NON_OVERLAPPING_CHANNELS:
+        # Prefix with "config:" so this parse-time advisory is visually
+        # distinct from apply/configure/validate's "civicmesh: <verb>: ..."
+        # errors when both fire on the same run (operator scanning stderr
+        # shouldn't miss the strict-validator failure that follows).
         logger.warning(
-            "ap.channel %d is not a non-overlapping channel; "
+            "config: ap.channel %d is not a non-overlapping channel; "
             "1, 6, and 11 are recommended for 2.4 GHz",
             channel,
         )

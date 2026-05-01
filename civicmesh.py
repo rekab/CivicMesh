@@ -553,7 +553,9 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         print(f"civicmesh: apply: write failed: {e}", file=sys.stderr)
         sys.exit(4)
 
-    print(f"wrote {len(plan_obj.changes)} file(s)")
+    print(f"wrote {len(plan_obj.changes)} file(s):")
+    for change in plan_obj.changes:
+        print(f"  {change.abs_path}")
 
     if args.no_restart:
         sys.exit(0)
