@@ -131,6 +131,78 @@ and we want it to fail loudly rather than silently work.
 
 ---
 
+## RUNNING DEV ALONGSIDE PROD
+
+Stop prod services before running dev. Prod and dev share two physical
+resources on the host — `/dev/ttyUSB0` (the radio) and the web TCP port
+configured in `[web].port` — and the serial port collision is silent.
+
+### Why this is needed
+
+Every other piece of state is already isolated by the dev/prod split:
+separate venvs, separate `config.toml`, separate `civic_mesh.db`,
+separate log directories. The radio device node and the bound TCP port
+are the exceptions — they are physical singletons on the host. Only one
+process at a time can use either correctly.
+
+### The recipe
+
+```
+sudo systemctl stop civicmesh-mesh civicmesh-web
+# ...do dev work, e.g.:
+#   uv run civicmesh-web  --config config.toml
+#   uv run civicmesh-mesh --config config.toml
+sudo systemctl start civicmesh-mesh civicmesh-web
+```
+
+### What goes wrong if you skip the stop step
+
+The two ports fail very differently when contended:
+
+- **Web port (`[web].port`): loud failure, no state damage.** The
+  second process exits immediately with
+  `OSError: [Errno 98] Address already in use`. Easy to diagnose;
+  nothing else is affected.
+- **Serial port (`/dev/ttyUSB0`): silent failure, real damage.** Linux
+  does not exclusive-lock USB-serial nodes; pyserial opens without
+  `TIOCEXCL`. Both processes' `open()` calls return success. Inbound
+  radio bytes split arbitrarily between the two readers; outbound
+  writes from the two processes interleave on the wire. Symptoms
+  mimic radio hardware flakiness (corrupt frames, command timeouts,
+  missed `RX_LOG_DATA` events) and trigger spurious recovery actions
+  in `RecoveryController` — RTS resets, reconnects, the works. None
+  of those help, because the duplicate file descriptors survive an
+  ESP32 reset.
+
+For the engineering view of this failure mode, see **C3** in
+`docs/radio-debugging/failure-modes.md`. The unambiguous diagnostic
+signal is `lsof /dev/ttyUSB0` (or `fuser /dev/ttyUSB0`) returning
+multiple PIDs. Without that check, C3 looks identical to the genuine
+framing-desync modes C1 and C2.
+
+### The dev-running-then-prod-started case
+
+`sudo systemctl start civicmesh-mesh` while a dev `mesh_bot` is already
+holding `/dev/ttyUSB0` is especially nasty. Systemd's restart policy
+masks the corruption: the unit cycles in `activating (auto-restart)`
+rather than failing cleanly, so the operator sees "service is starting"
+rather than a clear `EADDRINUSE`-style error. Symptoms on the dev side
+look like radio flakiness; symptoms on the prod side look like a unit
+that "won't quite come up."
+
+If symptoms suggest C3, verify with:
+
+```
+systemctl is-active civicmesh-mesh
+journalctl -u civicmesh-mesh -e
+lsof /dev/ttyUSB0
+```
+
+A flapping unit, repeated framing/timeout errors in the journal, and
+multiple PIDs in `lsof` together confirm C3.
+
+---
+
 ## SYNOPSIS
 
 ```
