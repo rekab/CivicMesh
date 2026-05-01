@@ -26,6 +26,7 @@ dependencies = [
   # To bump: update this pin, re-run `python3 diagnostics/radio/run_test.py t3`,
   # confirm 40/40 BOTH_AGREE_SENT, then commit.
   "meshcore==2.3.6",
+  "tomli-w>=1.2.0",
   "tomli; python_version < '3.11'",
 ]
 
@@ -38,5 +39,5 @@ civicmesh-mesh = "mesh_bot:main"
 civicmesh = "civicmesh:main"
 
 [tool.setuptools]
-py-modules = ["civicmesh", "config", "database", "logger", "mesh_bot", "web_server"]
+py-modules = ["civicmesh", "config", "configure", "database", "logger", "mesh_bot", "web_server"]
 

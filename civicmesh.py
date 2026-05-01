@@ -27,6 +27,11 @@ PROD_TREE = Path("/usr/local/civicmesh")
 PROD_VENV = Path("/usr/local/civicmesh/app/.venv")
 EXIT_WRONG_MODE = 10
 
+# Set in main() before dispatch; read by Phase-4 config handlers that need to
+# default --config to a mode-determined path.
+_MODE: str = ""
+_PROJECT_ROOT: Path = PROD_TREE
+
 
 def _find_dev_project_root() -> Path:
     """Walk up from this file looking for the CivicMesh pyproject.toml."""
@@ -442,6 +447,63 @@ def _cmd_sessions_reset(args: argparse.Namespace) -> None:
     print(f"Reset post_count_hour for session {args.session_id}")
 
 
+def _default_config_path() -> Path:
+    if _MODE == "prod":
+        return Path("/usr/local/civicmesh/etc/config.toml")
+    return _PROJECT_ROOT / "config.toml"
+
+
+def _resolve_config_path(args: argparse.Namespace) -> Path:
+    return Path(args.config).resolve() if args.config else _default_config_path()
+
+
+def _strict_validation_errors(cfg) -> list[str]:
+    errors: list[str] = []
+    if cfg.ap.channel not in (1, 6, 11):
+        errors.append(
+            f"ap.channel {cfg.ap.channel}: must be 1, 6, or 11 "
+            "(the non-overlapping 2.4 GHz channels)"
+        )
+    return errors
+
+
+def _cmd_configure(args: argparse.Namespace) -> None:
+    from configure import run_configure
+
+    sys.exit(run_configure(_resolve_config_path(args), _MODE))
+
+
+def _cmd_config_show(args: argparse.Namespace) -> None:
+    import json
+
+    import tomli_w
+
+    from config import load_config, to_serializable_dict
+
+    cfg = load_config(str(_resolve_config_path(args)))
+    data = to_serializable_dict(cfg)
+    if args.format == "json":
+        print(json.dumps(data, indent=2, default=str))
+    else:
+        print(tomli_w.dumps(data), end="")
+
+
+def _cmd_config_validate(args: argparse.Namespace) -> None:
+    from config import load_config
+
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: config validate: {e}", file=sys.stderr)
+        sys.exit(1)
+    errors = _strict_validation_errors(cfg)
+    if errors:
+        for msg in errors:
+            print(f"civicmesh: config validate: {msg}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+
 def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
     def handler(args: argparse.Namespace) -> None:
         print(f"civicmesh: {name}: not implemented; arrives in Phase {phase} (CIV-56)", file=sys.stderr)
@@ -453,6 +515,9 @@ def main():
     binary = Path(sys.argv[0]).resolve()
     mode = "prod" if str(binary).startswith(str(PROD_TREE) + "/") else "dev"
     project_root = PROD_TREE if mode == "prod" else _find_dev_project_root()
+    global _MODE, _PROJECT_ROOT
+    _MODE = mode
+    _PROJECT_ROOT = project_root
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=False, default=None)
@@ -511,7 +576,8 @@ def main():
 
     p_config = sub.add_parser("config")
     sub_config = p_config.add_subparsers(dest="config_cmd", required=True)
-    sub_config.add_parser("show")
+    p_config_show = sub_config.add_parser("show")
+    p_config_show.add_argument("--format", choices=["toml", "json"], default="toml")
     sub_config.add_parser("validate")
 
     args = ap.parse_args()
@@ -534,8 +600,8 @@ def main():
         }[args.sessions_cmd](args)
     if args.cmd == "config":
         return {
-            "show": _stub("config show", "4"),
-            "validate": _stub("config validate", "4"),
+            "show": _cmd_config_show,
+            "validate": _cmd_config_validate,
         }[args.config_cmd](args)
 
     return {
@@ -543,7 +609,7 @@ def main():
         "unpin": _cmd_unpin,
         "stats": _cmd_stats,
         "cleanup": _cmd_cleanup,
-        "configure": _stub("configure", "4"),
+        "configure": _cmd_configure,
         "apply": _stub("apply", "5"),
         "promote": _stub("promote", "6"),
     }[args.cmd](args)

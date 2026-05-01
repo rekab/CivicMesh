@@ -414,7 +414,7 @@ names = ["#local"]
 
 [web]                                # CHANGED: portal_host removed (derived from network.ip)
 port = 8080
-portal_aliases = ["civicmesh.internal"]
+portal_aliases = ["civicmesh.internal"]    # likely renames to captive_portal_aliases in a future ticket
 
 [limits]
 posts_per_hour = 10
