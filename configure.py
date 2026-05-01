@@ -129,10 +129,19 @@ def _prompt_bool(label: str, default: bool) -> bool:
 
 def _prompt_choice(label: str, options: tuple[int, ...], default: int) -> int:
     opts_str = ", ".join(str(o) for o in options)
+    valid_default = default in options
+    if not valid_default:
+        print(
+            f"  current value {default} is not in {{{opts_str}}}; please pick one."
+        )
+    suffix = f" [{default}]" if valid_default else ""
     while True:
-        raw = input(f"{label} ({opts_str}) [{default}]: ").strip()
+        raw = input(f"{label} ({opts_str}){suffix}: ").strip()
         if not raw:
-            return default
+            if valid_default:
+                return default
+            print(f"  must be one of {{{opts_str}}}.")
+            continue
         try:
             value = int(raw)
         except ValueError:
@@ -390,7 +399,17 @@ def _print_next_steps(config_path: Path, mode: str) -> None:
 
 def run_configure(config_path: Path, mode: str) -> int:
     try:
-        baseline = _load_baseline(config_path)
+        try:
+            baseline = _load_baseline(config_path)
+        except tomllib.TOMLDecodeError as e:
+            print(
+                f"civicmesh: configure: failed to parse {config_path}: {e}",
+                file=sys.stderr,
+            )
+            return 1
+        except OSError as e:
+            print(f"civicmesh: configure: {e}", file=sys.stderr)
+            return 1
         tier1 = _walk_prompts(baseline)
         if not _confirm_write(config_path, tier1):
             print("Aborted, no changes made.", file=sys.stderr)

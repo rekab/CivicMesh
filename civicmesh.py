@@ -4,9 +4,12 @@ import sys
 import time
 import tomllib
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from config import load_config
+
+if TYPE_CHECKING:
+    from config import AppConfig
 from database import (
     DBConfig,
     cancel_outbox_message,
@@ -457,7 +460,7 @@ def _resolve_config_path(args: argparse.Namespace) -> Path:
     return Path(args.config).resolve() if args.config else _default_config_path()
 
 
-def _strict_validation_errors(cfg) -> list[str]:
+def _strict_validation_errors(cfg: "AppConfig") -> list[str]:
     errors: list[str] = []
     if cfg.ap.channel not in (1, 6, 11):
         errors.append(
@@ -480,7 +483,11 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
 
     from config import load_config, to_serializable_dict
 
-    cfg = load_config(str(_resolve_config_path(args)))
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: config show: {e}", file=sys.stderr)
+        sys.exit(1)
     data = to_serializable_dict(cfg)
     if args.format == "json":
         print(json.dumps(data, indent=2, default=str))
