@@ -511,6 +511,64 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _cmd_apply(args: argparse.Namespace) -> None:
+    import subprocess as _sub
+
+    from apply import driver, restart
+    from config import load_config
+
+    if _MODE == "dev" and not args.dry_run:
+        print(
+            "civicmesh: apply runs only in prod; "
+            "use `apply --dry-run` to preview, or `promote` to deploy",
+            file=sys.stderr,
+        )
+        sys.exit(10)
+
+    if not args.dry_run and os.geteuid() != 0:
+        print("civicmesh: apply requires root; re-run with sudo", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: apply: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    errors = _strict_validation_errors(cfg)
+    if errors:
+        for msg in errors:
+            print(f"civicmesh: apply: {msg}", file=sys.stderr)
+        sys.exit(3)
+
+    plan_obj = driver.plan(cfg)
+
+    if args.dry_run:
+        driver.print_plan(plan_obj, dry_run=True)
+        sys.exit(0)
+
+    try:
+        driver.apply_plan(plan_obj)
+    except OSError as e:
+        print(f"civicmesh: apply: write failed: {e}", file=sys.stderr)
+        sys.exit(4)
+
+    print(f"wrote {len(plan_obj.changes)} file(s)")
+
+    if args.no_restart:
+        sys.exit(0)
+
+    actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
+    if not actions:
+        sys.exit(0)
+    try:
+        restart.run_actions(actions)
+    except _sub.CalledProcessError as e:
+        print(f"civicmesh: apply: service restart failed: {e}", file=sys.stderr)
+        sys.exit(5)
+    sys.exit(0)
+
+
 def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
     def handler(args: argparse.Namespace) -> None:
         print(f"civicmesh: {name}: not implemented; arrives in Phase {phase} (CIV-56)", file=sys.stderr)
@@ -578,7 +636,9 @@ def main():
     p_sessions_reset.add_argument("session_id")
 
     sub.add_parser("configure")
-    sub.add_parser("apply")
+    p_apply = sub.add_parser("apply")
+    p_apply.add_argument("--dry-run", action="store_true")
+    p_apply.add_argument("--no-restart", action="store_true")
     sub.add_parser("promote")
 
     p_config = sub.add_parser("config")
@@ -617,7 +677,7 @@ def main():
         "stats": _cmd_stats,
         "cleanup": _cmd_cleanup,
         "configure": _cmd_configure,
-        "apply": _stub("apply", "5"),
+        "apply": _cmd_apply,
         "promote": _stub("promote", "6"),
     }[args.cmd](args)
 

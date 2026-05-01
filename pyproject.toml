@@ -40,4 +40,5 @@ civicmesh = "civicmesh:main"
 
 [tool.setuptools]
 py-modules = ["civicmesh", "config", "configure", "database", "logger", "mesh_bot", "web_server"]
+packages = ["apply"]
 

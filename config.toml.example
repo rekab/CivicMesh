@@ -1,4 +1,9 @@
+# CivicMesh config. Fields marked [apply] trigger system-file regeneration
+# on `civicmesh apply`. Fields marked [runtime] are read by the running
+# Python services; edit-and-restart with `systemctl restart civicmesh-*`.
+
 # Identity and location. Tier 1 — civicmesh configure will prompt for these.
+# All [node] fields are [runtime] (consumed by web/mesh services, never apply).
 [node]
 name = "CivicMesh"
 location = "Your Hub, Your City"  # Used for session location metadata; changing it will only affect new/updated sessions.
@@ -8,28 +13,29 @@ location = "Your Hub, Your City"  # Used for session location metadata; changing
 # L2/L3 facts — they do not appear in the wireless beacon. Tier 1 —
 # civicmesh configure will prompt for ip and iface; the rest are Tier 2.
 [network]
-ip = "10.0.0.1"
-subnet_cidr = "10.0.0.0/24"
-iface = "wlan0"
-country_code = "US"
-dhcp_range_start = "10.0.0.10"
-dhcp_range_end = "10.0.0.250"
+ip = "10.0.0.1"                # [apply] dnsmasq, networkd
+subnet_cidr = "10.0.0.0/24"    # [apply] dnsmasq (validated; netmask is hardcoded /24 in the renderer)
+iface = "wlan0"                # [apply] hostapd, dnsmasq, networkd, NM, nftables, sysctl
+country_code = "US"            # [apply] hostapd
+dhcp_range_start = "10.0.0.10" # [apply] dnsmasq
+dhcp_range_end = "10.0.0.250"  # [apply] dnsmasq
 # dnsmasq lease lifetime. Short leases (e.g. 15m) churn the lease table
 # faster and free addresses for walk-up clients; longer leases (1h+)
 # reduce DHCP traffic. Accepts dnsmasq syntax: 15m, 1h, infinite, etc.
-dhcp_lease = "15m"
+dhcp_lease = "15m"             # [apply] dnsmasq
 
 # Wireless-only concerns. Consumed by `civicmesh apply` (renders
 # hostapd.conf). SSID is operator-facing branding; pick something
 # walk-up users will recognize on a Wi-Fi list. Tier 1.
 [ap]
-ssid = "CivicMesh-Messages"
+ssid = "CivicMesh-Messages"    # [apply] hostapd
 # 2.4 GHz channel. Use 1, 6, or 11 — the non-overlapping channels for
 # 802.11. Other 1–11 values warn but load; outside 1–11 hard-errors.
-channel = 6
+channel = 6                    # [apply] hostapd
 
 # Radio hardware. serial_port is Tier 1 (auto-detected by civicmesh configure);
 # freq/bw/sf/cr are Tier 2 (hand-edit only if your mesh uses non-default params).
+# All [radio] fields are [runtime] (consumed by mesh_bot only).
 [radio]
 # Use the /dev/serial/by-id/... path rather than /dev/ttyUSBN — the by-id
 # symlink is stable across USB re-enumeration, so mesh_bot keeps working
@@ -42,10 +48,11 @@ sf = 7
 cr = 5
 
 # MeshCore channels to join. Tier 1 — civicmesh configure will prompt.
+# [runtime] (consumed by mesh_bot).
 [channels]
 names = ["#civicmesh", "#testing"]
 
-# Device-local channels (never relayed over radio). Tier 2.
+# Device-local channels (never relayed over radio). Tier 2. [runtime].
 [local]
 names = ["#local"]
 
@@ -53,14 +60,15 @@ names = ["#local"]
 # The portal host is derived from network.ip — there is no portal_host
 # field anymore (CIV-60).
 [web]
-port = 8080
+port = 8080                                # [apply] nftables (port-redirect target)
 # Additional hostnames accepted by the portal Host-header check.
 # These are aliases for human use (bookmarks, word-of-mouth). Redirects
 # and probe responses always use the portal host (network.ip).
 # Do NOT use a .local hostname — iOS cannot resolve .local via unicast DNS.
-portal_aliases = ["civicmesh.internal"]
+portal_aliases = ["civicmesh.internal"]    # [runtime]
 
 # Rate limits and message constraints. Tier 2.
+# All [limits] fields are [runtime] (consumed by web_server only).
 [limits]
 posts_per_hour = 10
 message_max_chars = 100
@@ -74,13 +82,14 @@ outbox_max_retries = 3
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240  # 10GB
 
-# Log output. Tier 2.
+# Log output. Tier 2. All [logging] fields are [runtime].
 [logging]
 log_level = "INFO"
 log_dir = "logs"
 enable_security_log = true
 
 # Development/testing overrides. Tier 1 — civicmesh configure will prompt.
+# [debug] fields are [runtime] (consumed by web_server only).
 [debug]
 # Allow traffic arriving on eth0 to bypass MAC validation and auto-create sessions for local testing.
 # Requires the client to set the civicmesh_session cookie (set by the web UI); only applies when ARP shows eth0.
