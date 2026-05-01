@@ -150,6 +150,16 @@ So the Pi-side parser is partially self-healing, but if a valid-looking size hea
 - **Detection:** intermittent missed responses. The reader logs `"Received data: <hex>"` at DEBUG (`reader.py:72`).
 - **Likelihood:** L.
 
+### C3. Concurrent serial port opens on the host
+
+Two host processes hold open file descriptors on the same `/dev/ttyUSB0` simultaneously. Linux does not exclusive-lock USB-serial nodes by default, and pyserial opens without `TIOCEXCL`, so both `open()` calls succeed silently. Inbound bytes from the radio are split arbitrarily between the two readers (each sees fragments); outbound writes from the two processes interleave on the wire. The radio sees corrupt frames; the host-side parser hunts for `0x3E` start bytes in mid-frame garbage (`serial_cx.py:79`).
+
+- **Pi symptom:** symptoms are nearly identical to **C1** and **C2** — command timeouts, missed `RX_LOG_DATA` events, occasional responses delivered to the wrong process. The `liveness_task` (`recovery.py`) polling `get_stats_core` times out because responses go to the other PID; this trips `RecoveryController` into RTS-reset thrash that cannot fix the underlying problem (file descriptors stay open across an ESP32 reset). Root cause is host-side, not the radio.
+- **Radio symptom:** identical-looking to C1 from the radio's point of view — the ESP32 firmware sees malformed frames on its UART and silently mis-parses them. OLED and TX LED otherwise normal.
+- **Recovery:** stop the duplicate process. Concrete command: `sudo systemctl stop civicmesh-mesh` (or `kill <PID>` for an offending dev process), then restart whichever side should remain. RTS pulse, ESP32 reset, and VBUS cycle do **not** help — they do not close the host file descriptors.
+- **Detection:** **`lsof /dev/ttyUSB0`** and **`fuser /dev/ttyUSB0`** will both list multiple PIDs. That is the unambiguous signal. Without running those commands, the symptoms look identical to C1/C2 — an agent debugging "framing errors" should rule C3 out before chasing the radio. See also `docs/civicmesh-tool.md` (section "Running dev alongside prod") for the operator-side recipe.
+- **Likelihood:** **L** — operator-induced, not hardware-driven. Most common trigger: a developer with prod installed at `/usr/local/civicmesh/` runs `uv run civicmesh-mesh` from their dev tree without first stopping the prod systemd service.
+
 ## D — USB / CP2102
 
 ### D1. CP2102 bridge hung while ESP32 fine
@@ -226,6 +236,7 @@ Same: not compiled in for USB build. Omitted.
 | B4 | VEXT brownout | — | Sometimes | Yes | Yes | L |
 | C1 | Pi→radio framing desync | Maybe | Eventually | Yes (safest) | Yes | L |
 | C2 | Radio→Pi framing desync | Maybe | Yes | — | — | L |
+| C3 | Concurrent serial opens (host-side) | Yes (kill duplicate) | N/A | Does not help | Does not help | L |
 | D1 | CP2102 hung | No | N/A | **No** | **Yes** | M |
 | D2 | Stale ttyUSB | Yes | N/A | — | Overkill | L |
 | D3 | Silent hang, umbrella | No | Depends | Depends | Depends | H |
