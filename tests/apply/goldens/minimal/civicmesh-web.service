@@ -1,0 +1,18 @@
+[Unit]
+Description=CivicMesh web server (captive portal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=civicmesh
+Group=civicmesh
+WorkingDirectory=/usr/local/civicmesh/app
+ExecStart=/usr/local/bin/civicmesh-web --config /usr/local/civicmesh/etc/config.toml
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
