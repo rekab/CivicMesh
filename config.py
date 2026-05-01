@@ -167,10 +167,15 @@ def _load_network(raw: dict[str, Any]) -> NetworkConfig:
     )
 
 
-def _load_ap(raw: dict[str, Any]) -> ApConfig:
-    ssid = str(raw["ssid"])
+def _validate_ssid(raw: Any) -> str:
+    ssid = str(raw)
     if not 1 <= len(ssid) <= 32:
         raise ValueError(f"ap.ssid must be 1-32 chars (got {len(ssid)})")
+    return ssid
+
+
+def _load_ap(raw: dict[str, Any]) -> ApConfig:
+    ssid = _validate_ssid(raw["ssid"])
     channel = int(raw["channel"])
     if channel < 1 or channel > 11:
         raise ValueError(
@@ -211,6 +216,72 @@ def _validate_network_consistency(network: NetworkConfig) -> None:
             f"[{network.dhcp_range_start}, {network.dhcp_range_end}]; "
             "the AP IP must be reserved"
         )
+
+
+def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Inverse of load_config: emit a TOML/JSON-friendly dict.
+
+    Used by `civicmesh config show` and the configure round-trip path.
+    Drops nothing the schema knows; loses any unknown TOML keys that
+    were in the source file (load_config silently ignores those).
+    """
+    return {
+        "node": {"name": cfg.node.name, "location": cfg.node.location},
+        "network": {
+            "ip": str(cfg.network.ip),
+            "subnet_cidr": str(cfg.network.subnet_cidr),
+            "iface": cfg.network.iface,
+            "country_code": cfg.network.country_code,
+            "dhcp_range_start": str(cfg.network.dhcp_range_start),
+            "dhcp_range_end": str(cfg.network.dhcp_range_end),
+            "dhcp_lease": cfg.network.dhcp_lease,
+        },
+        "ap": {"ssid": cfg.ap.ssid, "channel": cfg.ap.channel},
+        "radio": {
+            "serial_port": cfg.radio.serial_port,
+            "freq_mhz": cfg.radio.freq_mhz,
+            "bw_khz": cfg.radio.bw_khz,
+            "sf": cfg.radio.sf,
+            "cr": cfg.radio.cr,
+        },
+        "channels": {"names": list(cfg.channels.names)},
+        "local": {"names": list(cfg.local.names)},
+        "web": {
+            "port": cfg.web.port,
+            "portal_aliases": list(cfg.web.portal_aliases),
+        },
+        "limits": {
+            "posts_per_hour": cfg.limits.posts_per_hour,
+            "message_max_chars": cfg.limits.message_max_chars,
+            "name_max_chars": cfg.limits.name_max_chars,
+            "name_pattern": cfg.limits.name_pattern,
+            "outbox_max_retries": cfg.limits.outbox_max_retries,
+            "outbox_max_delay_sec": cfg.limits.outbox_max_delay_sec,
+            "outbox_idle_reset_sec": cfg.limits.outbox_idle_reset_sec,
+            "outbox_echo_wait_sec": cfg.limits.outbox_echo_wait_sec,
+            "retention_bytes_per_channel": cfg.limits.retention_bytes_per_channel,
+        },
+        "logging": {
+            "log_dir": cfg.logging.log_dir,
+            "log_level": cfg.logging.log_level,
+            "enable_security_log": cfg.logging.enable_security_log,
+        },
+        "debug": {"allow_eth0": cfg.debug.allow_eth0},
+        "recovery": {
+            "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
+            "liveness_timeout_sec": cfg.recovery.liveness_timeout_sec,
+            "liveness_consecutive_threshold": cfg.recovery.liveness_consecutive_threshold,
+            "outbox_consecutive_threshold": cfg.recovery.outbox_consecutive_threshold,
+            "verify_timeout_sec": cfg.recovery.verify_timeout_sec,
+            "post_rts_settle_sec": cfg.recovery.post_rts_settle_sec,
+            "rts_pulse_width_sec": cfg.recovery.rts_pulse_width_sec,
+            "flapping_window_sec": cfg.recovery.flapping_window_sec,
+            "flapping_max_recoveries": cfg.recovery.flapping_max_recoveries,
+            "backoff_base_sec": cfg.recovery.backoff_base_sec,
+            "backoff_cap_sec": cfg.recovery.backoff_cap_sec,
+        },
+        "db_path": cfg.db_path,
+    }
 
 
 def load_config(path: str) -> AppConfig:
