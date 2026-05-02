@@ -36,10 +36,15 @@ _MODE: str = ""
 _PROJECT_ROOT: Path = PROD_TREE
 
 
-def _find_dev_project_root() -> Path:
-    """Walk up from this file looking for the CivicMesh pyproject.toml."""
-    start = Path(__file__).resolve().parent
-    p = start
+def _find_dev_project_root(start: Path | None = None) -> Path | None:
+    """Walk up from `start` looking for pyproject.toml with [project].name == 'civicmesh'.
+
+    Returns the project root, or None if no match is found before the
+    filesystem root. `start` defaults to this file's directory (used by
+    main() for dev-mode commands); promote passes the --from path.
+    """
+    base = (start or Path(__file__).resolve().parent).resolve()
+    p = base
     while True:
         candidate = p / "pyproject.toml"
         if candidate.is_file():
@@ -51,9 +56,8 @@ def _find_dev_project_root() -> Path:
             if data.get("project", {}).get("name") == "civicmesh":
                 return p
         if p == p.parent:
-            break
+            return None
         p = p.parent
-    raise RuntimeError(f"could not locate dev project root from {start}")
 
 
 def _refuse(msg: str) -> None:
@@ -571,6 +575,13 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _cmd_promote(args: argparse.Namespace) -> None:
+    from promote import run_promote
+
+    src_dir = Path(args.src_dir).resolve()
+    sys.exit(run_promote(src_dir, mode=_MODE, dry_run=args.dry_run))
+
+
 def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
     def handler(args: argparse.Namespace) -> None:
         print(f"civicmesh: {name}: not implemented; arrives in Phase {phase} (CIV-56)", file=sys.stderr)
@@ -582,6 +593,14 @@ def main():
     binary = Path(sys.argv[0]).resolve()
     mode = "prod" if str(binary).startswith(str(PROD_TREE) + "/") else "dev"
     project_root = PROD_TREE if mode == "prod" else _find_dev_project_root()
+    if mode == "dev" and project_root is None:
+        print(
+            "civicmesh: could not locate dev project root "
+            "(no pyproject.toml with [project].name = 'civicmesh' "
+            f"found from {Path.cwd()} upward)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     global _MODE, _PROJECT_ROOT
     _MODE = mode
     _PROJECT_ROOT = project_root
@@ -641,7 +660,9 @@ def main():
     p_apply = sub.add_parser("apply")
     p_apply.add_argument("--dry-run", action="store_true")
     p_apply.add_argument("--no-restart", action="store_true")
-    sub.add_parser("promote")
+    p_promote = sub.add_parser("promote")
+    p_promote.add_argument("--from", dest="src_dir", default=".")
+    p_promote.add_argument("--dry-run", action="store_true")
 
     p_config = sub.add_parser("config")
     sub_config = p_config.add_subparsers(dest="config_cmd", required=True)
@@ -680,7 +701,7 @@ def main():
         "cleanup": _cmd_cleanup,
         "configure": _cmd_configure,
         "apply": _cmd_apply,
-        "promote": _stub("promote", "6"),
+        "promote": _cmd_promote,
     }[args.cmd](args)
 
 
