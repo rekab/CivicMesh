@@ -183,21 +183,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         cookies = _parse_cookies(self.headers.get("Cookie", ""))
         return cookies.get("civicmesh_session")
 
-    def _is_portal_accepted(self, ip: str) -> bool:
-        now = _now_ts()
-        accepted = getattr(self.server, "portal_accepted", None) or {}
-        cutoff = now - 12 * 3600
-        expired = [k for k, v in accepted.items() if int(v or 0) < cutoff]
-        for k in expired:
-            accepted.pop(k, None)
-        ts = accepted.get(ip)
-        if ts is None:
-            return False
-        if int(ts) < cutoff:
-            accepted.pop(ip, None)
-            return False
-        return True
-
     def _ensure_session_cookie(self) -> str:
         sid = self._get_session_id()
         if sid:
@@ -305,22 +290,14 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         portal_url = f"http://{portal_host}"
         accepted_hosts = {portal_host, *self.server.cfg.web.portal_aliases}
 
-        # Captive portal probe handling — stateful.
+        # Captive portal probe handling — always captive.
         #
-        # Phones probe known URLs after connecting to WiFi to test for internet.
-        # We use these probes to drive captive portal detection:
-        #
-        #   New client (IP not in portal_accepted):
-        #     Probes get 302 → trampoline page. Phone detects captive portal,
-        #     opens mini-browser with our welcome page.
-        #
-        #   After client taps "Continue" on trampoline (/portal-accept):
-        #     IP is recorded in portal_accepted. Phone re-probes, gets the
-        #     success response it expects, concludes "internet works," and
-        #     promotes WiFi. Browser traffic now routes over WiFi instead of LTE.
-        #
-        # This fakes the standard captive portal lifecycle (sign-in → internet)
-        # on a network that intentionally has no internet.
+        # Phones probe known URLs after associating to test for internet. We
+        # always 302 these to the trampoline, regardless of any in-app state.
+        # The OS sees a permanent walled garden and never tries to promote our
+        # SSID to "validated" — which would otherwise cause it to revalidate
+        # against the (nonexistent) internet, fail, and fall back to cellular.
+        # See docs/captive-portal-precedent.md §2.
         if path in (
             "/generate_204",
             "/gen_204",
@@ -330,40 +307,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             "/ncsi.txt",
         ):
             ip = self._client_ip()
-            accepted = self._is_portal_accepted(ip)
             log.info(
-                "probe:hit path=%s ip=%s host=%s accepted=%s ua=%r",
-                path, ip, host, accepted, self.headers.get("User-Agent", ""),
+                "probe:hit path=%s ip=%s host=%s ua=%r",
+                path, ip, host, self.headers.get("User-Agent", ""),
             )
-            if accepted:
-                if path in ("/generate_204", "/gen_204"):
-                    self.send_response(HTTPStatus.NO_CONTENT)
-                    self.end_headers()
-                    return
-                if path in ("/hotspot-detect.html", "/library/test/success.html"):
-                    body = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                if path == "/connecttest.txt":
-                    body = b"Microsoft Connect Test"
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                if path == "/ncsi.txt":
-                    body = b"Microsoft NCSI"
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", f"{portal_url}/welcome")
             self.end_headers()
@@ -505,11 +452,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/portal-accept":
             ip = self._client_ip()
-            accepted = getattr(self.server, "portal_accepted", None)
-            if accepted is None:
-                accepted = {}
-                self.server.portal_accepted = accepted
-            accepted[ip] = _now_ts()
             log.info("portal:accepted ip=%s", ip)
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", f"{portal_url}/")
@@ -1051,7 +993,6 @@ def run():
             self.db_cfg = db_cfg
             self.log = log
             self.sec = sec
-            self.portal_accepted = {}
             # Feedback file lives alongside the database
             db_dir = os.path.dirname(os.path.abspath(cfg.db_path)) or "."
             self.feedback_path = os.path.join(db_dir, "feedback.jsonl")
