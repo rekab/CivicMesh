@@ -221,6 +221,15 @@ table inet filter {{
         iifname "{iface}" udp dport 53 accept
         iifname "{iface}" tcp dport 53 accept
 
+        # HTTPS/QUIC: reject fast on the AP iface
+        # (see docs/captive-portal-precedent.md §4)
+        #
+        # Wildcard DNS hijack means every background HTTPS request from a
+        # connected phone resolves to {iface}'s IP. RST on TCP and ICMP
+        # unreachable on UDP make client stacks fail fast instead of burning
+        # battery on SYN retries / QUIC retransmits.
+        iifname "{iface}" tcp dport 443 reject with tcp reset
+        iifname "{iface}" udp dport 443 reject
 
         # Everything else is dropped (default policy)
     }}
