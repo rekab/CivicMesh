@@ -301,7 +301,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         host = (self.headers.get("Host", "") or "").split(":", 1)[0].lower()
-        portal_host = self.server.cfg.web.portal_host
+        portal_host = str(self.server.cfg.network.ip)
         portal_url = f"http://{portal_host}"
         accepted_hosts = {portal_host, *self.server.cfg.web.portal_aliases}
 

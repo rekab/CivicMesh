@@ -193,7 +193,7 @@ the event loop). Entries expire after 20s. See
 - **Creates** messages rows for inbound mesh traffic (`source='mesh'`, no outbox row)
 - **Runs** startup reconciliation, retention pruning, and heartbeat
 
-### admin.py
+### civicmesh.py
 
 - **Reads** both tables for display
 - **Can cancel** queued outbox items (`cancel_outbox_message`)
