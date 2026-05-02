@@ -1,6 +1,6 @@
 # Networking Smoke Test
 
-Run these checks after `setup_ap.sh` and a reboot.
+Run these checks after `civicmesh apply` and a reboot.
 
 ## 1) Services up
 

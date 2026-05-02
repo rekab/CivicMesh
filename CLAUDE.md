@@ -9,25 +9,20 @@ CivicMesh is a WiFi walk-up relay for MeshCore mesh channels at Seattle Emergenc
 ## Commands
 
 ```bash
-# Setup
-python3 -m venv .venv && source .venv/bin/activate
-pip install -U pip && pip install .
+# Setup (uv manages venv + deps)
+uv sync
 
 # Run (dev)
-python3 web_server.py --config config.toml    # captive portal
-python3 mesh_bot.py --config config.toml      # mesh radio relay
-
-# Run (installed)
-civicmesh-web --config config.toml
-civicmesh-mesh --config config.toml
-civicmesh-admin --config config.toml stats
+uv run civicmesh-web --config config.toml     # captive portal
+uv run civicmesh-mesh --config config.toml    # mesh radio relay
+uv run civicmesh --config config.toml stats   # admin CLI
 
 # Tests
-python3 -m unittest                           # all tests
-python3 -m unittest tests.test_admin_outbox_list  # single test module
+uv run python -m unittest                                    # all tests
+uv run python -m unittest tests.test_admin_outbox_list       # single test module
 ```
 
-No linter or formatter is configured. Follow existing style: 4-space indentation, Python 3.9+ syntax.
+No linter or formatter is configured. Follow existing style: 4-space indentation, Python 3.13+ syntax.
 
 ## Architecture
 
@@ -41,7 +36,7 @@ No linter or formatter is configured. Follow existing style: 4-space indentation
 
 - **config.py** — Loads and validates `config.toml`. Hub settings, radio params, channel list, rate limits, retention policy.
 
-- **admin.py** — Operator CLI (SSH-only): pin/unpin messages, stats, outbox management, session queries.
+- **civicmesh.py** — Operator CLI (SSH-only): pin/unpin messages, stats, outbox management, session queries.
 
 - **static/** — Vanilla JS single-page app (index.html, app.js, style.css). No build step.
 

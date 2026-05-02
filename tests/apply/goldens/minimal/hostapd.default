@@ -1,0 +1,2 @@
+# CivicMesh: Point hostapd to its configuration file
+DAEMON_CONF="/etc/hostapd/hostapd.conf"

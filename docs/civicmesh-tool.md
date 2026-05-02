@@ -414,7 +414,7 @@ names = ["#local"]
 
 [web]                                # CHANGED: portal_host removed (derived from network.ip)
 port = 8080
-portal_aliases = ["civicmesh.internal"]
+portal_aliases = ["civicmesh.internal"]    # likely renames to captive_portal_aliases in a future ticket
 
 [limits]
 posts_per_hour = 10
@@ -547,8 +547,8 @@ git source.
 2. Verify on a supported OS (Debian/Raspberry Pi OS).
 3. `apt-get install` system dependencies: `git`, `curl`, `python3`,
    `python3-venv`, `hostapd`, `dnsmasq`, `nftables`, `rfkill`,
-   `network-manager`. **Does not** install `apt-offline` (current
-   `setup_ap.sh` does; we drop it — out of scope).
+   `network-manager`. **Does not** install `apt-offline` (the
+   retired `setup_ap.sh` used to; CIV-64 dropped it).
 4. Disable conflicting services if present: `dhcpcd`,
    `wpa_supplicant@<iface>`, `systemd-resolved` stub listener.
 5. Mask `systemd-rfkill.service` and `.socket`. Install
@@ -1126,9 +1126,6 @@ setup lands.
 
 - `config.toml.example` (in repo): annotated reference with all
   fields.
-- `scripts/setup_ap.sh`: current one-shot AP setup script. Superseded
-  by `civicmesh apply` (rendering) plus the bootstrap script (package
-  install, user creation, rfkill setup).
 - `meshcore_py-README.md`: protocol reference for the radio side.
 - `failure-modes.md`, `boot-and-reset.md`, `heltec-recovery.md`:
   runtime failure handling, all of which `civicmesh apply` should

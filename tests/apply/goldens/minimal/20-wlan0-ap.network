@@ -1,0 +1,10 @@
+# CivicMesh: Static IP configuration for wlan0 AP interface
+#
+# This assigns 10.0.0.1/24 to wlan0.
+# No gateway is specified because this interface IS the gateway for its network.
+
+[Match]
+Name=wlan0
+
+[Network]
+Address=10.0.0.1/24

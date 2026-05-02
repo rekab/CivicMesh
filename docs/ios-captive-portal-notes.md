@@ -74,8 +74,8 @@ against `10.0.0.1`.
 - Simplest possible fix. No DNS required for the redirect target.
 - Works identically on every client platform.
 - No new services, no new attack surface, no extra power draw.
-- The AP IP is already a known constant (hardcoded in `setup_ap.sh`
-  as `AP_IP`).
+- The AP IP is already a known constant — `10.0.0.1`, hardcoded in
+  the rendering pipeline (`apply/renderers.py`).
 
 **Cons:**
 - The URL bar shows `10.0.0.1` instead of a friendly name. For a captive
@@ -129,8 +129,8 @@ on iOS by speaking the protocol iOS actually uses for those names.
 
 **Use the AP IP directly (Option 1).**
 
-- Portal hostname is `10.0.0.1` (the value of `AP_IP` in
-  `scripts/setup_ap.sh`).
+- Portal hostname is `10.0.0.1` (the AP IP, hardcoded in the
+  rendering pipeline).
 - All references to `civicmesh.local` in application code are replaced
   with a configurable value sourced from `config.toml`, so that the IP
   is defined in exactly one place and the deployment script and
@@ -284,7 +284,7 @@ This section exists because we should not overstate our knowledge.
 **Required as part of provisioning** (in order of cost):
 
 1. **Run `apt full-upgrade` during initial Pi provisioning**, before
-   installing CivicMesh or running `setup_ap.sh`. Reboot afterward.
+   running `scripts/civicmesh-bootstrap.sh`. Reboot afterward.
    This is the cheapest mitigation and resolved the issue during
    debugging. Plain `apt upgrade` is insufficient because it holds back
    kernel packages.

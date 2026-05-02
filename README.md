@@ -105,99 +105,120 @@ mesh_bot includes a silent-hang detector that watches for radio unresponsiveness
 - `sent-to-radio` indicates the message was handed to the radio, not delivered to recipients.
 - Offline-first: UI loads without radio; cached messages remain readable.
 
-## Initial Setup (dev or deployment)
-
-Create and activate a local virtual environment (unprivileged), then install dependencies:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install .
-```
-
-## Host Setup (deployment)
-
-Configure the WiFi AP and captive portal networking:
-
-```bash
-sudo ./scripts/setup_ap.sh --ssid "CivicMesh-Dev"
-# optional: --iface wlp2s0
-```
-
-Reboot when prompted by the script.
-
 ## Deployment
 
-1. **Copy files to Raspberry Pi** (via scp, rsync, or git clone)
+This section walks through deploying CivicMesh to a fresh Raspberry
+Pi. The flow is: flash → SSH in → bootstrap → configure → apply →
+verify. Plan ahead for step 5 ("apply"): once it runs, the Pi takes
+over its own WiFi radio and disappears from your home network. Either
+SSH in over Ethernet for that step (Pi 4 has wired Ethernet) or
+expect to reconnect over the new CivicMesh AP afterwards.
 
-2. **Create and activate a virtual environment (unprivileged):**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -U pip
-   ```
+### 1. Flash and prep the SD card
 
-3. **Install Python dependencies:**
-   ```bash
-   pip install .
-   ```
+Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and
+fill in the pre-boot config (the gear icon):
 
-4. **Edit configuration:**
-   ```bash
-   nano config.toml
-   ```
-   - Set `serial_port` to match your USB device (usually `/dev/ttyUSB0`)
-   - Configure WiFi SSID
-   - Set hub name and location
-   - Configure channels to join
+- **Hostname** (e.g. `civicmesh-fremont`)
+- **SSH** with your public key
+- **WiFi credentials for your home network** — you'll SSH in over
+  WiFi during initial setup, *before* CivicMesh takes over the radio
 
-5. **Configure the WiFi AP and captive portal networking:**
-   ```bash
-   sudo ./scripts/setup_ap.sh --ssid "CivicMesh-Dev"
-   # optional: --iface wlp2s0
-   ```
-   Reboot when prompted by the script.
+The home WiFi creds matter for SSH-during-bootstrap. Once `civicmesh
+apply` runs in step 5, the Pi runs its own AP and won't be on your
+home network anymore.
 
-6. **Install systemd services:**
-   ```bash
-   sudo cp systemd/*.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable mesh-bot.service web-server.service
-   ```
+### 2. First boot and SSH in
 
-7. **Start services:**
-   ```bash
-   sudo systemctl start mesh-bot.service web-server.service
-   ```
+Boot the Pi, find it on your network (`ping civicmesh-fremont.local`
+or check your router's client list), and SSH in:
 
-7. **Check status:**
-   ```bash
-   sudo systemctl status mesh-bot.service
-   sudo systemctl status web-server.service
-   ```
+```bash
+ssh <user>@civicmesh-fremont.local
+```
 
-8. **View logs:**
-   ```bash
-   tail -f logs/mesh_bot.log
-   tail -f logs/web_server.log
-   tail -f logs/security.log
-   ```
+### 3. Run bootstrap
 
-When deployed without internet access, administration and updates are performed over SSH on the WiFi AP using `apt-offline`. The AP also advertises DHCP Option 114 pointing to `/api/captive-portal` so clients can discover the Captive Portal API early in the connection flow.
+Two flavors. Inspect-then-run is recommended:
+
+```bash
+curl -LO https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicmesh-bootstrap.sh
+less civicmesh-bootstrap.sh   # eyeball what it'll do
+sudo bash civicmesh-bootstrap.sh
+```
+
+Or one-liner, if you've already vetted the script:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicmesh-bootstrap.sh | sudo bash
+```
+
+Bootstrap installs system packages, disables conflicting services,
+sets up rfkill, creates the `civicmesh` user, installs uv, clones
+the repo into `/usr/local/civicmesh/app/`, builds the prod venv, and
+symlinks `civicmesh{,-web,-mesh}` into `/usr/local/bin/`. It stops
+at "venv built" — it does not run `configure` or `apply`. Re-running
+bootstrap on a configured Pi is safe.
+
+### 4. Configure
+
+```bash
+sudo -u civicmesh civicmesh configure
+```
+
+Walks through prompts for hub name, location, channels, AP SSID,
+etc. Writes `/usr/local/civicmesh/etc/config.toml`.
+
+### 5. Apply
+
+```bash
+sudo civicmesh apply
+```
+
+Renders the system files (hostapd, dnsmasq, nftables, NetworkManager
+unmanage config, systemd-networkd config, sysctl IPv6 disable, the
+two CivicMesh systemd units) and starts the services.
+
+**This is the step that takes over the WiFi radio.** Your SSH
+session over WiFi will drop here. Run `apply` from a wired SSH
+session (Pi 4) or be ready to reconnect over the new CivicMesh AP.
+
+### 6. Verify
+
+```bash
+civicmesh stats
+```
+
+prints a counters line. The AP SSID configured in step 4 should
+appear in WiFi scans, and walk-up users on that AP land on the
+captive portal at `http://10.0.0.1/`.
+
+### Updates after first deploy
+
+Bootstrap is one-shot. To roll new code out to a Pi after the
+initial deploy, use `civicmesh promote` from your dev checkout:
+
+```bash
+# On your dev machine, in your CivicMesh checkout on main:
+uv run civicmesh promote --from .
+```
+
+`promote` ships your `main` branch to the Pi, rebuilds the prod
+venv, and restarts services. It does not touch config or database.
 
 ## Run (dev)
+
+First time? [Install uv](https://docs.astral.sh/uv/) and run `uv
+sync` from the repo root to set up the venv.
 
 In two terminals:
 
 ```bash
-source .venv/bin/activate
-python3 web_server.py --config config.toml
+uv run civicmesh-web --config config.toml
 ```
 
 ```bash
-source .venv/bin/activate
-python3 mesh_bot.py --config config.toml
+uv run civicmesh-mesh --config config.toml
 ```
 
 Then browse to `http://<pi-ip>/`.
@@ -205,11 +226,11 @@ Then browse to `http://<pi-ip>/`.
 ## Admin CLI (SSH only)
 
 ```bash
-python3 admin.py --config config.toml pin 123
-python3 admin.py --config config.toml unpin 123
-python3 admin.py --config config.toml stats
-python3 admin.py --config config.toml cleanup
-python3 admin.py --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
+uv run civicmesh --config config.toml pin 123
+uv run civicmesh --config config.toml unpin 123
+uv run civicmesh --config config.toml stats
+uv run civicmesh --config config.toml cleanup
+uv run civicmesh --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
 ```
 
 ## Tests
@@ -217,7 +238,7 @@ python3 admin.py --config config.toml messages recent --channel "#fremont" --sou
 Run unit tests with:
 
 ```bash
-python3 -m unittest
+uv run python -m unittest
 ```
 
 ## Configuration

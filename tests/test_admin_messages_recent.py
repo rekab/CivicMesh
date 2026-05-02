@@ -2,7 +2,7 @@ import tempfile
 import time
 import unittest
 
-from admin import (
+from civicmesh import (
     RECENT_CHANNEL_WIDTH,
     RECENT_ID_WIDTH,
     RECENT_SENDER_WIDTH,
