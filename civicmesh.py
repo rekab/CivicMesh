@@ -48,7 +48,7 @@ def _find_dev_project_root() -> Path:
                     data = tomllib.load(f)
             except Exception:
                 data = {}
-            if data.get("project", {}).get("name") == "civic-mesh-hub-relay-bot":
+            if data.get("project", {}).get("name") == "civicmesh":
                 return p
         if p == p.parent:
             break

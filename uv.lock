@@ -27,7 +27,7 @@ wheels = [
 ]
 
 [[package]]
-name = "civic-mesh-hub-relay-bot"
+name = "civicmesh"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
