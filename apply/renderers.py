@@ -1,12 +1,13 @@
 """Pure renderers: AppConfig -> bytes.
 
 Each function takes the full AppConfig and returns the rendered file
-content as UTF-8 bytes. No I/O, no logging, no subprocess. The seven AP
-files match scripts/setup_ap.sh's output byte-for-byte for an
-equivalent config (with the noted caveat that nftables drives its
-redirect target from cfg.web.port, so for non-default ports the bytes
-diverge by design). The two systemd units have no setup_ap.sh
-analogue — they're new this phase.
+content as UTF-8 bytes. No I/O, no logging, no subprocess. The seven
+AP files match the output that the now-retired `scripts/setup_ap.sh`
+produced for an equivalent config, byte-for-byte (with the noted
+caveat that nftables drives its redirect target from cfg.web.port,
+so for non-default ports the bytes diverge by design). The two
+systemd units had no analogue in `setup_ap.sh` — they were new this
+phase.
 
 `flush ruleset` in render_nftables_conf is load-bearing: without it,
 `nft -f` merges the new rules into the existing ruleset rather than
