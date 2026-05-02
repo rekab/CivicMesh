@@ -239,9 +239,9 @@ hub deployment, where users typically *do* have LTE alongside.
   `connecttest.txt` and `ncsi.txt`.
 - Microsoft's NCSI guidance: keep behavior consistent. Don't redirect some
   things and drop others.
-- Once 443 is DROPed (see §4), Windows browsers handle the "no HTTPS"
-  reality gracefully — they time out the HTTPS attempt and the user
-  navigates to HTTP manually if needed. ChromeOS is similar.
+- Once 443 is rejected fast (see §4), Windows browsers handle the "no
+  HTTPS" reality gracefully — the HTTPS attempt fails immediately on RST,
+  and the user navigates to HTTP manually if needed. ChromeOS is similar.
 
 ## 7. Patterns from related projects
 
