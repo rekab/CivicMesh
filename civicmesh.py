@@ -475,6 +475,11 @@ def _strict_validation_errors(cfg: "AppConfig") -> list[str]:
 
 
 def _cmd_configure(args: argparse.Namespace) -> None:
+    if _MODE == "prod" and os.geteuid() == 0:
+        _refuse(
+            "configure: must run as the civicmesh user in prod\n"
+            "   try: sudo -u civicmesh civicmesh configure"
+        )
     from configure import run_configure
 
     sys.exit(run_configure(_resolve_config_path(args), _MODE))
@@ -515,10 +520,28 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _print_cutover_banner(cfg: "AppConfig") -> None:
+    print(f"""
+Configuration applied. The system is staged for AP mode.
+
+Currently running: WiFi client mode (this SSH session is fine).
+On next boot:      AP mode — SSID "{cfg.ap.ssid}", portal at http://{cfg.network.ip}
+
+To cut over, run:
+
+    sudo reboot
+
+If you are connected over WiFi, this SSH session will end on reboot
+and will not reconnect — {cfg.network.iface} will be in AP mode, not
+client mode. Reconnect by joining "{cfg.ap.ssid}" from your phone or
+laptop.
+""")
+
+
 def _cmd_apply(args: argparse.Namespace) -> None:
     import subprocess as _sub
 
-    from apply import driver, restart
+    from apply import driver, restart, validate
     from config import load_config
 
     if _MODE == "dev" and not args.dry_run:
@@ -551,6 +574,12 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         driver.print_plan(plan_obj, dry_run=True)
         sys.exit(0)
 
+    val_errors = validate.validate_plan(plan_obj, cfg)
+    if val_errors:
+        for msg in val_errors:
+            print(f"civicmesh: apply: {msg}", file=sys.stderr)
+        sys.exit(6)
+
     try:
         driver.apply_plan(plan_obj)
     except OSError as e:
@@ -564,14 +593,22 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     if args.no_restart:
         sys.exit(0)
 
-    actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
-    if not actions:
-        sys.exit(0)
     try:
-        restart.run_actions(actions)
+        _sub.run(["systemctl", "daemon-reload"], check=True)
+        _sub.run(
+            ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
+             "rfkill-unblock-wifi"],
+            check=True,
+        )
+        _sub.run(["systemctl", "disable", "wpa_supplicant.service"], check=True)
+        actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
+        if actions:
+            restart.run_actions(actions)
     except _sub.CalledProcessError as e:
-        print(f"civicmesh: apply: service restart failed: {e}", file=sys.stderr)
+        print(f"civicmesh: apply: service staging failed: {e}", file=sys.stderr)
         sys.exit(5)
+
+    _print_cutover_banner(cfg)
     sys.exit(0)
 
 

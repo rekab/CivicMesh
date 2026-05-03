@@ -56,7 +56,7 @@ Root-required, one-shot. Idempotent on re-run.
 
 What it does (in order):
     1. apt install (git, curl, python3, hostapd, dnsmasq, nftables, rfkill, NetworkManager)
-    2. Disable conflicting services (dhcpcd, wpa_supplicant, systemd-resolved stub)
+    2. Disable conflicting services (dhcpcd, systemd-resolved stub)
     3. rfkill unblock + persistent unblock-at-boot service
     4. Create the 'civicmesh' system user (home: ${CIVICMESH_HOME})
     5. Install uv as that user
@@ -137,14 +137,12 @@ if service_is_active dhcpcd.service; then
     systemctl disable dhcpcd.service
 fi
 
-# wpa_supplicant conflicts with hostapd. Bootstrap doesn't know the
-# AP iface yet (that's `apply`'s job), so we disable the generic unit
-# rather than the iface-specific one.
-if service_is_active wpa_supplicant.service; then
-    info "stopping and disabling wpa_supplicant..."
-    systemctl stop wpa_supplicant.service
-    systemctl disable wpa_supplicant.service
-fi
+# wpa_supplicant is left running. On a headless Pi imaged with the Pi
+# Imager WiFi flow, wpa_supplicant is what holds the SSH session's wlan0
+# association up — disabling it here would kill the session bootstrap is
+# running over. `civicmesh apply` is what stages AP mode and disables
+# wpa_supplicant for the next boot; the operator-issued reboot is the
+# cutover.
 
 # systemd-resolved binds :53 by default, which collides with dnsmasq.
 # Disable just the stub listener (not the whole service) and repoint
