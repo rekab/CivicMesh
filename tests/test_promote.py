@@ -196,6 +196,27 @@ class PreflightTest(unittest.TestCase):
         finally:
             subprocess.run(["rm", "-rf", str(src)], check=True)
 
+    def test_check6_prod_tree_permission_error(self) -> None:
+        """Unreadable prod_app -> _PreflightFailure with actionable hint,
+        not an unhandled PermissionError stack trace."""
+        src = make_dev_tree()
+        try:
+            prod_app = src / "fake-prod-app"
+            prod_app.mkdir()
+            with patch(
+                "pathlib.Path.is_dir",
+                side_effect=PermissionError(13, "Permission denied"),
+            ):
+                rc, _out, err = _run_promote_capture(
+                    src, dry_run=True, prod_app=prod_app,
+                )
+            self.assertEqual(rc, 1)
+            self.assertIn("pre-flight check 6 failed", err)
+            self.assertIn(str(prod_app), err)
+            self.assertIn("chmod", err.lower())
+        finally:
+            subprocess.run(["rm", "-rf", str(src)], check=True)
+
 
 # ----------------------------------------------------------- behavior tests
 

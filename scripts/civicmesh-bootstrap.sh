@@ -240,6 +240,16 @@ else
     ok "user ${CIVICMESH_USER} created"
 fi
 
+# useradd -m on modern Debian (trixie / RPi OS bookworm-derived) creates
+# the home dir mode 0700 — only the civicmesh user can traverse
+# /usr/local/civicmesh, which blocks `civicmesh promote` run as the
+# operator's own login from a same-host dev checkout. Set 0755 so any
+# user can traverse the top-level dir; sub-paths (etc/config.toml, var/)
+# keep their own owner+mode, so file-level protection is unchanged.
+# Idempotent — runs every bootstrap, including re-runs that take the
+# `id -u` short-circuit above.
+chmod 755 "${CIVICMESH_HOME}"
+
 # =============================================================================
 # Step 5: Install uv as civicmesh
 # =============================================================================
