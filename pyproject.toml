@@ -39,6 +39,6 @@ civicmesh-mesh = "mesh_bot:main"
 civicmesh = "civicmesh:main"
 
 [tool.setuptools]
-py-modules = ["civicmesh", "config", "configure", "database", "logger", "mesh_bot", "promote", "web_server"]
+py-modules = ["civicmesh", "config", "configure", "database", "logger", "mesh_bot", "outbox_echoes", "promote", "recovery", "telemetry", "web_server"]
 packages = ["apply"]
 
