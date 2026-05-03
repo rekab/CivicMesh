@@ -109,10 +109,12 @@ mesh_bot includes a silent-hang detector that watches for radio unresponsiveness
 
 This section walks through deploying CivicMesh to a fresh Raspberry
 Pi. The flow is: flash → SSH in → bootstrap → configure → apply →
-verify. Plan ahead for step 5 ("apply"): once it runs, the Pi takes
-over its own WiFi radio and disappears from your home network. Either
-SSH in over Ethernet for that step (Pi 4 has wired Ethernet) or
-expect to reconnect over the new CivicMesh AP afterwards.
+verify. The cutover from your home network to the new CivicMesh AP
+happens when you `sudo reboot` at the end of step 5 — `apply` itself
+stages the change without touching the live radio, so your SSH
+session survives it. Either SSH in over Ethernet for the deploy
+(Pi 4 has wired Ethernet) or be ready to reconnect on the new SSID
+after the reboot.
 
 ### 1. Flash and prep the SD card
 
@@ -124,9 +126,9 @@ fill in the pre-boot config (the gear icon):
 - **WiFi credentials for your home network** — you'll SSH in over
   WiFi during initial setup, *before* CivicMesh takes over the radio
 
-The home WiFi creds matter for SSH-during-bootstrap. Once `civicmesh
-apply` runs in step 5, the Pi runs its own AP and won't be on your
-home network anymore.
+The home WiFi creds matter for SSH-during-bootstrap. Once you reboot
+after step 5, the Pi runs its own AP and won't be on your home
+network anymore.
 
 ### 2. First boot and SSH in
 
@@ -169,19 +171,25 @@ sudo -u civicmesh civicmesh configure
 Walks through prompts for hub name, location, channels, AP SSID,
 etc. Writes `/usr/local/civicmesh/etc/config.toml`.
 
-### 5. Apply
+### 5. Apply and reboot
 
 ```bash
 sudo civicmesh apply
+sudo reboot
 ```
 
-Renders the system files (hostapd, dnsmasq, nftables, NetworkManager
-unmanage config, systemd-networkd config, sysctl IPv6 disable, the
-two CivicMesh systemd units) and starts the services.
+`apply` renders the system files (hostapd, dnsmasq, nftables,
+NetworkManager unmanage config, systemd-networkd config, sysctl
+IPv6 disable, the two CivicMesh systemd units), validates them,
+writes them, and **stages** AP mode for the next boot. Your SSH
+session survives `apply` — it doesn't touch the live radio.
 
-**This is the step that takes over the WiFi radio.** Your SSH
-session over WiFi will drop here. Run `apply` from a wired SSH
-session (Pi 4) or be ready to reconnect over the new CivicMesh AP.
+The cutover happens when you `sudo reboot`. That's when hostapd
+takes the radio, your home-network SSH session drops, and the Pi
+comes back up on its own AP. Reconnect by joining the
+`CivicMesh-*` SSID configured in step 4. (On a Pi 4 with wired
+Ethernet, only WiFi drops; an SSH session over Ethernet survives
+the reboot.)
 
 ### 6. Verify
 
@@ -205,6 +213,14 @@ uv run civicmesh promote --from .
 
 `promote` ships your `main` branch to the Pi, rebuilds the prod
 venv, and restarts services. It does not touch config or database.
+
+Most code changes need only `promote`. Some changes also require
+`sudo civicmesh apply` (rendered system files, systemd unit files,
+config schema), and a few of those also require a reboot (changes
+to hostapd, dnsmasq, nftables, networkd, NetworkManager, or sysctl
+output). See the
+[promote / apply / reboot decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot)
+for the rule.
 
 ## Run (dev)
 
