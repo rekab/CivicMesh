@@ -114,7 +114,15 @@ def _check_lock_fresh(src_dir: Path) -> None:
 
 
 def _check_prod_tree_exists(prod_app: Path) -> None:
-    if not prod_app.is_dir():
+    try:
+        exists = prod_app.is_dir()
+    except PermissionError as e:
+        raise _PreflightFailure(
+            f"pre-flight check 6 failed: cannot stat {prod_app}: {e}; "
+            "a parent directory is not traversable by this user. "
+            "Try: sudo chmod 755 /usr/local/civicmesh"
+        )
+    if not exists:
         raise _PreflightFailure(
             f"pre-flight check 6 failed: {prod_app} does not exist; "
             "run bootstrap on this host first"
