@@ -31,6 +31,13 @@ from typing import Callable
 _DEFAULT_PROD_APP = Path("/usr/local/civicmesh/app")
 _DEFAULT_PROD_VAR = Path("/usr/local/civicmesh/var")
 
+# The astral installer puts uv at ~civicmesh/.local/bin/uv. We use the
+# absolute path in any `sudo -u civicmesh sh -c '...'` shell-out below
+# because sudo -u doesn't load login profiles — PATH won't include
+# ~/.local/bin and bare `uv` won't resolve. Mirrors UV_BIN in
+# scripts/civicmesh-bootstrap.sh.
+_PROD_UV_BIN = "/usr/local/civicmesh/.local/bin/uv"
+
 
 class _PreflightFailure(Exception):
     """Raised by a pre-flight check; caller prints & exits 1."""
@@ -242,7 +249,7 @@ def _run_deploy_pipeline(
 
     rc = subprocess.run([
         "sudo", "-u", "civicmesh", "sh", "-c",
-        f"cd {prod_app} && uv sync --frozen",
+        f"cd '{prod_app}' && '{_PROD_UV_BIN}' sync --frozen",
     ]).returncode
     if rc != 0:
         print(f"civicmesh: promote: uv sync --frozen failed (rc={rc})",

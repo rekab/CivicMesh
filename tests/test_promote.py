@@ -18,7 +18,7 @@ import textwrap
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import promote
 
@@ -254,6 +254,41 @@ class BehaviorTest(unittest.TestCase):
             self.assertEqual(rc, 3)
             self.assertIn("Aborted, no changes made.", err)
             mock_deploy.assert_not_called()
+        finally:
+            subprocess.run(["rm", "-rf", str(src)], check=True)
+
+    def test_uv_sync_uses_prod_absolute_path(self) -> None:
+        """The `uv sync --frozen` shell-out must reference uv via its
+        absolute prod-tree path. `sudo -u civicmesh sh -c` runs without
+        a login profile, so PATH doesn't include ~civicmesh/.local/bin
+        and bare `uv` won't resolve (the regression this guards against)."""
+        src = make_dev_tree()
+        try:
+            prod_app = _existing_prod_app(src)
+            prod_var = src / "fake-prod-var"
+            prod_var.mkdir(exist_ok=True)
+            ok = subprocess.CompletedProcess([], 0, b"", b"")
+            popen_inst = MagicMock()
+            popen_inst.wait.return_value = 0
+            popen_inst.stdout = MagicMock()
+            with patch("promote.subprocess.run", return_value=ok) as mock_run, \
+                 patch("promote.subprocess.Popen", return_value=popen_inst):
+                rc = promote._run_deploy_pipeline(
+                    src, "abc123", None, prod_app, prod_var,
+                )
+            self.assertEqual(rc, 0)
+            # Flatten every argv passed to subprocess.run into one
+            # searchable string. _PROD_UV_BIN must appear; bare `uv sync`
+            # must not (regression guard).
+            joined = " | ".join(
+                arg for call in mock_run.call_args_list
+                for arg in call.args[0]
+            )
+            self.assertIn(promote._PROD_UV_BIN, joined)
+            self.assertNotRegex(
+                joined, r"(?<![/\w])uv sync",
+                "found bare `uv sync` — fix regressed",
+            )
         finally:
             subprocess.run(["rm", "-rf", str(src)], check=True)
 
