@@ -7,6 +7,11 @@ state is touched on validator failure.
 Validators run against tempfile copies of the rendered bytes — never the
 target paths in /etc/ — so a failed validation can't leave a half-written
 config behind.
+
+hostapd is intentionally not validated here — `hostapd -t` is a
+debug-timestamp logging flag, not a syntax check, and hostapd has no
+offline check mode (it would try to bind wlan0). Renderer goldens
+(tests/apply/test_renderers.py) cover hostapd config correctness instead.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ from .driver import Plan
 
 
 _VALIDATORS: dict[str, list[str]] = {
-    "/etc/hostapd/hostapd.conf": ["hostapd", "-t"],
     "/etc/dnsmasq.d/civicmesh.conf": ["dnsmasq", "--test", "--conf-file="],
     "/etc/nftables.conf": ["nft", "-c", "-f"],
 }

@@ -40,7 +40,6 @@ class ValidatePlanTest(unittest.TestCase):
     def test_passes_when_all_validators_succeed(self) -> None:
         plan = Plan(
             changes=(
-                _change("/etc/hostapd/hostapd.conf"),
                 _change("/etc/dnsmasq.d/civicmesh.conf"),
                 _change("/etc/nftables.conf"),
             ),
@@ -50,22 +49,22 @@ class ValidatePlanTest(unittest.TestCase):
              patch("apply.validate.subprocess.run", return_value=_ok()) as mock_run:
             errors = validate.validate_plan(plan, self.cfg)
         self.assertEqual(errors, [])
-        # Three validators, three subprocess calls.
-        self.assertEqual(mock_run.call_count, 3)
+        # Two validators, two subprocess calls.
+        self.assertEqual(mock_run.call_count, 2)
 
     def test_collects_error_when_validator_fails(self) -> None:
         plan = Plan(
-            changes=(_change("/etc/hostapd/hostapd.conf"),),
+            changes=(_change("/etc/nftables.conf"),),
             services=(),
         )
         with patch("apply.validate._iface_exists", return_value=True), \
              patch("apply.validate.subprocess.run",
-                   return_value=_fail(b"bad ssid")):
+                   return_value=_fail(b"syntax error")):
             errors = validate.validate_plan(plan, self.cfg)
         self.assertEqual(len(errors), 1)
-        self.assertIn("/etc/hostapd/hostapd.conf", errors[0])
-        self.assertIn("hostapd", errors[0])
-        self.assertIn("bad ssid", errors[0])
+        self.assertIn("/etc/nftables.conf", errors[0])
+        self.assertIn("nft", errors[0])
+        self.assertIn("syntax error", errors[0])
 
     def test_reports_missing_iface(self) -> None:
         plan = Plan(changes=(), services=())

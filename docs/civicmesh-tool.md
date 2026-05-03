@@ -718,10 +718,13 @@ the operator is running over wlan0.
 3. **Diff against on-disk**: byte-compare each rendered file. Build
    the set of files that changed.
 4. **Pre-flight syntax validation** (before any write):
-   - `hostapd.conf` → `hostapd -t <tmp>`
    - `dnsmasq.d/civicmesh.conf` → `dnsmasq --test --conf-file=<tmp>`
    - `nftables.conf` → `nft -c -f <tmp>`
    - `network.iface` → must exist under `/sys/class/net/`
+
+   (hostapd has no offline syntax-check mode — `hostapd -t` is a
+   debug-timestamp flag, and a real check would try to bind wlan0.
+   Renderer goldens cover hostapd config correctness in tests instead.)
 
    Validators run against tempfile copies of the rendered bytes — never
    the target paths in `/etc/` — so a failed validation cannot leave a
