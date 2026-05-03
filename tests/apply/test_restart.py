@@ -1,18 +1,10 @@
 """Tests for apply.restart: derive_actions() and run_actions().
 
-Manual integration check for atomicity (not automated; documented for
-operators):
-
-    # On a real Pi with nftables loaded:
-    nft list ruleset > /tmp/before
-    sudo civicmesh apply
-    nft list ruleset > /tmp/after
-    diff /tmp/before /tmp/after
-
-The `flush ruleset` directive in /etc/nftables.conf makes `nft -f` a
-ruleset swap rather than a merge. The before/after diff confirms the
-swap landed atomically — no in-between state where partial rules are
-loaded.
+apply.restart now only fires the app-tier restart (civicmesh-{web,mesh}).
+System-stack services (hostapd, dnsmasq, nftables, networkd,
+NetworkManager, sysctl) are no longer restarted in-place — they are
+enabled-for-boot from civicmesh.py:_cmd_apply and the operator-issued
+reboot is the cutover. See the module docstring for the rationale.
 """
 
 import subprocess
@@ -25,53 +17,52 @@ from apply import restart
 
 class DeriveActionsTest(unittest.TestCase):
 
-    def test_dedupes_and_orders_full_set(self) -> None:
-        """Every category fires exactly once, in spec order."""
+    def test_civicmesh_unit_change_yields_app_restart(self) -> None:
+        """A change to either civicmesh-*.service unit triggers the app restart."""
+        for path in (
+            "/etc/systemd/system/civicmesh-web.service",
+            "/etc/systemd/system/civicmesh-mesh.service",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    restart.derive_actions([Path(path)]),
+                    [["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"]],
+                )
+
+    def test_both_civicmesh_unit_changes_dedupe_to_one_restart(self) -> None:
+        paths = [
+            Path("/etc/systemd/system/civicmesh-web.service"),
+            Path("/etc/systemd/system/civicmesh-mesh.service"),
+        ]
+        self.assertEqual(
+            restart.derive_actions(paths),
+            [["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"]],
+        )
+
+    def test_system_stack_paths_yield_no_actions(self) -> None:
+        """hostapd / dnsmasq / nftables / networkd / NM / sysctl paths no
+        longer trigger any in-place restart — they are staged for boot."""
         paths = [
             Path("/etc/hostapd/hostapd.conf"),
-            Path("/etc/default/hostapd"),       # same action as hostapd.conf
+            Path("/etc/default/hostapd"),
             Path("/etc/dnsmasq.d/civicmesh.conf"),
             Path("/etc/systemd/network/20-wlan0-ap.network"),
             Path("/etc/NetworkManager/conf.d/99-unmanaged-wlan0.conf"),
             Path("/etc/nftables.conf"),
             Path("/etc/sysctl.d/90-civicmesh-disable-ipv6.conf"),
-            Path("/etc/systemd/system/civicmesh-web.service"),
-            Path("/etc/systemd/system/civicmesh-mesh.service"),
         ]
-        actions = restart.derive_actions(paths)
-        self.assertEqual(actions, [
-            ["systemctl", "restart", "systemd-networkd"],
-            ["systemctl", "reload", "NetworkManager"],
-            ["sysctl", "--system"],
-            ["nft", "-f", "/etc/nftables.conf"],
-            ["systemctl", "restart", "hostapd"],
-            ["systemctl", "restart", "dnsmasq"],
-            ["systemctl", "daemon-reload"],
-            ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
-        ])
+        self.assertEqual(restart.derive_actions(paths), [])
 
-    def test_subset_returns_only_matching_actions(self) -> None:
-        """Only nftables and hostapd changed -> only those two restart actions."""
+    def test_mixed_input_returns_only_app_restart(self) -> None:
         paths = [
             Path("/etc/nftables.conf"),
             Path("/etc/hostapd/hostapd.conf"),
-        ]
-        self.assertEqual(restart.derive_actions(paths), [
-            ["nft", "-f", "/etc/nftables.conf"],
-            ["systemctl", "restart", "hostapd"],
-        ])
-
-    def test_systemd_unit_change_emits_one_daemon_reload_and_one_restart(self) -> None:
-        """Both civicmesh-*.service files map to the same daemon-reload and
-        the same restart command — the dedup must collapse them."""
-        paths = [
             Path("/etc/systemd/system/civicmesh-web.service"),
-            Path("/etc/systemd/system/civicmesh-mesh.service"),
         ]
-        self.assertEqual(restart.derive_actions(paths), [
-            ["systemctl", "daemon-reload"],
-            ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
-        ])
+        self.assertEqual(
+            restart.derive_actions(paths),
+            [["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"]],
+        )
 
     def test_empty_input_yields_no_actions(self) -> None:
         self.assertEqual(restart.derive_actions([]), [])
@@ -81,32 +72,22 @@ class RunActionsTest(unittest.TestCase):
 
     def test_invokes_subprocess_in_order(self) -> None:
         actions = [
-            ["systemctl", "restart", "systemd-networkd"],
-            ["nft", "-f", "/etc/nftables.conf"],
+            ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
         ]
         with patch("apply.restart.subprocess.run") as mock_run:
             restart.run_actions(actions)
         self.assertEqual(mock_run.call_args_list, [
             call(actions[0], check=True),
-            call(actions[1], check=True),
         ])
 
-    def test_raises_on_first_failure_and_skips_remainder(self) -> None:
+    def test_raises_on_failure(self) -> None:
         actions = [
-            ["systemctl", "restart", "systemd-networkd"],
-            ["nft", "-f", "/etc/nftables.conf"],
             ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
         ]
         with patch("apply.restart.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                None,  # first ok
-                subprocess.CalledProcessError(1, actions[1]),
-                None,  # would be third — must not be reached
-            ]
+            mock_run.side_effect = subprocess.CalledProcessError(1, actions[0])
             with self.assertRaises(subprocess.CalledProcessError):
                 restart.run_actions(actions)
-        # Third call must not have happened.
-        self.assertEqual(mock_run.call_count, 2)
 
 
 if __name__ == "__main__":

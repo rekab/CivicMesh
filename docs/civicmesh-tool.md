@@ -550,7 +550,12 @@ git source.
    `network-manager`. **Does not** install `apt-offline` (the
    retired `setup_ap.sh` used to; CIV-64 dropped it).
 4. Disable conflicting services if present: `dhcpcd`,
-   `wpa_supplicant@<iface>`, `systemd-resolved` stub listener.
+   `systemd-resolved` stub listener. (Bootstrap deliberately leaves
+   `wpa_supplicant` running so the SSH session this script is
+   executing over — typically over WiFi on a Pi imaged with the Pi
+   Imager WiFi flow — survives. `apply` is what disables
+   `wpa_supplicant` for the next boot, just before the operator
+   reboots into AP mode.)
 5. Mask `systemd-rfkill.service` and `.socket`. Install
    `/etc/systemd/system/rfkill-unblock-wifi.service`. Enable it.
 6. `useradd -r -m -d /usr/local/civicmesh -s /bin/bash civicmesh`.
@@ -581,6 +586,11 @@ git source.
 - Does not run `apply` (that requires `configure` first).
 - Does not enable systemd units for `civicmesh-web`/`civicmesh-mesh`
   (that's `apply`'s job; the units don't exist yet).
+- Does not stop or disable `wpa_supplicant`. Disabling here would kill
+  the SSH session bootstrap is running over (on a headless Pi imaged
+  with the Pi Imager WiFi flow, that session is held up by
+  `wpa_supplicant`). The disable happens in `apply`, where the operator
+  reboot is the cutover.
 
 **Failure modes:**
 
@@ -671,7 +681,14 @@ testing or `civicmesh promote --from .` for deployment.)
 | 1 | I/O or permission error. |
 | 2 | Validation failed. |
 | 3 | User aborted (Ctrl-C, or "no" at final confirmation). |
-| 10 | Wrong-mode (see refusal rules). |
+| 10 | Wrong-mode, or invoked as root in prod (see below). |
+
+**Prod-root refusal:** `configure` refuses to run as root in prod (exit
+10). Running as root would write `/usr/local/civicmesh/etc/config.toml`
+as `root:root` mode 0600, which the `civicmesh` user cannot read; the
+services would then fail at next boot with a confusing permission error
+far from the cause. The fix is to invoke as the `civicmesh` user:
+`sudo -u civicmesh civicmesh configure`.
 
 ---
 
@@ -684,8 +701,15 @@ PROD:  sudo civicmesh apply --dry-run    (also valid)
 ```
 
 Render the system files listed under "System files managed by apply"
-from `config.toml`, then restart only services whose configs actually
-changed. Idempotent.
+from `config.toml`, validate them, write them, and stage AP mode for
+the next boot. Idempotent.
+
+System-stack services (hostapd, dnsmasq, nftables, networkd,
+NetworkManager, sysctl) are deliberately **not** restarted in-place.
+The cutover is the operator-issued reboot. This avoids the
+headless-WiFi trapdoor: starting hostapd while `wpa_supplicant` is
+still up — or before nftables is loaded — would drop an SSH session
+the operator is running over wlan0.
 
 **Phases (in order):**
 
@@ -693,29 +717,42 @@ changed. Idempotent.
 2. **Render to memory**: produce full bytes of every managed file.
 3. **Diff against on-disk**: byte-compare each rendered file. Build
    the set of files that changed.
-4. **Write changed files atomically**: tmpfile in same directory,
+4. **Pre-flight syntax validation** (before any write):
+   - `hostapd.conf` → `hostapd -t <tmp>`
+   - `dnsmasq.d/civicmesh.conf` → `dnsmasq --test --conf-file=<tmp>`
+   - `nftables.conf` → `nft -c -f <tmp>`
+   - `network.iface` → must exist under `/sys/class/net/`
+
+   Validators run against tempfile copies of the rendered bytes — never
+   the target paths in `/etc/` — so a failed validation cannot leave a
+   half-written config behind. On any failure, exit 6 with no
+   filesystem or systemd state changes.
+5. **Write changed files atomically**: tmpfile in same directory,
    `os.fchmod` to correct mode, `os.replace` to swap. No partial
    states.
-5. **Restart affected services**:
+6. **Stage for boot** (always; idempotent):
 
-   | Files changed | Action |
+   | Step | Action |
    |---|---|
-   | `hostapd.conf`, `default/hostapd` | `systemctl restart hostapd` |
-   | `dnsmasq.d/civicmesh.conf` | `systemctl restart dnsmasq` |
-   | `networkd 20-*.network` | `systemctl restart systemd-networkd` |
-   | `NetworkManager/conf.d/*` | `systemctl reload NetworkManager` |
-   | `nftables.conf` | `nft -f /etc/nftables.conf` (atomic; no service restart) |
-   | `sysctl.d/*.conf` | `sysctl --system` |
-   | `systemd/system/civicmesh-*.service` | `systemctl daemon-reload && systemctl restart civicmesh-*` |
+   | 1 | `systemctl daemon-reload` |
+   | 2 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi` |
+   | 3 | `systemctl disable wpa_supplicant.service` |
+   | 4 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |
 
-6. **Print summary**: which files changed, which services restarted.
+   System-stack config changes (hostapd / dnsmasq / nftables /
+   networkd / NetworkManager / sysctl) require a reboot to take
+   effect. The cutover banner tells the operator that.
+7. **Print cutover banner**: explains the system is staged for AP
+   mode, that the current SSH session is fine because the cutover
+   only happens on `sudo reboot`, and warns that the SSH session
+   will end on reboot if it's running over WiFi.
 
 **Options:**
 
 | Flag | Effect |
 |---|---|
-| `--dry-run` | Phases 1–3 only. Print unified diff for each changed file, list services that would restart, exit 0 without writing. **Does not require root.** Works in both modes. |
-| `--no-restart` | Phases 1–4 only. Files updated, services not restarted. Use when planning an immediate reboot. |
+| `--dry-run` | Phases 1–3 only. Print unified diff for each changed file, list services that would restart, exit 0 without writing. **Does not require root.** Works in both modes. Pre-flight validation does not run in dry-run (it would need root to read /etc/ and the binaries are validated for real on `apply`). |
+| `--no-restart` | Phases 1–5 only. Files written, but no `systemctl daemon-reload`, `enable`, `disable`, or app restart. The cutover banner is suppressed. Use when you want to inspect the rendered files before staging service state changes; you must run a normal `apply` (or the equivalent systemctl commands) before rebooting, otherwise the system reboots into client mode again. |
 
 **iface change handling:**
 
@@ -738,7 +775,8 @@ manually `rm` the stale `99-unmanaged-wlan0.conf` and
 | 2 | Config file missing or unparseable. |
 | 3 | Config validation failed. |
 | 4 | A file write failed mid-apply. **No automatic rollback.** |
-| 5 | A service restart failed after files were written. |
+| 5 | A staging step failed (`daemon-reload`/`enable`/`disable`/app restart) after files were written. |
+| 6 | Pre-flight syntax validation failed. **No filesystem or systemd state changes.** |
 | 10 | Wrong-mode (see refusal rules). |
 
 **Failure handling:**

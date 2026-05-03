@@ -277,5 +277,46 @@ class ConfigCliTest(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
 
+class ConfigureRootRefusalTest(unittest.TestCase):
+    """`civicmesh configure` must refuse to run as root in prod.
+
+    Running as root would write /usr/local/civicmesh/etc/config.toml as
+    root:root mode 0600, leaving the civicmesh user unable to read it
+    when the services start. The refusal at dispatch keeps the failure
+    early and obvious.
+    """
+
+    def _ns(self) -> "argparse.Namespace":
+        import argparse as _argparse
+        return _argparse.Namespace(config=None)
+
+    def test_refuses_when_root_in_prod(self) -> None:
+        import civicmesh
+        with patch("civicmesh._MODE", "prod"), \
+             patch("civicmesh.os.geteuid", return_value=0):
+            with self.assertRaises(SystemExit) as ctx:
+                civicmesh._cmd_configure(self._ns())
+        self.assertEqual(ctx.exception.code, civicmesh.EXIT_WRONG_MODE)
+
+    def test_does_not_refuse_when_non_root_in_prod(self) -> None:
+        import civicmesh
+        with patch("civicmesh._MODE", "prod"), \
+             patch("civicmesh.os.geteuid", return_value=1000), \
+             patch("configure.run_configure", return_value=0) as run_mock:
+            with self.assertRaises(SystemExit) as ctx:
+                civicmesh._cmd_configure(self._ns())
+        self.assertEqual(ctx.exception.code, 0)
+        run_mock.assert_called_once()
+
+    def test_does_not_refuse_when_root_in_dev(self) -> None:
+        import civicmesh
+        with patch("civicmesh._MODE", "dev"), \
+             patch("civicmesh.os.geteuid", return_value=0), \
+             patch("configure.run_configure", return_value=0) as run_mock:
+            with self.assertRaises(SystemExit):
+                civicmesh._cmd_configure(self._ns())
+        run_mock.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
