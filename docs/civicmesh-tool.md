@@ -1111,6 +1111,135 @@ uv run civicmesh promote --from .              # commit
 
 ---
 
+## TROUBLESHOOTING A FAILING SERVICE
+
+When `civicmesh-mesh.service` (or `civicmesh-web.service`) won't come
+up cleanly — fails on boot, flaps after promote, or starts but the
+bot reports it can't reach the radio — work this ladder, cheapest
+first. Most first-five-minutes failures are caught by rungs **a–c**.
+For radio-side failure modes that surface only once the bot is
+running, hand off to `docs/radio-debugging/failure-modes.md` after
+rung **f**.
+
+### Ladder
+
+**a. Is it flapping or just down?**
+
+```bash
+sudo systemctl status civicmesh-mesh
+```
+
+`active (running)` is fine. `activating (auto-restart)` with a
+climbing restart counter means crash-on-start — read the journal at
+rung **b**. `failed` after `StartLimitBurst=5` retries within 60s
+means systemd has given up; same next step. (Restart policy is
+`Restart=on-failure, RestartSec=5, StartLimitBurst=5,
+StartLimitIntervalSec=60` — see `apply/renderers.py`'s
+`render_systemd_unit_*` functions.)
+
+**b. What's in the journal?**
+
+```bash
+sudo journalctl -u civicmesh-mesh -e --no-pager | tail -50
+```
+
+A Python traceback means the app started but crashed on import or
+init — the last frame is usually the most informative. Common ones:
+`ModuleNotFoundError` (a top-level `.py` not in
+`pyproject.toml`'s `py-modules` — guarded by
+`tests/test_pyproject.py` post-1dd35fe), `PermissionError` reading
+`/usr/local/civicmesh/etc/config.toml` (often: `configure` was run
+as root in prod, leaving the file `root:root` instead of
+`civicmesh:civicmesh`), or a `tomllib` parse error from a manual
+edit. A systemd-side error (no Python frames; messages like
+`Failed at step EXEC` or `status=200/CHDIR`) means a unit-file
+problem — re-run `sudo civicmesh apply` to re-render.
+
+**c. What do the bot's own logs say?**
+
+If the unit got past Python startup but the bot itself reports
+problems (radio unreachable, recovery firing, liveness timeouts),
+the bot writes its own diagnostics to a rotating file in the
+directory configured as `[logging].log_dir` in
+`/usr/local/civicmesh/etc/config.toml`. The prod convention places
+these under `/usr/local/civicmesh/var/logs/`:
+
+```bash
+sudo tail -100 /usr/local/civicmesh/var/logs/mesh_bot.log
+```
+
+Look for `recovery:` events, `RecoveryController` state changes,
+and repeated `send_chan_msg error` lines.
+
+**d. Who owns the serial port?**
+
+```bash
+sudo lsof /dev/ttyUSB0
+```
+
+A single PID owned by `civicmesh-mesh` is healthy port ownership —
+the problem is elsewhere. **Two PIDs is the C3 conflict** (a dev
+`mesh_bot` left running on the same host). See
+`docs/radio-debugging/failure-modes.md` §C3. The fix is to stop the
+dev process; `docs/civicmesh-tool.md` `## RUNNING DEV ALONGSIDE
+PROD` documents the discipline that prevents it.
+
+**e. Is the port even there?**
+
+```bash
+ls -l /dev/ttyUSB*
+dmesg | tail -20
+```
+
+No `ttyUSB*` device at all is USB / cable / firmware-side — see
+`docs/radio-debugging/boot-and-reset.md` for hardware-reset
+behavior and `failure-modes.md` §D1 (CP2102 bridge hung) and §D2
+(stale `ttyUSB` descriptor). Reseating the USB cable is the
+cheapest first try.
+
+**f. Radio characterization (last rung).**
+
+Once **a–e** have ruled out non-radio causes, run the
+characterization harness; its JSONL output classifies the failure
+mode and is the handoff point to `failure-modes.md`. **Stop
+`civicmesh-mesh` first — the harness needs exclusive serial
+access:**
+
+```bash
+sudo systemctl stop civicmesh-mesh
+cd /usr/local/civicmesh/app
+sudo -u civicmesh python -m diagnostics.radio.recovery_characterization \
+    --config /usr/local/civicmesh/etc/config.toml \
+    --mode sanity \
+    --out /tmp/recovery_$(date +%Y%m%d_%H%M%S).jsonl
+```
+
+### Symptom → rung
+
+| Symptom in `journalctl` or `systemctl status` | Most likely cause | Rung |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'X'` | Top-level `.py` not in `pyproject.toml` `py-modules`; add it (`tests/test_pyproject.py` should have caught this in CI) | **b** |
+| `PermissionError` reading `/usr/local/civicmesh/etc/config.toml` | `configure` was run as root in prod; fix with `sudo chown civicmesh:civicmesh` | **b** |
+| `tomllib.TOMLDecodeError` | manual edit broke the config; restore from `config.toml` backup or re-run `civicmesh configure` | **b** |
+| Restart counter climbing fast (>5 in a minute) | crash on startup; read traceback | **a → b** |
+| Service `active`, web UI says radio unhealthy | bot started but radio is unreachable or hung | **c → d** |
+| `[Errno 2] No such file or directory: '/dev/ttyUSB0'` | USB cable, firmware crash, or CP2102 hang | **b → e** |
+| Two PIDs in `lsof /dev/ttyUSB0` | dev `mesh_bot` still running on this host (C3) | **d** |
+| `apply` exited with a non-zero code on deploy | match the code against the *Exit codes* table in the `apply` section above; rendered files may not be on disk | (out of band — re-run `apply`) |
+
+### Cross-references
+
+- Radio-side failure modes once the bot is running:
+  `docs/radio-debugging/failure-modes.md` (§A ESP32, §B SX1262,
+  §C serial framing, §D USB/CP2102, §E storage/prefs).
+- Hardware reset behavior, boot timing: `docs/radio-debugging/boot-and-reset.md`.
+- `apply` exit codes: see *Exit codes* table in the `apply` section
+  above.
+- Dev/prod serial-port conflict (rung **d**): `## RUNNING DEV
+  ALONGSIDE PROD` above and `failure-modes.md` §C3.
+
+---
+
 ## REPOSITORY CLEANUP (one-time, before this work begins)
 
 The current repo has `config.toml` checked in with a real serial port
