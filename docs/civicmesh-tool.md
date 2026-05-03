@@ -794,6 +794,52 @@ manually `rm` the stale `99-unmanaged-wlan0.conf` and
 
 ---
 
+### When to promote, apply, and reboot                                   [NEW]
+
+Decision rule for an operator who just made a change in dev. Use
+this to answer "I just promoted; do I also need to apply? Do I
+need to reboot?"
+
+| Change type | promote | apply | reboot |
+|---|:---:|:---:|:---:|
+| Pure code change (`mesh_bot.py`, `web_server.py`, `civicmesh.py`, `database.py`, etc.) | yes | no | no |
+| `civicmesh-web.service` / `civicmesh-mesh.service` unit-file change | yes | yes | no — `apply` restarts these in-place |
+| `apply/renderers.py` change | yes | yes | depends — see below |
+| `config.toml` schema change (new field consumed by `config.py`) | yes | yes | depends — see below |
+| Rendered output changes for `hostapd.conf`, `dnsmasq.d/civicmesh.conf`, `nftables.conf`, `99-unmanaged-<iface>.conf`, `20-<iface>-ap.network`, or `90-civicmesh-disable-ipv6.conf` | yes | yes | yes |
+
+**The "depends" rows:** the reboot requirement is determined by
+which *rendered* file changes, not by which source file you
+edited. A renderer or schema change that produces a new
+`hostapd.conf`, `dnsmasq.d/civicmesh.conf`, `nftables.conf`, or
+any networkd / NetworkManager / sysctl file requires a reboot; a
+renderer change that only touches `civicmesh-*.service` does not.
+Confirm before deciding:
+
+```bash
+sudo civicmesh apply --dry-run
+```
+
+If the change list includes any system-stack file (hostapd /
+dnsmasq / nftables / networkd / NetworkManager / sysctl), reboot.
+If it only includes `civicmesh-*.service`, no reboot.
+
+**Why reboot at all.** `apply` deliberately doesn't restart
+hostapd / dnsmasq / nftables / networkd / NetworkManager / sysctl
+in-place; it only stages them via `systemctl enable` / `disable`
+and a `daemon-reload`. The operator-issued `sudo reboot` is the
+cutover. Restarting in-place would risk the headless-WiFi
+trapdoor described in the `apply` section above.
+
+**Escape hatch — nftables only.** If the *only* changed file is
+`/etc/nftables.conf`, `sudo nft -f /etc/nftables.conf` performs an
+atomic ruleset swap with no service restart and no reboot. (This
+is the "Services restarted" entry for nftables in *System files
+managed by apply* above.) All other system-stack changes still
+require a reboot.
+
+---
+
 ### promote                                                              [NEW]
 
 ```
@@ -1042,7 +1088,8 @@ sudo systemctl restart civicmesh-web
 ```bash
 sudo -u civicmesh civicmesh configure          # change ap.channel
 sudo civicmesh apply --dry-run                 # eyeball the diff
-sudo civicmesh apply                           # commit
+sudo civicmesh apply                           # stage; SSH session survives
+sudo reboot                                    # cutover (ap.channel → hostapd.conf → reboot)
 ```
 
 ### Manual moderation
