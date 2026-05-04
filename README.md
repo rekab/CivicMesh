@@ -2,7 +2,7 @@
 
 **A walk-up MeshCore relay for Seattle Emergency Hubs.**
 
-[Seattle Emergency Hubs](seattleemergencyhubs.org/) are neighborhood gathering points:
+[Seattle Emergency Hubs](https://seattleemergencyhubs.org/) are neighborhood gathering points:
 places people show up after a grid-down event to share
 information. Mutual aid is the
 infrastructure when the other infrastructure is overwhelmed.
@@ -67,6 +67,17 @@ Heltec V3  (MeshCore companion firmware)
 MeshCore channels
 ```
 
+Two processes share state through a single SQLite database
+(WAL mode):
+
+- `web_server.py` — synchronous HTTP server. Serves the
+  captive portal SPA, handles posts and votes, manages
+  sessions, enforces rate limits.
+- `mesh_bot.py` — async process. Talks to the Heltec over
+  USB serial via the `meshcore` library, joins channels,
+  records inbound messages, drains the outbox onto the
+  air.
+
 Walk-up posts queue in SQLite and are paced onto the mesh.
 Mesh messages land in the same database and become
 readable in the portal. The radio link is best-effort;
@@ -94,108 +105,20 @@ foot traffic at the Hub, not with mesh activity. All
 limits are configurable; defaults are conservative on
 purpose.
 
-## Hardware Requirements
+## Hardware
 
-### Development
-- **Raspberry Pi 4** (4GB RAM recommended)
-- **Heltec V3** running MeshCore companion firmware
-- USB-A to USB-C cable (for Heltec V3 connection)
+CivicMesh runs on a Raspberry Pi paired with a Heltec V3
+LoRa board flashed with the MeshCore companion firmware,
+connected by USB.
 
-### Production Deployment
-- **Raspberry Pi Zero 2W** (lower power, sufficient for deployment)
-- **Heltec V3** running MeshCore companion firmware
-- USB-A to USB-C cable (for Heltec V3 connection)
+- **Dev:** Raspberry Pi 4 (4GB recommended)
+- **Prod:** Raspberry Pi Zero 2W
 
-## Hardware Setup
-
-### 1. Connect Heltec V3 to Raspberry Pi
-
-1. **Power off the Raspberry Pi** (recommended for safe USB connection)
-2. Connect the Heltec V3 to the Raspberry Pi via USB:
-   - Plug USB-C end into the Heltec V3
-   - Plug USB-A end into any USB port on the Raspberry Pi
-3. Power on the Raspberry Pi
-
-### 2. Verify USB Connection
-
-After boot, check that the device is recognized:
-
-```bash
-ls -l /dev/ttyUSB*
-```
-
-You should see `/dev/ttyUSB0` (or `/dev/ttyUSB1`, etc. if other USB serial devices are connected).
-
-If the device doesn't appear:
-- Check USB cable connection
-- Try a different USB port
-- Check `dmesg | tail` for USB device detection messages
-- Ensure Heltec V3 is powered (may need external power if Pi USB port doesn't provide enough)
-
-### 3. Set USB Permissions (if needed)
-
-If you get permission denied errors, add your user to the `dialout` group:
-
-```bash
-sudo usermod -a -G dialout $USER
-```
-
-Log out and back in for the change to take effect.
-
-### 4. Configure WiFi Access Point
-
-The Raspberry Pi needs to be configured as a WiFi access point. This is typically done via:
-- `hostapd` for the access point
-- `dnsmasq` for DHCP/DNS (optional, for captive portal)
-
-The SSID is configured in `config.toml` (see Configuration section below).
-
-## Overview
-
-Two processes share state via SQLite:
-- `mesh_bot.py` (async): connects to Heltec via USB serial (MeshCore companion firmware), joins channels, logs messages, relays queued WiFi posts, handles DM searches
-- `web_server.py` (sync): captive portal HTTP server (no HTTPS), interactive web UI, queues posts, votes, and session state
-
-## Project Docs
-
-Specs and planning:
-- Spec skeleton: `docs/spec_skeleton.md`
-- Invariants: `docs/invariants.md`
-- Open questions: `docs/open_questions.md`
-- Staged hardening plan: `docs/staged_plan.md`
-
-Deployment and operations:
-- Captive portal setup: `docs/captive_portal_setup.md`
-- iOS captive portal notes: `docs/ios-captive-portal-notes.md`
-- Power budget: `docs/power-budget.md`
-- Telemetry: `docs/telemetry.md`
-
-Feature designs:
-- Message lifecycle (outbox state machine): `docs/message_lifecycle.md`
-- Heard-count / echo tracking: `docs/heard_count_design.md`
-
-Radio / hardware:
-- Recovery implementation (state machine, ladder, observability): `docs/recovery.md`
-- Heltec V3 recovery hardware reference: `docs/heltec-recovery.md`
-- Radio-debugging deep dive (failure modes, boot, reset domains, test plan): `docs/radio-debugging/` — start at its [README](docs/radio-debugging/README.md)
-
-## Diagnostics
-
-`diagnostics/` holds ad-hoc bench tooling, separate from the runtime code in the repo root. It is **not** installed as part of the Python package.
-
-- `diagnostics/radio/` — Mac-side test harness that drives both CivicMesh nodes' radios over SSH via the `meshcore_py` library, bypassing `mesh_bot`. Used to isolate library/radio bugs from app-layer behavior. See `diagnostics/radio/README.md` and `diagnostics/radio/FINDINGS.md`.
-- `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` — load-test helpers used during power-budget work. See `docs/power-budget.md` for context.
-
-## Recovery
-
-mesh_bot includes a silent-hang detector that watches for radio unresponsiveness via a periodic `get_stats_core` ping (3 consecutive timeouts ≈ 90s) and sustained outbox send failures (3 consecutive `send_chan_msg` errors — echo-confirmed sends and successful sends both reset the counter, so transient errors don't trigger recovery). When either trigger fires, the `RecoveryController` resets the Heltec V3's ESP32 via an RTS pulse on the serial port, reconnects, and verifies before declaring healthy. If recovery fails, the process enters `NEEDS_HUMAN` state (visible via the `status` table's `state` column) and keeps retrying on exponential backoff capped at 1 hour — the process never exits. See `recovery.py` for the implementation and `docs/heltec-recovery.md` for the hardware context.
-
-## Scope Notes (v0)
-
-- Public channels only; no accounts and no web-based admin controls.
-- HTTP-only captive portal for device compatibility.
-- `sent-to-radio` indicates the message was handed to the radio, not delivered to recipients.
-- Offline-first: UI loads without radio; cached messages remain readable.
+Plug the Heltec into any USB port on the Pi (USB-A on the
+Pi side, USB-C on the Heltec). That's the entire hardware
+setup. The deployment scripts handle WiFi AP
+configuration, package install, and the systemd unit's
+serial-device access.
 
 ## Deployment
 
@@ -314,22 +237,25 @@ output). See the
 [promote / apply / reboot decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot)
 for the rule.
 
-## Run (dev)
+## Development
 
-First time? [Install uv](https://docs.astral.sh/uv/) and run `uv
-sync` from the repo root to set up the venv.
+First time? [Install uv](https://docs.astral.sh/uv/) and run
+`uv sync` from the repo root.
 
-In two terminals:
+Run the two services in separate terminals:
 
 ```bash
 uv run civicmesh-web --config config.toml
-```
-
-```bash
 uv run civicmesh-mesh --config config.toml
 ```
 
-Then browse to `http://<pi-ip>/`.
+Then browse to `http://<pi-ip>:8080/`.
+
+Run unit tests:
+
+```bash
+uv run python -m unittest
+```
 
 ## Admin CLI (SSH only)
 
@@ -341,51 +267,111 @@ uv run civicmesh --config config.toml cleanup
 uv run civicmesh --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
 ```
 
-## Tests
-
-Run unit tests with:
+On a deployed Pi the binary is on `PATH` and the config flag is
+not needed (it defaults to `/usr/local/civicmesh/etc/config.toml`):
 
 ```bash
-uv run python -m unittest
+civicmesh stats
+sudo civicmesh pin 123
 ```
 
 ## Configuration
 
-Edit `config.toml` before first run.
+The full schema and defaults live in
+[`config.toml.example`](config.toml.example).
 
-### Serial Port
+- **Dev:** copy `config.toml.example` to `config.toml` at the repo
+  root and edit.
+- **Prod:** `civicmesh configure` walks the common knobs
+  interactively and writes `/usr/local/civicmesh/etc/config.toml`.
+  To change something afterwards, edit that file directly; if the
+  change touches a system-rendered setting (hostapd, dnsmasq,
+  nftables, etc.) follow with `sudo civicmesh apply`. The
+  [decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot)
+  spells out which changes also need a reboot.
 
-Set `serial_port` to match your USB device:
-- Usually `/dev/ttyUSB0` (first USB serial device)
-- Check with `ls -l /dev/ttyUSB*` after connecting Heltec V3
+A few common knobs:
 
-### Channels
-
-Configure which MeshCore channels the bot joins:
 ```toml
 [channels]
-names = ["#fremont", "#puget-sound"]
-```
+names = ["#fremont", "#puget-sound"]    # mesh channels to join
 
-### Local Chatroom
-
-Configure WiFi-only channels that never relay to the mesh:
-```toml
 [local]
-names = ["#local"]
+names = ["#local"]                      # WiFi-only, never relayed
 ```
 
-### Logging
-
-Logs are written to `logs/` by default:
-- `logs/web_server.log`
-- `logs/mesh_bot.log`
-- `logs/security.log` (ERROR+ security events, rate-limited to reduce log flooding)
-
-## Security Notes
+## Security
 
 This system assumes a hostile environment:
+
 - HTTP only (captive portal). Do not enter secrets.
-- Posting and voting require a cookie + MAC validation (ARP lookup via `/proc/net/arp`).
-- MAC/cookie mismatches are logged at high level to `logs/security.log`.
+- Posting and voting require a cookie + MAC validation (ARP lookup
+  via `/proc/net/arp`).
+- MAC/cookie mismatches are logged at high level to the security
+  log.
 - Rate limiting prevents abuse (configurable `posts_per_hour`).
+
+## Recovery
+
+`mesh_bot` includes a silent-hang detector that watches for radio
+unresponsiveness via a periodic `get_stats_core` ping (3 consecutive
+timeouts ≈ 90s) and sustained outbox send failures (3 consecutive
+`send_chan_msg` errors — echo-confirmed sends and successful sends
+both reset the counter, so transient errors don't trigger
+recovery). When either trigger fires, the `RecoveryController`
+resets the Heltec V3's ESP32 via an RTS pulse on the serial port,
+reconnects, and verifies before declaring healthy. If recovery
+fails, the process enters `NEEDS_HUMAN` state (visible via the
+`status` table's `state` column) and keeps retrying on exponential
+backoff capped at 1 hour — the process never exits. See
+`recovery.py` for the implementation and `docs/heltec-recovery.md`
+for the hardware context.
+
+## Scope (v0)
+
+- Public channels only; no accounts and no web-based admin
+  controls.
+- HTTP-only captive portal for device compatibility.
+- `sent-to-radio` indicates the message was handed to the radio,
+  not delivered to recipients.
+- Offline-first: UI loads without radio; cached messages remain
+  readable.
+
+## Project docs
+
+Specs and planning:
+- Spec skeleton: `docs/spec_skeleton.md`
+- Invariants: `docs/invariants.md`
+- Open questions: `docs/open_questions.md`
+- Staged hardening plan: `docs/staged_plan.md`
+
+Deployment and operations:
+- Operator tool reference: `docs/civicmesh-tool.md`
+- Captive portal setup: `docs/captive_portal_setup.md`
+- iOS captive portal notes: `docs/ios-captive-portal-notes.md`
+- Power budget: `docs/power-budget.md`
+- Telemetry: `docs/telemetry.md`
+
+Feature designs:
+- Message lifecycle (outbox state machine): `docs/message_lifecycle.md`
+- Heard-count / echo tracking: `docs/heard_count_design.md`
+
+Radio / hardware:
+- Recovery implementation (state machine, ladder, observability): `docs/recovery.md`
+- Heltec V3 recovery hardware reference: `docs/heltec-recovery.md`
+- Radio-debugging deep dive (failure modes, boot, reset domains, test plan): `docs/radio-debugging/` — start at its [README](docs/radio-debugging/README.md)
+
+## Diagnostics
+
+`diagnostics/` holds ad-hoc bench tooling, separate from the
+runtime code in the repo root. It is **not** installed as part of
+the Python package.
+
+- `diagnostics/radio/` — Mac-side test harness that drives both
+  CivicMesh nodes' radios over SSH via the `meshcore_py` library,
+  bypassing `mesh_bot`. Used to isolate library/radio bugs from
+  app-layer behavior. See `diagnostics/radio/README.md` and
+  `diagnostics/radio/FINDINGS.md`.
+- `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` —
+  load-test helpers used during power-budget work. See
+  `docs/power-budget.md` for context.
