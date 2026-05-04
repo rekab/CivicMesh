@@ -271,8 +271,8 @@ On a deployed Pi the binary is on `PATH` and the config flag is
 not needed (it defaults to `/usr/local/civicmesh/etc/config.toml`):
 
 ```bash
-civicmesh stats
-sudo civicmesh pin 123
+civicmesh stats                          # read-only; any user
+sudo -u civicmesh civicmesh pin 123      # writes the DB; run as the service user
 ```
 
 ## Configuration
@@ -324,8 +324,9 @@ reconnects, and verifies before declaring healthy. If recovery
 fails, the process enters `NEEDS_HUMAN` state (visible via the
 `status` table's `state` column) and keeps retrying on exponential
 backoff capped at 1 hour — the process never exits. See
-`recovery.py` for the implementation and `docs/heltec-recovery.md`
-for the hardware context.
+`recovery.py` for the implementation and
+[docs/heltec-recovery.md](docs/heltec-recovery.md) for the hardware
+context.
 
 ## Scope (v0)
 
@@ -340,26 +341,26 @@ for the hardware context.
 ## Project docs
 
 Specs and planning:
-- Spec skeleton: `docs/spec_skeleton.md`
-- Invariants: `docs/invariants.md`
-- Open questions: `docs/open_questions.md`
-- Staged hardening plan: `docs/staged_plan.md`
+- [Spec skeleton](docs/spec_skeleton.md)
+- [Invariants](docs/invariants.md)
+- [Open questions](docs/open_questions.md)
+- [Staged hardening plan](docs/staged_plan.md)
 
 Deployment and operations:
-- Operator tool reference: `docs/civicmesh-tool.md`
-- Captive portal setup: `docs/captive_portal_setup.md`
-- iOS captive portal notes: `docs/ios-captive-portal-notes.md`
-- Power budget: `docs/power-budget.md`
-- Telemetry: `docs/telemetry.md`
+- [Operator tool reference](docs/civicmesh-tool.md)
+- [Captive portal setup](docs/captive_portal_setup.md)
+- [iOS captive portal notes](docs/ios-captive-portal-notes.md)
+- [Power budget](docs/power-budget.md)
+- [Telemetry](docs/telemetry.md)
 
 Feature designs:
-- Message lifecycle (outbox state machine): `docs/message_lifecycle.md`
-- Heard-count / echo tracking: `docs/heard_count_design.md`
+- [Message lifecycle](docs/message_lifecycle.md) — outbox state machine
+- [Heard-count / echo tracking](docs/heard_count_design.md)
 
 Radio / hardware:
-- Recovery implementation (state machine, ladder, observability): `docs/recovery.md`
-- Heltec V3 recovery hardware reference: `docs/heltec-recovery.md`
-- Radio-debugging deep dive (failure modes, boot, reset domains, test plan): `docs/radio-debugging/` — start at its [README](docs/radio-debugging/README.md)
+- [Recovery implementation](docs/recovery.md) — state machine, ladder, observability
+- [Heltec V3 recovery hardware reference](docs/heltec-recovery.md)
+- [Radio-debugging deep dive](docs/radio-debugging/README.md) — failure modes, boot, reset domains, test plan
 
 ## Diagnostics
 
@@ -374,4 +375,4 @@ the Python package.
   `diagnostics/radio/FINDINGS.md`.
 - `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` —
   load-test helpers used during power-budget work. See
-  `docs/power-budget.md` for context.
+  [docs/power-budget.md](docs/power-budget.md) for context.
