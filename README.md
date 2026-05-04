@@ -1,6 +1,98 @@
-# Civic Mesh Hub Relay Bot
+# CivicMesh
 
-WiFi walk-up relay for MeshCore mesh channels at Seattle Emergency Hubs.
+**A walk-up MeshCore relay for Seattle Emergency Hubs.**
+
+[Seattle Emergency Hubs](seattleemergencyhubs.org/) are neighborhood gathering points:
+places people show up after a grid-down event to share
+information. Mutual aid is the
+infrastructure when the other infrastructure is overwhelmed.
+CivicMesh runs at a Hub: a Raspberry Pi and a MeshCore
+radio together become an offline WiFi access point. Anyone
+in range opens the captive portal on their phone and reads
+or posts to public mesh channels. No app. No account. No
+uplink. The radio carries what people leave behind to
+whoever is listening on the mesh.
+
+At an active Hub, three volunteer roles exist solely to
+move information: the Information Manager keeps the public
+message boards current, the Radio Assistant triages
+traffic, and the licensed Radio Operator passes
+high-priority messages over the Seattle Auxiliary
+Communications Service (ACS) net to the City and other
+Hubs. That pipeline is finite. The net takes a few
+messages per operator per sweep, all three roles are
+task-saturated in any real event, and most
+neighborhood-scale information will never make the
+priority cut.
+
+CivicMesh is a parallel channel for that overflow. A
+neighbor with a phone walks up, posts a short note through
+the captive portal, and it lands on the Hub's local feed
+and on the LoRa mesh — without taking a slot on the ACS
+net or a minute of the Radio Operator's time.
+
+## Project status
+
+CivicMesh is a working prototype, not a finished product.
+Development consists of a few nodes run on the bench, but have
+not been deployed in a real emergency or stress-tested by strangers at scale.
+
+Near-term goals are field tests at hacker events, Seattle
+Emergency Hub drills, and similar gatherings. It needs places
+where the walk-up-WiFi model can be tried by people who
+didn't build it. Feedback from those contexts is needed in this phase.
+
+If you are a mesh radio operator, a Hub coordinator, or
+someone who would benefit from this existing, the project
+welcomes your input and your skepticism in roughly equal
+measure.
+
+## How it works
+
+MeshCore is an open-source LoRa mesh of small, low-power
+radios that relay messages neighbor-to-neighbor, no towers
+and no internet required. By 2026 the regional MeshCore
+network reaches from Vancouver BC to Portland: the same
+corridor most exposed to a Cascadia subduction zone event.
+CivicMesh plugs into that existing fabric rather than
+building its own.
+
+```
+Phone browser
+   ↕ WiFi, no internet
+Raspberry Pi  (captive portal + SQLite)
+   ↕ USB serial
+Heltec V3  (MeshCore companion firmware)
+   ↕ LoRa
+MeshCore channels
+```
+
+Walk-up posts queue in SQLite and are paced onto the mesh.
+Mesh messages land in the same database and become
+readable in the portal. The radio link is best-effort;
+nothing in the local read/post path depends on it.
+
+## Light on the air
+
+Mesh airtime is finite, and oversaturation during an event
+is a real risk. CivicMesh adds traffic in two disciplined
+steps:
+
+- **At ingest:** each WiFi session is capped at 10 posts
+  per hour and 100 characters per post. A burst from one
+  phone can't dominate the outbox.
+- **At egress:** the outbox is a serial queue — one
+  message on the air at a time. The gap between
+  consecutive sends ramps from 2 → 5 → 10 seconds under
+  sustained load. After ~60 seconds of quiet, the ramp
+  resets so an isolated post goes out immediately. Ten
+  posts queued at once drain over about 80 seconds.
+
+CivicMesh is **not a repeater**. It does not relay or
+forward other nodes' traffic. Airtime consumed scales with
+foot traffic at the Hub, not with mesh activity. All
+limits are configurable; defaults are conservative on
+purpose.
 
 ## Hardware Requirements
 
