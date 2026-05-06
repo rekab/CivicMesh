@@ -90,11 +90,18 @@ The banner attribution and intro text shown on the Reference page
 come from the top of `manifest.toml`:
 
 ```toml
+title = "Hub Reference Library"
 source_label = "Seattle Emergency Hubs"
 note = "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use."
 ```
 
-These are required.
+`source_label` and `note` are required.
+
+`title` is **optional**: the library's display name in the captive
+portal (the tile label and the page heading). Must be a non-empty
+string after trimming. If absent, the SPA falls back to a humanized
+form of the URL slug — for `hub-docs` that's "Hub Docs", which is
+usually less polished than what you'd write yourself.
 
 ## Bump the "last reviewed" date
 

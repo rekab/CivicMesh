@@ -35,7 +35,7 @@ _PUBLISHED_RES = (
     re.compile(r"^\d{4}-\d{2}$"),
     re.compile(r"^\d{4}-\d{2}-\d{2}$"),
 )
-_RECOGNIZED_TOP_KEYS = {"source_label", "note", "doc"}
+_RECOGNIZED_TOP_KEYS = {"title", "source_label", "note", "doc"}
 _RECOGNIZED_DOC_REQUIRED = ("category", "title", "file", "lang")
 _RECOGNIZED_DOC_OPTIONAL = ("published",)
 _RECOGNIZED_DOC_KEYS = (
@@ -99,6 +99,14 @@ def parse_manifest(path: Path) -> dict:
         raise ManifestError(
             f"unknown top-level key(s): {sorted(unknown_top)}"
         )
+
+    if "title" in data:
+        title_val = data["title"]
+        if not isinstance(title_val, str) or not title_val.strip():
+            raise ManifestError(
+                "top-level 'title' must be a non-empty string "
+                f"(got {title_val!r})"
+            )
 
     seen_files: dict[str, list[int]] = {}
     for i, doc in enumerate(data["doc"], start=1):
@@ -263,13 +271,16 @@ def build_index(
             docs.append(entry)
         categories.append({"name": category, "docs": docs})
 
-    return {
+    out: dict = {
         "schema_version": _SCHEMA_VERSION,
         "built_at": built_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source_label": manifest["source_label"],
-        "note": manifest["note"],
-        "categories": categories,
     }
+    if "title" in manifest:
+        out["title"] = manifest["title"]
+    out["source_label"] = manifest["source_label"]
+    out["note"] = manifest["note"]
+    out["categories"] = categories
+    return out
 
 
 def write_zip(

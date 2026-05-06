@@ -173,6 +173,15 @@ class InstallHappyPathTest(unittest.TestCase):
                 os.readlink(link),
                 "hub-docs.releases/20260401T143200Z",
             )
+            # §7 layout: index.json + PDFs sit DIRECTLY under
+            # <release_id>/, not nested in <release_id>/hub-docs/.
+            release = var / "hub-docs.releases" / "20260401T143200Z"
+            self.assertTrue((release / "index.json").is_file())
+            self.assertTrue((release / "a.pdf").is_file())
+            self.assertFalse(
+                (release / "hub-docs").exists(),
+                "inner hub-docs/ subdir must be lifted away after install",
+            )
 
     def test_second_install_previous_named(self) -> None:
         with tempfile.TemporaryDirectory() as t:

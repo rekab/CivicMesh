@@ -72,8 +72,9 @@ out/hub-docs-<release_id>.zip          (d) build artifact, gitignored
         │ static HTTP, no server-side rendering
         ▼
 Browser
-  GET /hub-docs/index.json             (g) JSON describes contents
-  GET /hub-docs/<filename>.pdf         (h) Content-Disposition: attachment
+  GET /var/index.json                  (g) JSON: which libraries are installed
+  GET /var/hub-docs/index.json         (h) JSON describes contents
+  GET /var/hub-docs/<filename>.pdf     (i) Content-Disposition: attachment
 ```
 
 The seam between every stage is the **zip artifact** plus the
@@ -81,9 +82,14 @@ The seam between every stage is the **zip artifact** plus the
 the build tool can put in a valid zip, the install tool can install,
 and anything the install tool installs, the UI can render.
 
-The web server has no hub-docs-specific endpoints. It serves
-`<var>/hub-docs/` as static files. The UI's Reference page is a
-client-side render of `index.json`.
+The web server has no hub-docs-specific endpoints. It exposes the URL
+prefix `/var/` as a generic mapping onto `<var_dir>/`: any directory
+under `<var_dir>/<slug>/` containing a parseable `index.json` becomes
+web-public at `/var/<slug>/`, with a slug-whitelist enforced via the
+`/var/index.json` discovery endpoint and `Content-Disposition:
+attachment` applied to any PDF served under `/var/`. The UI's
+Reference page is a client-side render of each library's
+`index.json`.
 
 ### Release ID
 
@@ -115,6 +121,7 @@ shapes.
 {
   "schema_version": 1,
   "built_at": "2026-04-01T14:32:00Z",
+  "title": "Hub Reference Library",
   "source_label": "Seattle Emergency Hubs",
   "note": "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use.",
   "categories": [
@@ -153,6 +160,7 @@ shapes.
 |---|---|---|
 | `schema_version` | constant in build tool | Increment only on breaking changes. v1 covers this doc. |
 | `built_at` | build tool, UTC ISO-8601 | Surfaced in UI as "last sync …". Drives `<release_id>`. |
+| `title` | manifest top-level key, **optional** | Library display name. UTF-8, trimmed non-empty string. Pass-through from manifest. SPA falls back to a humanized form of the URL slug if absent. Distinct from `source_label` — `title` names the library; `source_label` attributes its contents. |
 | `source_label` | manifest top-level key | Banner attribution. Pass-through from manifest, never derived. |
 | `note` | manifest top-level key | Banner copy under the title. Pass-through from manifest, never derived. |
 | `categories[].name` | manifest `[[doc]].category` | Categories grouped by build tool; order = first-appearance order in manifest. |
@@ -196,6 +204,7 @@ including banner copy and source attribution — in one place.
 
 ```toml
 # Top-level banner metadata, surfaced in the UI's Reference banner.
+title = "Hub Reference Library"
 source_label = "Seattle Emergency Hubs"
 note = "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use."
 
@@ -256,13 +265,19 @@ is additional, not a replacement.
 
 ### Schema
 
-Top-level keys (all required):
+Top-level keys, required:
 
 | Key | Type | Notes |
 |---|---|---|
 | `source_label` | string | Banner attribution. Surfaced in `index.json`. |
 | `note` | string | Banner copy under the title. Surfaced in `index.json`. |
 | `doc` | array of tables | One entry per document to ship. |
+
+Top-level keys, optional:
+
+| Key | Type | Notes |
+|---|---|---|
+| `title` | string | Library display name, e.g. "Hub Reference Library". UTF-8, must be non-empty after trimming whitespace. Surfaced in `index.json` and rendered as the library tile/page title in the UI. If absent, the SPA falls back to a humanized form of the URL slug. Distinct from `source_label`: `title` names the library; `source_label` attributes its contents. |
 
 Per-`[[doc]]` keys, required:
 
@@ -297,6 +312,9 @@ The build tool MUST enforce, post-parse:
 7. `published` values, when present, match one of `^\d{4}$`,
    `^\d{4}-\d{2}$`, or `^\d{4}-\d{2}-\d{2}$`. Format only; no
    real-world plausibility check.
+8. Top-level `title`, when present, is a string and is non-empty
+   after `.strip()`. (TOML guarantees the type; the build tool
+   guarantees emptiness rules.)
 
 Any failure aborts the build with a clear message naming the failing
 `[[doc]]` (by index and title) and the violated rule.
@@ -656,33 +674,41 @@ neither.
 ### Optional rendering
 
 The Reference section is **invisible until populated.** On portal page
-load, the SPA does:
+load, the SPA fans out from a single discovery endpoint:
 
 ```
-fetch('/hub-docs/index.json')
-  .then(r => r.ok ? r.json() : null)
-  .then(idx => {
-    if (idx) renderReferenceSection(idx);
+fetch('/var/index.json')                            // {"libraries": ["hub-docs", ...]}
+  .then(r => r.ok ? r.json() : { libraries: [] })
+  .then(idx => Promise.all((idx.libraries || []).map(slug =>
+    fetch('/var/' + slug + '/index.json')
+      .then(r => r.ok ? r.json() : null)
+      .then(lib => [slug, lib])
+      .catch(() => [slug, null])
+  )))
+  .then(pairs => {
+    const libraries = Object.fromEntries(pairs.filter(([_, lib]) => lib && typeof lib === 'object'));
+    if (Object.keys(libraries).length) renderReferenceSection(libraries);
     // else: render nothing. No empty state, no error.
   })
 ```
 
-A node with no hub-docs installed returns 404 (no `index.json` to
-serve), the SPA omits the section, and the captive portal is identical
-to today's. This is the only place the UI cares about the hub-docs'
+A node with no libraries installed returns `{"libraries": []}` and the
+SPA omits the section entirely, leaving the captive portal identical
+to today's. This is the only place the UI cares about library
 existence.
 
 ### Surface
 
-Per the mockup attached to CIV-90:
-
-- **Left nav** has a new `REFERENCE` group below `MESHCORE CHANNELS`,
-  containing one tile: `Hub Reference Library`. Tile shows document
-  count and the words "read & download".
+- **Left nav** has a `REFERENCE` group below `MESHCORE CHANNELS`,
+  containing one tile per discovered library. Each tile's title is
+  `index.json.title` if present, else a humanized form of the URL
+  slug ("hub-docs" → "Hub Docs"). The tile shows document count and
+  the words "read & download". The group is omitted entirely when
+  no libraries are installed.
 - **Right pane**, on tile tap, shows:
-  - Banner: title "Hub Reference Library", subtitle "Offline emergency
-    documents", source attribution (`source_label`), the `note` text,
-    document count, "last sync" date (from `built_at`).
+  - Banner: library title, subtitle "Offline emergency documents",
+    source attribution (`source_label`), the `note` text, document
+    count, "last sync" date (from `built_at`).
   - Sectioned flat list, one section per category. Each row shows a
     PDF icon, title, a small language badge for non-`en` docs, and a
     metadata strip (last reviewed date, size).
@@ -696,11 +722,12 @@ Per the mockup attached to CIV-90:
 ### Forced download
 
 The web server adds `Content-Disposition: attachment;
-filename="<filename>"` to responses for paths matching
-`/hub-docs/*.pdf`. This is the only hub-docs-specific code path on the
-server side. Everything else is `SimpleHTTPRequestHandler` doing what
-it already does (mtime caching via `Last-Modified` /
-`If-Modified-Since`).
+filename="<filename>"` to all responses for `/var/<slug>/*.pdf`. This
+is **generic** — any library whose slug is in `/var/index.json`
+inherits attachment-style downloads for its PDFs. There is no
+hub-docs-specific server code. Everything else is
+`SimpleHTTPRequestHandler` doing what it already does (mtime caching
+via `Last-Modified` / `If-Modified-Since`).
 
 ### Why download-only
 
@@ -727,6 +754,13 @@ The hub-docs path is derived from mode, not from config:
 `/usr/local/civicmesh/var/hub-docs` in PROD. There is no
 `web.hub_docs_path` field — making it configurable invites operators
 to point it at the wrong directory.
+
+The URL prefix `/var/` maps 1:1 to `<var_dir>/`. Hub-docs use this
+today; future install-deployed feature content (e.g. the
+source-code browser tracked under CIV-89) follows the same shape
+without further server changes — drop a directory under `<var_dir>/`
+with a parseable `index.json`, and it becomes web-public at
+`/var/<slug>/`.
 
 The build tool runs only in DEV. The install and rollback commands run
 in either mode.
