@@ -279,6 +279,23 @@ prints a counters line. The AP SSID configured in step 4 should
 appear in WiFi scans, and walk-up users on that AP land on the
 captive portal at `http://10.0.0.1/`.
 
+### Install the hub reference library (optional)
+
+CivicMesh nodes can serve a local PDF reference library through
+the captive portal. To install the proof-of-concept Seattle Hub
+library:
+
+```bash
+curl -LO https://github.com/rekab/hub-docs-content/releases/download/v1/hub-docs-20260506T224246Z.zip
+sudo -u civicmesh civicmesh install-hub-docs hub-docs-20260506T224246Z.zip
+```
+
+For newer releases, see
+[`rekab/hub-docs-content` releases](https://github.com/rekab/hub-docs-content/releases).
+
+If you skip this step the captive portal still works — the
+Reference section just doesn't appear in the channel list.
+
 ### Updates after first deploy
 
 Bootstrap is one-shot. To roll new code out to a Pi after the
