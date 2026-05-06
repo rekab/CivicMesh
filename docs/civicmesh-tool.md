@@ -970,7 +970,7 @@ as the `civicmesh` user:
 | 1 | I/O error (zip unreadable, disk full during extract, permission error, `--config` load failed). |
 | 2 | Argument is not a zip / does not parse, or zip member resolves outside the staging dir (zip-slip). |
 | 3 | §3 validation failed on extracted contents. |
-| 4 | `<release_id>/` already populated outside `.incoming/` (collision with a prior install of the same release_id). |
+| 4 | `<release_id>/` already populated (a prior install used this exact release_id). |
 | 10 | Wrong-mode, or invoked as root in prod. |
 
 **Stdout format** (copy of § INSTALL PROCESS / CLI conventions):
