@@ -27,12 +27,6 @@ lang     = "en"
 
 [[doc]]
 category = "Utilities & Home Safety"
-title    = "Earthquake Home Safety Guide"
-file     = "earthquake-home-safety-guide.pdf"
-lang     = "en"
-
-[[doc]]
-category = "Utilities & Home Safety"
 title    = "Household Items That Help in Emergencies"
 file     = "household-items-for-emergencies.pdf"
 lang     = "en"
@@ -68,12 +62,6 @@ file     = "diy-box-fan-air-purifier.pdf"
 lang     = "en"
 
 # --- Power -------------------------------------------------------------------
-
-[[doc]]
-category = "Power"
-title    = "Power Outage Lights"
-file     = "power-outage-lights.pdf"
-lang     = "en"
 
 [[doc]]
 category = "Power"
