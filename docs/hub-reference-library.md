@@ -137,6 +137,7 @@ shapes.
           "filename": "emergency-toilet-instructions-es.pdf",
           "title": "Emergency Toilet — Instructions (ES)",
           "lang": "es",
+          "published": "2024-09",
           "last_reviewed": "2024-10-02",
           "size_bytes": 317440
         }
@@ -158,7 +159,8 @@ shapes.
 | `categories[].docs[].filename` | manifest `[[doc]].file` | Must end in `.pdf`, must be unique across manifest. Same name in zip and once installed. |
 | `categories[].docs[].title` | manifest `[[doc]].title` | Display title. UTF-8, punctuation OK. Displayed verbatim by the UI. |
 | `categories[].docs[].lang` | manifest `[[doc]].lang` | ISO 639-1. `en` renders no badge; other values render a 2-letter uppercase badge (`ES`, `ZH`, `VI`). |
-| `categories[].docs[].last_reviewed` | derived: `os.path.getmtime` | Source PDF's mtime, formatted YYYY-MM-DD in UTC. To bump the date, `touch` the file. |
+| `categories[].docs[].published` | manifest `[[doc]].published`, optional | Date stamped on or implied by the source document, in `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` form. Use for documents with dated content (frequency lists, dated maps); omit for timeless content. Distinct from `last_reviewed` — `published` is when the document was authored, `last_reviewed` is when the captain last touched it. Pass-through from manifest, never derived. |
+| `categories[].docs[].last_reviewed` | derived: `os.path.getmtime` | Source PDF's mtime, formatted YYYY-MM-DD in UTC. Indicates when the captain last handled the file. To bump the date, `touch` the file. |
 | `categories[].docs[].size_bytes` | derived: `os.path.getsize` | Verified by install tool against on-disk size. |
 
 No `pages` field. The page count is not worth a `pypdf` dependency for
@@ -238,6 +240,7 @@ category = "Sanitation"
 title    = "Emergency Toilet — Instructions (ES)"
 file     = "emergency-toilet-instructions-es.pdf"
 lang     = "es"
+published = "2024-09"
 
 [[doc]]
 category = "Sanitation"
@@ -261,7 +264,7 @@ Top-level keys (all required):
 | `note` | string | Banner copy under the title. Surfaced in `index.json`. |
 | `doc` | array of tables | One entry per document to ship. |
 
-Per-`[[doc]]` keys (all required):
+Per-`[[doc]]` keys, required:
 
 | Key | Type | Notes |
 |---|---|---|
@@ -270,18 +273,30 @@ Per-`[[doc]]` keys (all required):
 | `file` | string | Bare filename (no path components), must end in `.pdf`, must be unique across the entire manifest, must exist in the source directory. |
 | `lang` | string | ISO 639-1 code (lowercase, two letters). `en` renders no badge in the UI; other values render a 2-letter uppercase badge. |
 
+Per-`[[doc]]` keys, optional:
+
+| Key | Type | Notes |
+|---|---|---|
+| `published` | string | Date stamped on or implied by the source document, in `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` form. Granularity is the captain's choice — match what the source document actually states ("2025" for a year-stamped map, "2023-02" for "Feb 2023"). Mixed granularities across the manifest are allowed. Use for documents with dated content (frequency lists, dated maps); omit for timeless content. Distinct from `last_reviewed`: `published` is when the document was authored, `last_reviewed` is when the captain last touched it. |
+
 ### Build-tool validation (in addition to TOML grammar)
 
 The build tool MUST enforce, post-parse:
 
-1. All four required top-level keys are present and have the correct
+1. All three required top-level keys are present and have the correct
    type.
-2. Every `[[doc]]` has all four required keys with the correct type.
-3. No `[[doc]]` has unknown keys (defends against typos).
+2. Every `[[doc]]` has all four required keys with the correct type,
+   and any present optional keys with the correct type.
+3. No `[[doc]]` has unknown keys — anything outside the required and
+   optional sets fails the build (defends against typos; no silent
+   ignoring).
 4. `file` values are unique across the manifest.
 5. Every `file` exists at `<source_dir>/<file>` and starts with
    `%PDF-` magic bytes.
 6. `lang` values match `^[a-z]{2}$`.
+7. `published` values, when present, match one of `^\d{4}$`,
+   `^\d{4}-\d{2}$`, or `^\d{4}-\d{2}-\d{2}$`. Format only; no
+   real-world plausibility check.
 
 Any failure aborts the build with a clear message naming the failing
 `[[doc]]` (by index and title) and the violated rule.
@@ -392,10 +407,11 @@ nonetheless).
       gmtime(os.path.getmtime(...)))`.
    e. Stage the file in a build temp directory at
       `hub-docs/<file>`.
-3. Construct `index.json` from the manifest + derived facts. Compute
-   `built_at = utcnow()` and derive `<release_id>` from it. Group
-   docs by category (in first-appearance order); preserve doc order
-   within each category.
+3. Construct `index.json` from the manifest + derived facts. The
+   `published` field, when present in the manifest, is passed through
+   verbatim. Compute `built_at = utcnow()` and derive `<release_id>`
+   from it. Group docs by category (in first-appearance order);
+   preserve doc order within each category.
 4. Write the temp directory to `out/hub-docs-<release_id>.zip.tmp`.
 5. Rename `out/hub-docs-<release_id>.zip.tmp` to
    `out/hub-docs-<release_id>.zip`. **This rename is the atomic
@@ -577,9 +593,11 @@ Per the mockup attached to CIV-90:
     PDF icon, title, a small language badge for non-`en` docs, and a
     metadata strip (last reviewed date, size).
 - **Tap a row** opens a metadata bottom sheet with title, category,
-  language, last reviewed, size, source, and a single
-  `Download PDF` button. The body of the document is **never rendered
-  inline** — only downloaded.
+  language, published date (when present), last reviewed, size,
+  source, and a single `Download PDF` button. `published` is rendered
+  above `last_reviewed` and only appears if the field is present in
+  `index.json`. The body of the document is **never rendered inline**
+  — only downloaded.
 
 ### Forced download
 
