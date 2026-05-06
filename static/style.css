@@ -237,18 +237,6 @@ body {
 .welcome__content {
   padding: 20px 16px;
 }
-.welcome__section {
-  margin-bottom: 20px;
-}
-.welcome__section-title {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--brown-medium);
-  margin-bottom: 12px;
-  padding-left: 4px;
-}
 .welcome__feedback {
   color: var(--accent);
   text-decoration: none;
@@ -281,47 +269,6 @@ body {
 }
 .welcome__start-btn:active {
   background: var(--accent-hover);
-}
-
-/* Info cards (welcome page — not interactive) */
-.info-card {
-  background: var(--surface);
-  border-radius: var(--radius-sm);
-  padding: 14px 16px;
-  margin-bottom: 10px;
-  border-left: 3px solid transparent;
-}
-.info-card--mesh { border-left-color: var(--green); }
-.info-card--local { border-left-color: var(--local-color); }
-.info-card--community { border-left-color: var(--accent); }
-.info-card__row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.info-card__icon {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  font-size: 20px;
-}
-.info-card__icon--mesh { color: var(--green); }
-.info-card__icon--local { color: var(--local-color); }
-.info-card__icon--community { color: var(--accent); }
-.info-card__text { flex: 1; }
-.info-card__text h3 {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 3px;
-  color: var(--text);
-}
-.info-card__text p {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.5;
 }
 
 /* ---- Channel List ---- */
@@ -411,8 +358,8 @@ body {
   flex-shrink: 0;
 }
 .channel-card__icon svg {
-  width: 22px;
-  height: 22px;
+  width: 29px;
+  height: 29px;
 }
 .channel-card__icon--mesh { background: var(--mesh-light); color: var(--mesh-color); }
 .channel-card__icon--local { background: var(--local-light); color: var(--local-color); }
