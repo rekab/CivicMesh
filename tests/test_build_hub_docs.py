@@ -88,7 +88,7 @@ published = "2023-02"
 
 [[doc]]
 category = "Sanitation"
-title = "Emergency Toilet (ES)"
+title = "Emergency Toilet — Instructions (ES)"
 file = "toilet-es.pdf"
 lang = "es"
 published = "2025"
@@ -136,7 +136,11 @@ class HappyPathBuildTest(unittest.TestCase):
                     head = zf.read(name)[:5]
                     self.assertEqual(head, b"%PDF-")
 
-                index = json.loads(zf.read("hub-docs/index.json"))
+                raw_index = zf.read("hub-docs/index.json")
+                # Em-dash titles must round-trip as UTF-8, not —
+                self.assertIn("—".encode("utf-8"), raw_index)
+                self.assertNotIn(b"\\u2014", raw_index)
+                index = json.loads(raw_index)
 
             self.assertEqual(index["schema_version"], 1)
             self.assertEqual(index["built_at"], "2026-04-01T14:32:00Z")

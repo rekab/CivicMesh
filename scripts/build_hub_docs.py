@@ -296,7 +296,7 @@ def write_zip(
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             zf.writestr(
                 "hub-docs/index.json",
-                json.dumps(index, indent=2) + "\n",
+                json.dumps(index, indent=2, ensure_ascii=False) + "\n",
             )
             for fact in doc_facts:
                 zf.write(fact.source_path, f"hub-docs/{fact.filename}")
