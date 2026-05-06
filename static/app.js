@@ -411,7 +411,7 @@ function appendLibraryGroup(wrap) {
         '<div class="channel-card__desc">' + docCount + ' documents · read &amp; download</div>' +
       '</div>' +
       '<div class="channel-card__meta">' +
-        '<div class="channel-card__badge channel-card__badge--library">REFERENCE</div>' +
+        '<div class="channel-card__badge channel-card__badge--library">FILES</div>' +
       '</div>';
     card.setAttribute("data-library", slug);
     card.addEventListener("click", (function(s) {
