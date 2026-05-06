@@ -612,6 +612,100 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _hub_docs_var_dir() -> Path:
+    """Hub-docs <var> root, derived from mode (no config field)."""
+    if _MODE == "prod":
+        return PROD_TREE / "var"
+    return _PROJECT_ROOT / "var"
+
+
+def _load_retention(args: argparse.Namespace) -> int:
+    """Resolve hub_docs_retention_count from config.
+
+    Matrix:
+      --config absent, default config absent  -> default 3 (fresh-node grace)
+      --config absent, default config exists  -> use field (or raise on broken)
+      --config present, file loads cleanly    -> use field
+      --config present, file broken / missing -> raise HubDocsError(exit 1)
+    """
+    from hub_docs import HubDocsError, _HUB_DOCS_RETENTION_DEFAULT
+
+    explicit = getattr(args, "config", None) is not None
+    path = _resolve_config_path(args)
+    if not path.exists():
+        if explicit:
+            raise HubDocsError(
+                f"--config path does not exist: {path}", exit_code=1
+            )
+        return _HUB_DOCS_RETENTION_DEFAULT
+    try:
+        from config import load_config
+        cfg = load_config(str(path))
+    except (ValueError, KeyError, OSError, tomllib.TOMLDecodeError) as e:
+        raise HubDocsError(
+            f"cannot load config at {path}: {e}", exit_code=1
+        )
+    return cfg.limits.hub_docs_retention_count
+
+
+def _cmd_install_hub_docs(args: argparse.Namespace) -> None:
+    if _MODE == "prod" and os.geteuid() == 0:
+        _refuse(
+            "install-hub-docs: must run as the civicmesh user in prod\n"
+            "   try: sudo -u civicmesh civicmesh install-hub-docs ..."
+        )
+    from hub_docs import HubDocsError, install_hub_docs
+
+    var_dir = _hub_docs_var_dir()
+    try:
+        retention = _load_retention(args)
+        result = install_hub_docs(
+            Path(args.zip_path),
+            var_dir=var_dir,
+            retention=retention,
+            dry_run=args.dry_run,
+        )
+    except HubDocsError as e:
+        print(f"civicmesh install-hub-docs: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
+
+    if args.dry_run:
+        print(
+            f"dry_run release_id={result['release_id']} "
+            f"docs={result['docs']}"
+        )
+    else:
+        prev = result["previous"] if result["previous"] else "none"
+        print(
+            f"installed release_id={result['release_id']} "
+            f"previous={prev} pruned={len(result['pruned'])}"
+        )
+
+
+def _cmd_rollback_hub_docs(args: argparse.Namespace) -> None:
+    if _MODE == "prod" and os.geteuid() == 0:
+        _refuse(
+            "rollback-hub-docs: must run as the civicmesh user in prod\n"
+            "   try: sudo -u civicmesh civicmesh rollback-hub-docs ..."
+        )
+    from hub_docs import HubDocsError, rollback_hub_docs
+
+    var_dir = _hub_docs_var_dir()
+    try:
+        result = rollback_hub_docs(var_dir=var_dir, to_id=args.to_id)
+    except HubDocsError as e:
+        print(f"civicmesh rollback-hub-docs: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
+
+    line = (
+        f"rolled_back release_id={result['release_id']} "
+        f"previous={result['previous']}"
+    )
+    if result.get("noop"):
+        line += " noop=true"
+    print(line)
+
+
 def _cmd_promote(args: argparse.Namespace) -> None:
     from promote import run_promote
 
@@ -701,6 +795,13 @@ def main():
     p_promote.add_argument("--from", dest="src_dir", default=".")
     p_promote.add_argument("--dry-run", action="store_true")
 
+    p_install_hd = sub.add_parser("install-hub-docs")
+    p_install_hd.add_argument("zip_path")
+    p_install_hd.add_argument("--dry-run", action="store_true")
+
+    p_rollback_hd = sub.add_parser("rollback-hub-docs")
+    p_rollback_hd.add_argument("--to", dest="to_id", default=None)
+
     p_config = sub.add_parser("config")
     sub_config = p_config.add_subparsers(dest="config_cmd", required=True)
     p_config_show = sub_config.add_parser("show")
@@ -739,6 +840,8 @@ def main():
         "configure": _cmd_configure,
         "apply": _cmd_apply,
         "promote": _cmd_promote,
+        "install-hub-docs": _cmd_install_hub_docs,
+        "rollback-hub-docs": _cmd_rollback_hub_docs,
     }[args.cmd](args)
 
 

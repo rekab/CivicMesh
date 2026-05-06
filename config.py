@@ -87,6 +87,7 @@ class LimitsConfig:
     outbox_idle_reset_sec: int
     outbox_echo_wait_sec: int
     retention_bytes_per_channel: int
+    hub_docs_retention_count: int
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,14 @@ def _load_ap(raw: dict[str, Any]) -> ApConfig:
     return ApConfig(ssid=ssid, channel=channel)
 
 
+def _validate_hub_docs_retention_count(value: int) -> int:
+    if value < 1:
+        raise ValueError(
+            f"limits.hub_docs_retention_count must be >= 1, got {value}"
+        )
+    return value
+
+
 def _validate_network_consistency(network: NetworkConfig) -> None:
     if network.ip not in network.subnet_cidr:
         raise ValueError(
@@ -264,6 +273,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "outbox_idle_reset_sec": cfg.limits.outbox_idle_reset_sec,
             "outbox_echo_wait_sec": cfg.limits.outbox_echo_wait_sec,
             "retention_bytes_per_channel": cfg.limits.retention_bytes_per_channel,
+            "hub_docs_retention_count": cfg.limits.hub_docs_retention_count,
         },
         "logging": {
             "log_dir": cfg.logging.log_dir,
@@ -364,6 +374,9 @@ def load_config(path: str) -> AppConfig:
             outbox_idle_reset_sec=int(limits.get("outbox_idle_reset_sec", 60)),
             outbox_echo_wait_sec=int(limits.get("outbox_echo_wait_sec", 8)),
             retention_bytes_per_channel=int(limits.get("retention_bytes_per_channel", 10 * 1024 * 1024 * 1024)),
+            hub_docs_retention_count=_validate_hub_docs_retention_count(
+                int(limits.get("hub_docs_retention_count", 3))
+            ),
         ),
         logging=LoggingConfig(
             log_dir=str(logging_raw.get("log_dir", "logs")),
