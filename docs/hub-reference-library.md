@@ -488,6 +488,47 @@ ssh user@some-node \
     'sudo -u civicmesh civicmesh install-hub-docs /tmp/hub-docs-20260401T143200Z.zip'
 ```
 
+### CLI conventions
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. No-op rollback (target == current) returns 0. |
+| 1 | I/O error (zip unreadable, disk full during extract, permission error). |
+| 2 | Argument is not a zip / does not parse. |
+| 3 | §3 validation failed on extracted contents. |
+| 4 | Destination-state error (install: `<release_id>/` already exists outside `.incoming/`; rollback: target missing, or only one release present). |
+| 10 | Wrong-mode, or invoked as root in prod. |
+
+**Stdout format** — terse, machine-readable, matching the existing
+`outbox cancel` / `cleanup` style:
+
+- install success: `installed release_id=<id> previous=<id_or_none> pruned=<N>`
+- rollback success: `rolled_back release_id=<id> previous=<id>`
+  (with ` noop=true` appended on the already-current case)
+- errors go to stderr, prefixed `civicmesh install-hub-docs: ` /
+  `civicmesh rollback-hub-docs: `, matching existing CLI error
+  conventions.
+
+**`--dry-run` for install** runs steps 1–5 (mkdir, peek
+`index.json`, extract to `.incoming/`, validate per §3), then
+`rm -rf` the incoming directory and exits 0 without promoting or
+swapping. Prints the would-be `release_id` and the document count
+from the validated `index.json`. Useful for verifying a zip on a
+node before committing. No `--dry-run` for rollback — rollback is
+already pure symlink-swap with no extraction to preview.
+
+**No confirmation prompts.** The operator typed the zip path
+explicitly; install is atomic and instantly reversible via
+rollback. The `outbox clear`-style `--skip_confirmation` flag does
+not apply.
+
+**`--config PATH`** is accepted by both subcommands and subject to
+the standard refusal rules
+(`docs/civicmesh-tool.md` § DEV vs PROD), for CLI consistency,
+even though neither subcommand currently reads the config.
+
 ### Filesystem layout
 
 ```
@@ -501,15 +542,26 @@ ssh user@some-node \
 ```
 
 DEV `<var>` is `<project_root>/var/`. PROD `<var>` is
-`/usr/local/civicmesh/var/`. The web server's `web.hub_docs_path`
-config field points at `<var>/hub-docs` (the symlink, not a release
-directory directly).
+`/usr/local/civicmesh/var/`. The web server reads
+`<var>/hub-docs/` (the symlink, never a release directory
+directly).
+
+### Prod-root refusal
+
+`install-hub-docs` and `rollback-hub-docs` both write under
+`<var>/` (owned `civicmesh:civicmesh`). Running as root in prod
+would create root-owned files the service user can't later touch,
+mirroring the failure mode `configure` guards against. Both
+commands refuse to run as root in prod, exit 10. Recommend
+invoking as `sudo -u civicmesh civicmesh install-hub-docs ...`.
 
 ### Procedure
 
 1. **Ensure `<var>/hub-docs.releases/` exists.** `mkdir -p` it.
    First install on a fresh node has nothing there; this step makes
-   the install self-bootstrapping.
+   the install self-bootstrapping. On first install, the
+   `<var>/hub-docs` symlink does not yet exist; step 7's `mv -T`
+   creates it implicitly. No branch is needed in the install code.
 2. **Validate zip is a zip.** Refuse anything else.
 3. **Peek at `index.json`** without committing to extraction. Parse
    `built_at` and derive `<release_id>` per §2.
@@ -517,11 +569,23 @@ directory directly).
    `<var>/hub-docs.releases/<release_id>/.incoming/`. If
    `<var>/hub-docs.releases/<release_id>/` already exists outside
    `.incoming/` (i.e., a prior install used this exact release_id),
-   fail.
+   fail. If extraction itself fails partway (disk full, corrupt zip
+   member, process interrupt), `rm -rf` the incoming directory and
+   abort. Same cleanup contract as step 5.
 5. **Apply all validation rules in §3** to the extracted contents. On
    any failure, `rm -rf` the incoming directory and abort.
 6. **Promote incoming to release**: rename
    `<release_id>/.incoming/` to `<release_id>/`.
+
+   *Orphan-release recovery.* If the process is interrupted between
+   the `mv .incoming → <release_id>` rename here and the symlink
+   swap in step 7, the new release directory exists but is not
+   active. Re-running install with the same zip will hit step 4's
+   "already exists" check and refuse. Operator recourse:
+   `rm -rf <var>/hub-docs.releases/<release_id>/` and re-run
+   install. Document this explicitly so it's not a surprise during
+   a real incident.
+
 7. **Atomic symlink swap**:
 
    ```
@@ -533,14 +597,42 @@ directory directly).
    server (mid-download) survive because the kernel keeps the inode
    alive until the handle closes.
 
-8. **Prune** old releases beyond the configured retention count
-   (default keep last 3).
+8. **Prune** old releases beyond the configured retention count.
+
+   - Pruning keeps the N most recent release directories under
+     `hub-docs.releases/`, ordered by lex order on `release_id`
+     (chronological, given the `YYYYMMDDTHHMMSSZ` format).
+   - The active symlink target is **always** excluded from pruning,
+     even if it would otherwise fall outside the keep-window. After
+     `rollback-hub-docs --to <old_id>`, the active target is no
+     longer the most-recent release; pruning must read the symlink
+     and exclude its target unconditionally. Without this rule, a
+     rollback can prune itself.
+   - Retention count comes from
+     `[limits].hub_docs_retention_count` (default 3 if unset).
+     Cross-reference § CONFIGURATION FILE in
+     `docs/civicmesh-tool.md`.
 
 ### Rollback
 
-Same symlink-swap mechanism, target an older release directory under
-`hub-docs.releases/`. No re-extract. Operator can `ls
-<var>/hub-docs.releases/` to see what's available.
+- `civicmesh rollback-hub-docs` (no flag): roll back to the most
+  recent release that is **not** the current symlink target. "Most
+  recent" = lex-greatest `release_id` under `hub-docs.releases/`.
+  If no such release exists (only one release is installed), exit
+  nonzero with a message naming the current release.
+- `civicmesh rollback-hub-docs --to <release_id>`: roll back to
+  the named release.
+  - If `<release_id>` does not exist under
+    `hub-docs.releases/`, exit nonzero; message lists available
+    `release_id`s.
+  - If `<release_id>` is already the current symlink target,
+    exit 0 with `rolled_back release_id=<id> previous=<id>
+    noop=true` and perform no filesystem changes.
+  - Otherwise: same atomic symlink-swap as install step 7.
+- Rollback never extracts and never validates — the target was
+  already extracted and validated when it was originally
+  installed. If that release is now corrupt on disk, that's an
+  operator problem, not a rollback-tool problem.
 
 ### Why symlink swap, not directory rename
 
@@ -623,8 +715,13 @@ loses the document.
 | Source PDFs | `<project_root>/content/hub-docs/*.pdf` | (not present) |
 | Build script | `<project_root>/scripts/build_hub_docs.py` | (not present) |
 | Build output | `<project_root>/out/hub-docs-*.zip` | (not present) |
-| Hub-docs path (`web.hub_docs_path`) | `<project_root>/var/hub-docs` | `/usr/local/civicmesh/var/hub-docs` |
 | Releases parent | `<project_root>/var/hub-docs.releases/` | `/usr/local/civicmesh/var/hub-docs.releases/` |
+
+The hub-docs path is derived from mode, not from config:
+`<project_root>/var/hub-docs` in DEV,
+`/usr/local/civicmesh/var/hub-docs` in PROD. There is no
+`web.hub_docs_path` field — making it configurable invites operators
+to point it at the wrong directory.
 
 The build tool runs only in DEV. The install and rollback commands run
 in either mode.

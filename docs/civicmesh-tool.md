@@ -426,6 +426,7 @@ outbox_max_delay_sec = 10
 outbox_idle_reset_sec = 60
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240   # 10 GiB
+hub_docs_retention_count = 3            # number of hub-docs releases retained on disk; oldest pruned on install (CIV-93)
 
 [logging]
 log_level = "INFO"
@@ -464,6 +465,10 @@ backoff_cap_sec = 3600.0
 | `[logging]` | infrastructure | all |
 | `[debug]` | dev-only | web (only) |
 | `[recovery]` | recovery state machine | mesh_bot only |
+
+Within `[limits]`, `hub_docs_retention_count` is the exception:
+consumed by `civicmesh install-hub-docs`, not by the running web
+or mesh services.
 
 `[network]` and `[ap]` are split because: `[network]` is "what address
 space, what interface, what DHCP" — pure L2/L3 facts, consumed only by
