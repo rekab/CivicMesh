@@ -31,6 +31,33 @@ the captive portal, and it lands on the Hub's local feed
 and on the LoRa mesh — without taking a slot on the ACS
 net or a minute of the Radio Operator's time.
 
+## Where this fits
+
+Emergency comms is a ladder. Each tier trades capability
+for accessibility, and each tier reaches people the tier
+above couldn't.
+
+- **Ham (Amateur Radio / ACS)** — license, exam, culture.
+  High capability. Narrow operator base. In Seattle, ACS
+  runs the high-priority net out of the Hubs.
+- **GMRS** — $35 FCC license, no exam, family-shareable.
+  Repeaters and mobile rigs. A growing regional repeater
+  network.
+- **FRS** — no license. Bubble-pack walkie-talkies. 2W,
+  fixed antenna, voice only, limited range.
+- **LoRa mesh (Meshtastic, MeshCore)** — no license. Text
+  over neighbor-to-neighbor radios. Requires a radio and
+  an app paired to a phone.
+- **CivicMesh** — no license, no radio to buy, no app to
+  install. Any phone in WiFi range reads and posts.
+
+CivicMesh doesn't replace the tiers above it; it layers
+under them. Each tier exists because it reaches people
+the tier above couldn't, and CivicMesh sits at the bottom
+of that ladder, where the largest population of
+currently-unreached people is. It's a complement to ACS
+and the mesh community, not a competitor.
+
 ## Project status
 
 CivicMesh is a working prototype, not a finished product.
@@ -104,6 +131,42 @@ forward other nodes' traffic. Airtime consumed scales with
 foot traffic at the Hub, not with mesh activity. All
 limits are configurable; defaults are conservative on
 purpose.
+
+## Reference documents
+
+CivicMesh's captive portal can optionally serve a curated
+set of static reference PDFs alongside the message board.
+Mesh messaging carries current information ("the gas main
+on 4th smells funny"); reference docs carry stable
+information — how to shut off utilities after a quake,
+how to disinfect water, how to use a water heater as a
+40-gallon reservoir, how to set up an emergency toilet.
+Documents are readable in the portal and downloadable to
+the phone before the user leaves WiFi range, so the
+references survive once the AP is out of reach.
+
+The mechanism is content-agnostic. The first content set
+is the Hub Reference Library, mirroring the Seattle
+Emergency Hubs printed handouts and driving the design.
+The runtime treats the contents as opaque static files;
+the same mechanism can serve any other curated set — a
+different community organization, hackerspace, or
+regional preparedness group editing the manifest and
+shipping a different zip.
+
+- **Optional.** A node with no docs installed shows no
+  Reference section — the captive portal is identical to
+  a messaging-only deployment.
+- **Read-only and curated.** Walk-up users cannot upload;
+  an operator edits a TOML manifest, runs a build, and
+  ships a zip to the node.
+- **Single-file distribution.** Releases are zip
+  artifacts installed atomically via
+  `civicmesh install-hub-docs`, with rollback to any
+  previously-installed release.
+
+Currently in development; design lives in
+[`docs/hub-reference-library.md`](docs/hub-reference-library.md).
 
 ## Hardware
 
@@ -356,6 +419,7 @@ Deployment and operations:
 Feature designs:
 - [Message lifecycle](docs/message_lifecycle.md) — outbox state machine
 - [Heard-count / echo tracking](docs/heard_count_design.md)
+- [Reference documents](docs/hub-reference-library.md) — offline PDFs served from the captive portal; Hub Reference Library is the first content set
 
 Radio / hardware:
 - [Recovery implementation](docs/recovery.md) — state machine, ladder, observability
