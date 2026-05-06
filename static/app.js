@@ -482,7 +482,7 @@ function buildLibDocRow(slug, categoryName, doc) {
     langChip = '<span class="lib-doc__lang-chip">' + escapeHtml(String(doc.lang).toUpperCase()) + '</span>';
   }
   var meta = [];
-  if (doc.last_reviewed) meta.push("last reviewed " + escapeHtml(doc.last_reviewed));
+  if (doc.published) meta.push("published " + escapeHtml(doc.published));
   if (typeof doc.size_bytes === "number") meta.push(fmtBytesShort(doc.size_bytes));
   row.innerHTML =
     '<div class="lib-doc__icon" aria-hidden="true"><span class="lib-doc__icon-label">PDF</span></div>' +
