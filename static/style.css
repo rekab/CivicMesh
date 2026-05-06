@@ -1728,8 +1728,26 @@ body {
 }
 .lib__list {
   flex: 1;
+  /* overscroll-behavior-y: contain blocks scroll-chain into the
+     document. Without it, Android's captive-portal WebView treats
+     a pull-past-top on an inner scroller as "validate this network"
+     and reloads the page, dropping the user mid-browse. Same
+     defense as .chat__messages. The wide visible scrollbar is the
+     desktop affordance; on touch devices the indicator only shows
+     during scroll. */
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 10px 12px 24px;
+}
+.lib__list::-webkit-scrollbar { width: 14px; }
+.lib__list::-webkit-scrollbar-track { background: transparent; }
+.lib__list::-webkit-scrollbar-thumb {
+  background: rgba(58, 48, 36, 0.25);
+  border-radius: 4px;
+}
+.lib__list::-webkit-scrollbar-thumb:active {
+  background: rgba(58, 48, 36, 0.4);
 }
 .lib__category {
   margin-top: 16px;
@@ -1848,8 +1866,24 @@ body {
   border-top-left-radius: 16px;
   border-top-right-radius: 16px;
   max-height: 80vh;
+  /* See .lib__list comment: overscroll-behavior-y: contain stops a
+     pull-past-top inside the bottom sheet from chaining into the
+     document and triggering an Android captive-portal reload. The
+     sheet can scroll on tall detail content (long category names,
+     long publish/source strings, etc.). */
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   position: relative;
+}
+.lib-detail__sheet::-webkit-scrollbar { width: 14px; }
+.lib-detail__sheet::-webkit-scrollbar-track { background: transparent; }
+.lib-detail__sheet::-webkit-scrollbar-thumb {
+  background: rgba(58, 48, 36, 0.25);
+  border-radius: 4px;
+}
+.lib-detail__sheet::-webkit-scrollbar-thumb:active {
+  background: rgba(58, 48, 36, 0.4);
 }
 .lib-detail__handle {
   width: 36px;
