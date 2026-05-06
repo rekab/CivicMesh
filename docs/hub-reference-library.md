@@ -680,7 +680,7 @@ Three sub-issues hang off it. The schema in §3 is the contract; each
 sub-issue can be developed against fixtures without the others
 existing.
 
-### CIV-90a — Build tool
+### CIV-91 — Build tool
 
 Implements §5. Standalone script. Produces a valid zip per §6 from
 the curated `manifest.toml` and PDFs in `content/hub-docs/`. Includes
@@ -697,7 +697,7 @@ manifests with line numbers.
 gets pinned by writing this. The other two sub-issues use real zips
 as fixtures rather than hand-crafted JSON.
 
-### CIV-90b — UI display
+### CIV-92 — UI display
 
 Implements §8. Adds the Reference section to the captive portal,
 including the metadata bottom sheet and the forced-download endpoint
@@ -712,13 +712,13 @@ portal is unchanged.
 extracted by hand as fixtures, and this is what gates "demo-able" for
 Toorcamp.
 
-### CIV-90c — Install tool
+### CIV-93 — Install tool
 
 Implements §7. Adds `civicmesh install-hub-docs` and
 `civicmesh rollback-hub-docs` to the CLI per `docs/civicmesh-tool.md`
 conventions.
 
-Acceptance: given a zip from CIV-90a, installs it onto a running node
+Acceptance: given a zip from CIV-91, installs it onto a running node
 without restarting `civicmesh-web`, with atomic visibility (no 404 mid
 swap). Rollback to the previous release works without re-extract.
 Validation failures abort cleanly without modifying the running
