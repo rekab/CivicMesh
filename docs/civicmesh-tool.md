@@ -426,7 +426,7 @@ outbox_max_delay_sec = 10
 outbox_idle_reset_sec = 60
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240   # 10 GiB
-hub_docs_retention_count = 3            # number of hub-docs releases retained on disk; oldest pruned on install (CIV-93)
+hub_docs_retention_count = 3            # hub-docs releases retained; oldest pruned on install
 
 [logging]
 log_level = "INFO"
