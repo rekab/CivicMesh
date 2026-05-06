@@ -234,6 +234,13 @@ Deployment:
   promote             Push dev tree to prod tree, restart services.        [NEW]
                       Dev-mode only.
 
+Hub-docs releases:
+  # A separate category from Deployment: content updates (curated
+  # PDFs) ship on their own cadence — typically more often than
+  # system/config deployment.
+  install-hub-docs    Install a hub-docs release zip; atomic swap.         [NEW]
+  rollback-hub-docs   Roll the hub-docs symlink back to a prior release.   [NEW]
+
 Operations (runtime):
   stats               Print message/session/outbox/vote counts.            [IMPL]
   cleanup             Run retention cleanup.                               [IMPL]
@@ -920,6 +927,161 @@ bug. This is belt-and-suspenders safety.
 
 ---
 
+### install-hub-docs                                                     [NEW]
+
+```
+PROD:  sudo -u civicmesh civicmesh install-hub-docs <zip> [--dry-run] [--config PATH]
+DEV:   uv run civicmesh install-hub-docs <zip> [--dry-run] [--config PATH]
+```
+
+Install a hub-docs release zip onto the node. Extracts to a staged
+incoming directory, applies the §3 install-time validation rules,
+promotes to a release directory, and atomically swaps the
+`<var>/hub-docs` symlink to point at the new release. See
+`docs/hub-reference-library.md` § INSTALL PROCESS for the
+step-by-step procedure, the validation rules in § THE CONTRACT:
+`index.json` SCHEMA, and the pruning semantics (including the
+rollback-self-prune protection).
+
+The atomic swap means an in-flight HTTP request reading from the
+old release survives the install: the kernel keeps the old
+release's inodes alive until the request closes the file
+descriptor. No service restart is needed.
+
+**Prod-root refusal:** `install-hub-docs` refuses to run as root in
+prod (exit 10). It writes under `<var>/hub-docs.releases/`, owned
+`civicmesh:civicmesh`. Running as root would create root-owned
+release directories the service user cannot later touch (mirror of
+the failure mode `configure` guards against). The fix is to invoke
+as the `civicmesh` user:
+`sudo -u civicmesh civicmesh install-hub-docs ...`.
+
+**Options:**
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Run the install through validation only — extract, peek `index.json`, validate per §3, then `rm -rf` the incoming directory. The symlink is not touched, no release directory persists. Stdout names the would-be release_id and document count. Useful to verify a zip on a node before committing. |
+
+**Exit codes** (copy of § INSTALL PROCESS / CLI conventions):
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | I/O error (zip unreadable, disk full during extract, permission error, `--config` load failed). |
+| 2 | Argument is not a zip / does not parse, or zip member resolves outside the staging dir (zip-slip). |
+| 3 | §3 validation failed on extracted contents. |
+| 4 | `<release_id>/` already populated outside `.incoming/` (collision with a prior install of the same release_id). |
+| 10 | Wrong-mode, or invoked as root in prod. |
+
+**Stdout format** (copy of § INSTALL PROCESS / CLI conventions):
+
+- success: `installed release_id=<id> previous=<id_or_none> pruned=<N>`.
+  On first install, `previous=none`.
+- `--dry-run`: `dry_run release_id=<id> docs=<N>`.
+- errors go to stderr, prefixed `civicmesh install-hub-docs: `.
+
+**Examples:**
+
+```bash
+# Build on dev, ship to a node, install:
+uv run python scripts/build_hub_docs.py \
+    --source content/hub-docs/ --out out/
+ZIP=out/hub-docs-20260506T143200Z.zip
+scp "$ZIP" user@hub-fremont:/tmp/
+ssh user@hub-fremont \
+    "sudo -u civicmesh civicmesh install-hub-docs /tmp/$(basename $ZIP)"
+```
+
+```bash
+# Verify a zip end-to-end without committing:
+sudo -u civicmesh civicmesh install-hub-docs /tmp/hub-docs-*.zip --dry-run
+```
+
+```bash
+# Multi-node fan-out from a build host (per § RELEASE PROCEDURE
+# in docs/hub-reference-library.md):
+ZIP=out/hub-docs-20260506T143200Z.zip
+for node in toorcamp-01 toorcamp-02 toorcamp-03; do
+  scp "$ZIP" user@$node:/tmp/
+  ssh user@$node \
+      "sudo -u civicmesh civicmesh install-hub-docs /tmp/$(basename $ZIP)"
+done
+```
+
+---
+
+### rollback-hub-docs                                                    [NEW]
+
+```
+PROD:  sudo -u civicmesh civicmesh rollback-hub-docs [--to <release_id>] [--config PATH]
+DEV:   uv run civicmesh rollback-hub-docs [--to <release_id>] [--config PATH]
+```
+
+Roll the `<var>/hub-docs` symlink back to a prior release directory
+under `<var>/hub-docs.releases/`. No re-extract, no validation — the
+target was already extracted and validated when it was originally
+installed. Same atomic symlink-swap mechanism as install. See
+`docs/hub-reference-library.md` § INSTALL PROCESS / Rollback for
+the full semantics.
+
+With no flag, rolls back to the lex-greatest `release_id` that is
+*not* the current symlink target. With `--to <release_id>`, rolls
+back to the named release. Rollback to the *current* target is a
+documented no-op: exit 0, stdout includes `noop=true`, no
+filesystem change.
+
+**Prod-root refusal:** `rollback-hub-docs` refuses to run as root in
+prod (exit 10). It writes the symlink under `<var>/`, owned
+`civicmesh:civicmesh`. Same rationale as `install-hub-docs`. The
+fix is `sudo -u civicmesh civicmesh rollback-hub-docs ...`.
+
+**Options:**
+
+| Flag | Effect |
+|---|---|
+| `--to <release_id>` | Roll back to the named release. The id must exist as a directory under `<var>/hub-docs.releases/`. If `--to` is omitted, picks the lex-greatest non-current release. |
+
+**Exit codes** (copy of § INSTALL PROCESS / CLI conventions):
+
+| Code | Meaning |
+|---|---|
+| 0 | Success, or no-op (`--to` matches current target). |
+| 1 | I/O error (permission, symlink read failure). |
+| 4 | Rollback target missing (`--to <id>` not present), or only one release installed (no-flag form has nothing to roll back to). |
+| 10 | Wrong-mode, or invoked as root in prod. |
+
+(Codes 2 and 3 from the install table do not apply: rollback never
+opens a zip and never validates contents.)
+
+**Stdout format** (copy of § INSTALL PROCESS / CLI conventions):
+
+- success: `rolled_back release_id=<id> previous=<id>`.
+- no-op (`--to` matches current): `rolled_back release_id=<id> previous=<id> noop=true`.
+- errors go to stderr, prefixed `civicmesh rollback-hub-docs: `.
+
+**Examples:**
+
+```bash
+# Roll back to the most recent prior release (typical "undo last install"):
+ssh user@hub-fremont \
+    "sudo -u civicmesh civicmesh rollback-hub-docs"
+```
+
+```bash
+# Roll back to a specific release; the id is the directory name
+# under /usr/local/civicmesh/var/hub-docs.releases/:
+ssh user@hub-fremont \
+    "sudo -u civicmesh civicmesh rollback-hub-docs --to 20260315T093015Z"
+```
+
+```bash
+# List available rollback targets on a node:
+ssh user@hub-fremont \
+    "ls /usr/local/civicmesh/var/hub-docs.releases/"
+```
+
+---
+
 ### config show                                                          [NEW]
 
 ```
@@ -1113,6 +1275,32 @@ uv run civicmesh apply --dry-run               # would-be-rendered diff vs prod 
 uv run civicmesh promote --from . --dry-run    # what promote would do
 uv run civicmesh promote --from .              # commit
 ```
+
+### Shipping new hub-docs to a node
+
+```bash
+# On the dev box: refresh the curated PDFs in content/hub-docs/,
+# edit manifest.toml if needed, then build the zip.
+cd ~/code/CivicMesh
+uv run python scripts/build_hub_docs.py \
+    --source content/hub-docs/ --validate    # quick parseability check
+uv run python scripts/build_hub_docs.py \
+    --source content/hub-docs/ --out out/
+
+# Ship and install. --dry-run first if you want to validate the zip
+# on the node before committing the symlink swap.
+ZIP=$(ls -t out/hub-docs-*.zip | head -1)
+scp "$ZIP" user@hub-fremont:/tmp/
+ssh user@hub-fremont \
+    "sudo -u civicmesh civicmesh install-hub-docs /tmp/$(basename $ZIP)"
+
+# If the new release surfaces a problem, roll back without re-shipping:
+ssh user@hub-fremont \
+    "sudo -u civicmesh civicmesh rollback-hub-docs"
+```
+
+See `docs/hub-reference-library.md` § RELEASE PROCEDURE for the
+multi-node fan-out variant.
 
 ---
 
@@ -1348,6 +1536,10 @@ setup lands.
 
 - `config.toml.example` (in repo): annotated reference with all
   fields.
+- `docs/hub-reference-library.md`: design doc for the hub-docs
+  feature. Source of truth for the `index.json` schema, install
+  procedure, validation rules, pruning semantics, and rollback —
+  the *why* behind `install-hub-docs` / `rollback-hub-docs`.
 - `meshcore_py-README.md`: protocol reference for the radio side.
 - `failure-modes.md`, `boot-and-reset.md`, `heltec-recovery.md`:
   runtime failure handling, all of which `civicmesh apply` should
