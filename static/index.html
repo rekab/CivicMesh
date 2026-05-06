@@ -215,6 +215,21 @@
     </button>
   </div>
 
+  <!-- VIEW: Reference Library -->
+  <div class="view" id="viewLibrary">
+    <div class="lib">
+      <div class="lib__header">
+        <button class="lib__back" id="libBackBtn" aria-label="Back to channels">&larr;</button>
+        <div class="lib__title-wrap">
+          <div class="lib__title" id="libTitle">Loading&hellip;</div>
+          <div class="lib__title-sub">Offline emergency documents</div>
+        </div>
+      </div>
+      <div class="lib__provenance" id="libProvenance"></div>
+      <div class="lib__list" id="libList"></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Compose Modal -->
@@ -448,6 +463,24 @@
       <span>Timestamps in local time.</span>
       <span>All stats local to this node.</span>
     </footer>
+  </div>
+</aside>
+
+<!-- Library document detail (bottom sheet) -->
+<div class="lib-detail__overlay" id="libDetailOverlay"></div>
+<aside class="lib-detail" id="libDetailSheet" role="dialog" aria-labelledby="libDetailTitle" aria-modal="true">
+  <div class="lib-detail__sheet">
+    <div class="lib-detail__handle" aria-hidden="true"></div>
+    <button type="button" class="lib-detail__close" id="libDetailCloseBtn" aria-label="Close">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+    <div class="lib-detail__preview" aria-hidden="true">
+      <span class="lib-doc__icon-label">PDF</span>
+    </div>
+    <h2 id="libDetailTitle" class="lib-detail__title">&mdash;</h2>
+    <div class="lib-detail__sub" id="libDetailSub">&mdash;</div>
+    <dl class="lib-detail__rows" id="libDetailRows"></dl>
+    <a id="libDetailDownload" class="lib-detail__btn" href="#" download>Download PDF</a>
   </div>
 </aside>
 

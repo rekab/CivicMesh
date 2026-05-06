@@ -3,6 +3,8 @@ import html as html_mod
 import http.server
 import json
 import os
+import pathlib
+import posixpath
 import re
 import secrets
 import shutil
@@ -11,6 +13,15 @@ import urllib.parse
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any, Optional
+
+PROD_TREE = pathlib.Path("/usr/local/civicmesh")
+
+
+def _var_dir() -> pathlib.Path:
+    here = pathlib.Path(__file__).resolve()
+    if here.is_relative_to(PROD_TREE):
+        return PROD_TREE / "var"
+    return here.parent / "var"
 
 from config import load_config
 from database import (
@@ -167,7 +178,75 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if cookie:
             self.send_header("Set-Cookie", cookie)
             self._set_cookie = None
+        attachment = getattr(self, "_force_attachment", None)
+        if attachment:
+            safe = urllib.parse.quote(attachment, safe="")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{safe}"',
+            )
+            self._force_attachment = None
         super().end_headers()
+
+    def translate_path(self, path: str) -> str:
+        bare = urllib.parse.urlparse(path).path
+        if bare.startswith("/var/"):
+            var_dir = getattr(self.server, "var_dir", None)
+            if var_dir is None:
+                return super().translate_path(path)
+            rel = path[len("/var/"):]
+            orig = self.directory
+            self.directory = str(var_dir)
+            try:
+                return super().translate_path("/" + rel)
+            finally:
+                self.directory = orig
+        return super().translate_path(path)
+
+    def _discovered_slugs(self) -> set[str]:
+        var_dir = getattr(self.server, "var_dir", None)
+        log = self.server.log
+        if var_dir is None or not var_dir.exists():
+            return set()
+        out: set[str] = set()
+        for entry in var_dir.iterdir():
+            try:
+                resolved = entry.resolve()
+            except OSError:
+                continue
+            if not resolved.is_dir():
+                continue
+            idx = entry / "index.json"
+            if not idx.is_file():
+                continue
+            try:
+                with idx.open("rb") as f:
+                    obj = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                log.warning(
+                    "var:unparseable_index slug=%s err=%s",
+                    entry.name, e,
+                )
+                continue
+            if not isinstance(obj, dict):
+                log.warning(
+                    "var:non_object_index slug=%s", entry.name,
+                )
+                continue
+            out.add(entry.name)
+        return out
+
+    def _send_var_index_json(self) -> None:
+        slugs = sorted(self._discovered_slugs())
+        body = json.dumps(
+            {"libraries": slugs}, ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt: str, *args) -> None:
         # Redirect stdlib logging to our logger (set on server object)
@@ -605,6 +684,32 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         mac_address=mac,
                         log=log,
                     )
+            if path == "/var/index.json":
+                if host not in accepted_hosts and not allow_any_host:
+                    self.send_response(HTTPStatus.FOUND)
+                    self.send_header("Location", f"{portal_url}/")
+                    self.end_headers()
+                    return
+                self._send_var_index_json()
+                return
+            if path.startswith("/var/"):
+                if host not in accepted_hosts and not allow_any_host:
+                    self.send_response(HTTPStatus.FOUND)
+                    self.send_header("Location", f"{portal_url}/")
+                    self.end_headers()
+                    return
+                segs = path.split("/", 3)  # ['', 'var', '<slug>', ...]
+                slug = segs[2] if len(segs) >= 3 else ""
+                if slug not in self._discovered_slugs():
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                fs_path = self.translate_path(path)
+                if os.path.isdir(fs_path):
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                if path.lower().endswith(".pdf"):
+                    self._force_attachment = posixpath.basename(path)
+                return super().do_GET()
             if path == "/" or path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path.endswith(".svg"):
                 if host not in accepted_hosts and not allow_any_host:
                     self.send_response(HTTPStatus.FOUND)
@@ -993,6 +1098,7 @@ def run():
             self.db_cfg = db_cfg
             self.log = log
             self.sec = sec
+            self.var_dir = _var_dir()
             # Feedback file lives alongside the database
             db_dir = os.path.dirname(os.path.abspath(cfg.db_path)) or "."
             self.feedback_path = os.path.join(db_dir, "feedback.jsonl")

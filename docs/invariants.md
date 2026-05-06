@@ -18,3 +18,4 @@
 - Portal hostnames must not use `.local` (iOS bypasses unicast DNS for `.local` names; see `docs/ios-captive-portal-notes.md`).
 - Portal hostnames must not use `.local` (iOS bypasses unicast DNS for `.local` names; see `docs/ios-captive-portal-notes.md`).
 - Provisioning must run `apt full-upgrade` and reboot before deployment (older kernels have a `brcmfmac` P2P crash triggered by nearby iOS devices; see `docs/ios-captive-portal-notes.md`).
+- Anything under `<var_dir>/<slug>/` whose `<slug>` appears in `/var/index.json` is web-public via `/var/<slug>/` (read-only). Slugs without a parseable `index.json` are not surfaced and not reachable.

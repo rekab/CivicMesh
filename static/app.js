@@ -188,6 +188,8 @@ let state = {
   history: [],
   live: [],
   meshChannelNames: new Set(),
+  libraries: {},
+  activeLibrary: null,
 };
 
 /* ---- View switching ---- */
@@ -203,6 +205,7 @@ function showView(id) {
     $("viewChannels").classList.add("active");
     $("viewWelcome").classList.remove("active");
     $("viewChat").classList.remove("active");
+    $("viewLibrary").classList.remove("active");
     $(id).classList.add("active");
   } else {
     // On mobile, only one view at a time.
@@ -216,6 +219,7 @@ function showWelcome() {
     // On desktop, show welcome alongside channel sidebar
     $("viewChannels").classList.add("active");
     $("viewChat").classList.remove("active");
+    $("viewLibrary").classList.remove("active");
     $("viewWelcome").classList.add("active");
   } else {
     document.querySelectorAll(".view").forEach(function(v) { v.classList.remove("active"); });
@@ -225,9 +229,11 @@ function showWelcome() {
 
 function showChannels() {
   localStorage.setItem("civicmesh_seen_welcome", "1");
+  state.activeLibrary = null;
   if (isDesktop()) {
     // On desktop, channels is always visible; show welcome or chat in main area
     $("viewChannels").classList.add("active");
+    $("viewLibrary").classList.remove("active");
     // If no active channel, show welcome; otherwise keep chat
     if (!state.activeChannel) {
       $("viewWelcome").classList.add("active");
@@ -237,16 +243,30 @@ function showChannels() {
     document.querySelectorAll(".view").forEach(function(v) { v.classList.remove("active"); });
     $("viewChannels").classList.add("active");
   }
+  renderChannels();
 }
 
 function showChat() {
   if (isDesktop()) {
     $("viewChannels").classList.add("active");
     $("viewWelcome").classList.remove("active");
+    $("viewLibrary").classList.remove("active");
     $("viewChat").classList.add("active");
   } else {
     document.querySelectorAll(".view").forEach(function(v) { v.classList.remove("active"); });
     $("viewChat").classList.add("active");
+  }
+}
+
+function showLibrary() {
+  if (isDesktop()) {
+    $("viewChannels").classList.add("active");
+    $("viewWelcome").classList.remove("active");
+    $("viewChat").classList.remove("active");
+    $("viewLibrary").classList.add("active");
+  } else {
+    document.querySelectorAll(".view").forEach(function(v) { v.classList.remove("active"); });
+    $("viewLibrary").classList.add("active");
   }
 }
 
@@ -329,6 +349,198 @@ function renderChannels() {
 
   appendGroup("Channels on this hotspot", locals);
   appendGroup("MeshCore channels", meshes);
+  appendLibraryGroup(wrap);
+}
+
+/* ---- Reference library rendering ---- */
+
+function humanize(slug) {
+  return String(slug || "")
+    .split(/[-_]/)
+    .filter(function(s) { return s.length > 0; })
+    .map(function(s) { return s.charAt(0).toUpperCase() + s.slice(1); })
+    .join(" ");
+}
+
+function fmtBytesShort(n) {
+  if (typeof n !== "number" || isNaN(n)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function fmtBuiltAtDate(s) {
+  if (!s) return "—";
+  var m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[1] + "-" + m[2] + "-" + m[3] : String(s);
+}
+
+function libraryDocCount(lib) {
+  if (!lib || !Array.isArray(lib.categories)) return 0;
+  var n = 0;
+  for (var i = 0; i < lib.categories.length; i++) {
+    var cat = lib.categories[i];
+    if (Array.isArray(cat.docs)) n += cat.docs.length;
+  }
+  return n;
+}
+
+function libraryIconSvg() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><polyline points="14 3 14 8 19 8"/><line x1="9" y1="13" x2="16" y2="13"/><line x1="9" y1="17" x2="16" y2="17"/></svg>';
+}
+
+function appendLibraryGroup(wrap) {
+  var slugs = Object.keys(state.libraries).sort();
+  if (!slugs.length) return;
+  var header = document.createElement("div");
+  header.className = "channel-group__header channel-group__header--library";
+  header.innerHTML = '<div class="channel-group__title">Reference</div>';
+  wrap.appendChild(header);
+  for (var i = 0; i < slugs.length; i++) {
+    var slug = slugs[i];
+    var lib = state.libraries[slug];
+    var displayTitle = lib.title || humanize(slug);
+    var docCount = libraryDocCount(lib);
+    var card = document.createElement("div");
+    card.className = "channel-card channel-card--library" +
+      (slug === state.activeLibrary ? " channel-card--active" : "");
+    card.innerHTML =
+      '<div class="channel-card__icon channel-card__icon--library">' + libraryIconSvg() + '</div>' +
+      '<div class="channel-card__body">' +
+        '<div class="channel-card__name">' + escapeHtml(displayTitle) + '</div>' +
+        '<div class="channel-card__desc">' + docCount + ' documents · read &amp; download</div>' +
+      '</div>' +
+      '<div class="channel-card__meta">' +
+        '<div class="channel-card__badge channel-card__badge--library">REFERENCE</div>' +
+      '</div>';
+    card.setAttribute("data-library", slug);
+    card.addEventListener("click", (function(s) {
+      return function() { setActiveLibrary(s); };
+    })(slug));
+    wrap.appendChild(card);
+  }
+}
+
+function setActiveLibrary(slug) {
+  state.activeLibrary = slug;
+  state.activeChannel = null;
+  renderChannels();
+  renderLibrary(slug);
+  showLibrary();
+}
+
+function renderLibrary(slug) {
+  var lib = state.libraries[slug];
+  if (!lib) return;
+  var displayTitle = lib.title || humanize(slug);
+  $("libTitle").textContent = displayTitle;
+
+  var prov = $("libProvenance");
+  prov.innerHTML = "";
+  if (lib.source_label) {
+    var srcLine = document.createElement("div");
+    srcLine.className = "lib__provenance-meta";
+    srcLine.textContent = "Mirrored from " + lib.source_label;
+    prov.appendChild(srcLine);
+  }
+  if (lib.note) {
+    var noteEl = document.createElement("div");
+    noteEl.className = "lib__provenance-note";
+    noteEl.textContent = lib.note;
+    prov.appendChild(noteEl);
+  }
+  var sumLine = document.createElement("div");
+  sumLine.className = "lib__provenance-meta lib__provenance-meta--summary";
+  sumLine.textContent = libraryDocCount(lib) + " documents · last sync " + fmtBuiltAtDate(lib.built_at);
+  prov.appendChild(sumLine);
+
+  var list = $("libList");
+  list.innerHTML = "";
+  var cats = Array.isArray(lib.categories) ? lib.categories : [];
+  for (var ci = 0; ci < cats.length; ci++) {
+    var cat = cats[ci];
+    var section = document.createElement("section");
+    section.className = "lib__category";
+    var ch = document.createElement("h3");
+    ch.className = "lib__category-title";
+    ch.textContent = cat.name || "";
+    section.appendChild(ch);
+    var docs = Array.isArray(cat.docs) ? cat.docs : [];
+    for (var di = 0; di < docs.length; di++) {
+      section.appendChild(buildLibDocRow(slug, cat.name || "", docs[di]));
+    }
+    list.appendChild(section);
+  }
+}
+
+function buildLibDocRow(slug, categoryName, doc) {
+  var row = document.createElement("button");
+  row.type = "button";
+  row.className = "lib-doc";
+  var langChip = "";
+  if (doc.lang && doc.lang !== "en") {
+    langChip = '<span class="lib-doc__lang-chip">' + escapeHtml(String(doc.lang).toUpperCase()) + '</span>';
+  }
+  var meta = [];
+  if (doc.last_reviewed) meta.push("last reviewed " + escapeHtml(doc.last_reviewed));
+  if (typeof doc.size_bytes === "number") meta.push(fmtBytesShort(doc.size_bytes));
+  row.innerHTML =
+    '<div class="lib-doc__icon" aria-hidden="true"><span class="lib-doc__icon-label">PDF</span></div>' +
+    '<div class="lib-doc__body">' +
+      '<div class="lib-doc__title">' + escapeHtml(doc.title || doc.filename || "") + langChip + '</div>' +
+      '<div class="lib-doc__meta">' + meta.join('<span class="lib-doc__meta-sep"> · </span>') + '</div>' +
+    '</div>';
+  row.addEventListener("click", function() {
+    openLibDetail(slug, categoryName, doc);
+  });
+  return row;
+}
+
+function openLibDetail(slug, categoryName, doc) {
+  var lib = state.libraries[slug];
+  $("libDetailTitle").textContent = doc.title || doc.filename || "";
+  $("libDetailSub").textContent = (lib && lib.source_label)
+    ? "Source: " + lib.source_label
+    : "";
+
+  var rows = $("libDetailRows");
+  rows.innerHTML = "";
+  function addRow(label, value) {
+    if (value === null || value === undefined || value === "") return;
+    var dt = document.createElement("dt");
+    dt.className = "lib-detail__row-lbl";
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.className = "lib-detail__row-val";
+    dd.textContent = value;
+    rows.appendChild(dt);
+    rows.appendChild(dd);
+  }
+
+  addRow("Category", categoryName);
+  addRow("Language", doc.lang || "");
+  if (doc.published) addRow("Published", doc.published);
+  addRow("Last reviewed", doc.last_reviewed || "");
+  if (typeof doc.size_bytes === "number") addRow("Size", fmtBytesShort(doc.size_bytes));
+  if (lib && lib.source_label) addRow("Source", lib.source_label);
+
+  var dl = $("libDetailDownload");
+  dl.href = "/var/" + encodeURIComponent(slug) + "/" + encodeURIComponent(doc.filename || "");
+  if (doc.filename) {
+    dl.setAttribute("download", doc.filename);
+  } else {
+    dl.removeAttribute("download");
+  }
+
+  $("libDetailOverlay").classList.add("active");
+  requestAnimationFrame(function() {
+    $("libDetailSheet").classList.add("active");
+  });
+}
+
+function closeLibDetail() {
+  $("libDetailSheet").classList.remove("active");
+  $("libDetailOverlay").classList.remove("active");
 }
 
 /* ---- Active channel ---- */
@@ -1407,6 +1619,9 @@ async function init() {
   $("welcomeStartBtn").addEventListener("click", showChannels);
   $("aboutLink").addEventListener("click", showWelcome);
   $("chatBackBtn").addEventListener("click", showChannels);
+  $("libBackBtn").addEventListener("click", showChannels);
+  $("libDetailCloseBtn").addEventListener("click", closeLibDetail);
+  $("libDetailOverlay").addEventListener("click", closeLibDetail);
 
   // Compose modal
   $("fabBtn").addEventListener("click", openCompose);
@@ -1429,6 +1644,33 @@ async function init() {
   var data = await fetchJSON(API.channels, { method: "GET" });
   state.channels = normalizeChannels(data.channel_details || data.channels || []);
   state.meshChannelNames = new Set(state.channels.filter(function(c) { return c.scope === "mesh"; }).map(function(c) { return c.name; }));
+
+  // Discover installed reference libraries (CIV-92). Quiet on absence.
+  try {
+    var libIndex = await fetchJSON("/var/index.json", { method: "GET" });
+    var slugs = Array.isArray(libIndex.libraries) ? libIndex.libraries : [];
+    if (slugs.length) {
+      var pairs = await Promise.all(slugs.map(async function(slug) {
+        try {
+          var idx = await fetchJSON(
+            "/var/" + encodeURIComponent(slug) + "/index.json",
+            { method: "GET" }
+          );
+          return [slug, idx];
+        } catch (e) {
+          return [slug, null];
+        }
+      }));
+      pairs.forEach(function(pair) {
+        if (pair[1] && typeof pair[1] === "object") {
+          state.libraries[pair[0]] = pair[1];
+        }
+      });
+    }
+  } catch (e) {
+    // /var/index.json unavailable; render no Reference section.
+  }
+
   renderChannels();
 
   // Session + fingerprint

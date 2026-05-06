@@ -152,6 +152,15 @@ def install_hub_docs(
         shutil.rmtree(incoming)
         return {"release_id": release_id, "docs": doc_count}
 
+    # The zip uses a `hub-docs/` prefix for ergonomic extraction; the
+    # on-disk release directory specified in §7 holds `index.json` and
+    # the PDFs directly. Bridge the two before promotion.
+    try:
+        _lift_inner_hub_docs(incoming)
+    except HubDocsError:
+        shutil.rmtree(incoming)
+        raise
+
     # Step 7's symlink read must happen before the swap: that's the
     # release we're rolling away from, and it's the rollback safety
     # net. Pruning protects it alongside the new release so a
@@ -228,6 +237,30 @@ def _extract_to_incoming(zip_path: Path, incoming: Path) -> None:
                     f"unsafe path in zip: {member!r}", exit_code=2
                 )
         zf.extractall(incoming)
+
+
+def _lift_inner_hub_docs(incoming: Path) -> None:
+    """Move `incoming/hub-docs/*` up to `incoming/` and remove the inner dir.
+
+    The zip's `hub-docs/` prefix is namespacing for clean extraction;
+    the design doc (§7) specifies a release directory with `index.json`
+    directly under `<release_id>/`. The web server's slug-discovery
+    walk then sees `<var>/hub-docs/index.json` (via the symlink) and
+    surfaces the library at `/var/hub-docs/`.
+    """
+    inner = incoming / "hub-docs"
+    if not inner.is_dir():
+        return
+    for child in inner.iterdir():
+        target = incoming / child.name
+        if target.exists():
+            raise HubDocsError(
+                f"layout collision: {child.name!r} already exists at "
+                f"the top of incoming directory",
+                exit_code=3,
+            )
+        shutil.move(str(child), str(target))
+    inner.rmdir()
 
 
 def _validate_extracted(incoming: Path) -> None:

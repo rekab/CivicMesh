@@ -483,6 +483,38 @@ lang = "en"
         {"ok.pdf": _PDF_BYTES},
         "invalid TOML",
     ),
+    # Top-level optional 'title' empty
+    (
+        "title_empty",
+        """title = ""
+source_label = "Seattle"
+note = "n"
+
+[[doc]]
+category = "Water"
+title = "OK"
+file = "ok.pdf"
+lang = "en"
+""",
+        {"ok.pdf": _PDF_BYTES},
+        "'title' must be a non-empty string",
+    ),
+    # Top-level optional 'title' whitespace-only
+    (
+        "title_whitespace",
+        """title = "   "
+source_label = "Seattle"
+note = "n"
+
+[[doc]]
+category = "Water"
+title = "OK"
+file = "ok.pdf"
+lang = "en"
+""",
+        {"ok.pdf": _PDF_BYTES},
+        "'title' must be a non-empty string",
+    ),
 ]
 
 
@@ -568,6 +600,41 @@ class AtomicWriteTest(unittest.TestCase):
             final = out / "hub-docs-20260401T143200Z.zip"
             self.assertTrue(final.is_file())
             self.assertFalse(leftover.exists())
+
+
+class TitleFieldTest(unittest.TestCase):
+    """Optional top-level 'title' threads through to index.json."""
+
+    def _build_and_read_index(
+        self, manifest_text: str
+    ) -> dict:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            src = _make_source(tmp, manifest_text, _VALID_PDFS)
+            out = tmp / "out"
+            built_at = datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
+            args = bhd._make_parser().parse_args([
+                "--source", str(src), "--out", str(out),
+            ])
+            with _capture():
+                rc = bhd.run(args, built_at=built_at)
+            self.assertEqual(rc, 0)
+            with zipfile.ZipFile(
+                out / "hub-docs-20260401T000000Z.zip"
+            ) as zf:
+                return json.loads(zf.read("hub-docs/index.json"))
+
+    def test_title_present_threads_through(self) -> None:
+        manifest = (
+            'title = "Hub Reference Library"\n'
+            + _VALID_MANIFEST
+        )
+        index = self._build_and_read_index(manifest)
+        self.assertEqual(index.get("title"), "Hub Reference Library")
+
+    def test_title_absent_omitted(self) -> None:
+        index = self._build_and_read_index(_VALID_MANIFEST)
+        self.assertNotIn("title", index)
 
 
 if __name__ == "__main__":
