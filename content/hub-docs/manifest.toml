@@ -2,12 +2,12 @@
 #
 # Hub Reference Library — MVP demo manifest (CIV-90)
 #
-# 12 PDFs, English only. Every entry answers "the disaster is
+# 10 PDFs, English only. Every entry answers "the disaster is
 # happening, now what." Order in this file is order in the rendered UI.
 
 title        = "Hub Reference Library"
 source_label = "Seattle Emergency Hubs"
-note         = "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use."
+note         = "Mirrored from printed Hub handouts. Tap any document to download for offline use and sharing."
 
 # --- Hub Locations -----------------------------------------------------------
 
