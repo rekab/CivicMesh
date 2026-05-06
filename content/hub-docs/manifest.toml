@@ -1,0 +1,97 @@
+# content/hub-docs/manifest.toml
+#
+# Hub Reference Library — MVP demo manifest (CIV-90)
+#
+# 12 PDFs, English only. Every entry answers "the disaster is
+# happening, now what." Order in this file is order in the rendered UI.
+
+source_label = "Seattle Emergency Hubs"
+note         = "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use."
+
+# --- Hub Locations -----------------------------------------------------------
+
+[[doc]]
+category  = "Hub Locations"
+title     = "Seattle Emergency Hubs Map"
+file      = "seattle-emergency-hubs-map.pdf"
+lang      = "en"
+published = "2025"
+
+# --- Utilities & Home Safety -------------------------------------------------
+
+[[doc]]
+category = "Utilities & Home Safety"
+title    = "Control Utilities After a Disaster"
+file     = "control-utilities-after-disaster.pdf"
+lang     = "en"
+
+[[doc]]
+category = "Utilities & Home Safety"
+title    = "Earthquake Home Safety Guide"
+file     = "earthquake-home-safety-guide.pdf"
+lang     = "en"
+
+[[doc]]
+category = "Utilities & Home Safety"
+title    = "Household Items That Help in Emergencies"
+file     = "household-items-for-emergencies.pdf"
+lang     = "en"
+
+# --- Water -------------------------------------------------------------------
+
+[[doc]]
+category = "Water"
+title    = "Drinking Water from Your Water Heater"
+file     = "drinking-water-from-your-water-heater.pdf"
+lang     = "en"
+
+[[doc]]
+category = "Water"
+title    = "Disinfection of Drinking Water (EPA)"
+file     = "disinfection-of-drinking-water.pdf"
+lang     = "en"
+
+# --- Sanitation --------------------------------------------------------------
+
+[[doc]]
+category = "Sanitation"
+title    = "Emergency Toilet — Directions"
+file     = "emergency-toilet-directions.pdf"
+lang     = "en"
+
+# --- Air Quality -------------------------------------------------------------
+
+[[doc]]
+category = "Air Quality"
+title    = "DIY Box Fan Air Purifier"
+file     = "diy-box-fan-air-purifier.pdf"
+lang     = "en"
+
+# --- Power -------------------------------------------------------------------
+
+[[doc]]
+category = "Power"
+title    = "Power Outage Lights"
+file     = "power-outage-lights.pdf"
+lang     = "en"
+
+[[doc]]
+category = "Power"
+title    = "Charging Your Cell Phone from a Car Battery"
+file     = "charging-cell-phone-from-car-battery.pdf"
+lang     = "en"
+
+# --- Communications ----------------------------------------------------------
+
+[[doc]]
+category = "Communications"
+title    = "Communicating with Loved Ones After a Disaster"
+file     = "communicating-with-loved-ones-after-disaster.pdf"
+lang     = "en"
+
+[[doc]]
+category  = "Communications"
+title     = "GMRS Cheat Sheet"
+file      = "gmrs-cheat-sheet.pdf"
+lang      = "en"
+published = "2023-02"
