@@ -54,8 +54,8 @@ Three properties matter:
 ## 2. ARCHITECTURE
 
 ```
-manifests/hub-docs/manifest.md         (a) checked in, human-edited
-manifests/hub-docs/*.pdf               (b) gitignored, captain's local saves
+content/hub-docs/manifest.md         (a) checked in, human-edited
+content/hub-docs/*.pdf               (b) gitignored, captain's local saves
         │
         │ (c) scripts/build_hub_docs.py
         ▼
@@ -188,7 +188,7 @@ The manifest is a markdown file with strict parsing rules. Markdown
 this file as part of curation; the manifest doubles as the editorial
 artifact.
 
-`manifests/hub-docs/manifest.md`:
+`content/hub-docs/manifest.md`:
 
 ```markdown
 # Hub Reference Library
@@ -279,10 +279,19 @@ There is no `order` field. The file is the order.
 
 ### Source files
 
-The PDFs themselves live alongside the manifest:
+The PDFs themselves live alongside the manifest under
+`content/hub-docs/`. The `content/` directory at the project root is
+the convention for editorial material served by the captive portal —
+each feature gets its own subdirectory (this one, plus the source
+code browser tracked under CIV-89, plus any future additions). The
+build tools, zip artifacts, and runtime paths remain feature-specific;
+`content/` is purely an organizational convention for source files
+checked into the repo, kept so a future non-Hub deployment of
+CivicMesh that wants to host different materials has a clean place to
+add them.
 
 ```
-manifests/hub-docs/
+content/hub-docs/
 ├── manifest.md                         (checked in)
 ├── pet-first-aid-cpr.pdf              (gitignored)
 ├── psychological-first-aid.pdf        (gitignored)
@@ -293,18 +302,18 @@ manifests/hub-docs/
 `.gitignore` for this feature:
 
 ```
-manifests/hub-docs/*.pdf
+content/hub-docs/*.pdf
 out/
 var/
 ```
 
 Captains save the files manually from Drive (or wherever) into
-`manifests/hub-docs/`. The build tool reads them by the `file:` value
+`content/hub-docs/`. The build tool reads them by the `file:` value
 in the manifest.
 
 `last_reviewed` for each document is derived from the source PDF's
 mtime. To mark a document as freshly reviewed, `touch
-manifests/hub-docs/<filename>.pdf`.
+content/hub-docs/<filename>.pdf`.
 
 ---
 
@@ -321,7 +330,7 @@ Build a zip:
 
 ```
 uv run python scripts/build_hub_docs.py \
-    --source manifests/hub-docs/ \
+    --source content/hub-docs/ \
     --out out/
 ```
 
@@ -329,7 +338,7 @@ Validate without producing a zip (fast feedback during curation):
 
 ```
 uv run python scripts/build_hub_docs.py \
-    --source manifests/hub-docs/ \
+    --source content/hub-docs/ \
     --validate
 ```
 
@@ -350,15 +359,15 @@ nonetheless).
 
 ### Inputs
 
-- `manifests/hub-docs/manifest.md`
-- `manifests/hub-docs/*.pdf` (one per `file:` entry in manifest)
+- `content/hub-docs/manifest.md`
+- `content/hub-docs/*.pdf` (one per `file:` entry in manifest)
 
 ### Pipeline (build mode)
 
 1. Parse `manifest.md` per §4 rules. Fail loudly on any deviation,
    pointing at the offending line number.
 2. For each manifest entry:
-   a. Open `manifests/hub-docs/<filename>` for reading.
+   a. Open `content/hub-docs/<filename>` for reading.
    b. Validate magic bytes start with `%PDF-`. If not, fail.
    c. Read `size_bytes = os.path.getsize(...)`.
    d. Read `last_reviewed = strftime("%Y-%m-%d",
@@ -573,8 +582,8 @@ loses the document.
 
 | | DEV | PROD |
 |---|---|---|
-| Manifest | `<project_root>/manifests/hub-docs/manifest.md` | (not present — built artifact only) |
-| Source PDFs | `<project_root>/manifests/hub-docs/*.pdf` | (not present) |
+| Manifest | `<project_root>/content/hub-docs/manifest.md` | (not present — built artifact only) |
+| Source PDFs | `<project_root>/content/hub-docs/*.pdf` | (not present) |
 | Build script | `<project_root>/scripts/build_hub_docs.py` | (not present) |
 | Build output | `<project_root>/out/hub-docs-*.zip` | (not present) |
 | Hub-docs path (`web.hub_docs_path`) | `<project_root>/var/hub-docs` | `/usr/local/civicmesh/var/hub-docs` |
@@ -585,7 +594,7 @@ in either mode.
 
 `var/` does not currently exist in DEV. The install command creates
 it on first run via `mkdir -p`; it should be added to `.gitignore`
-alongside `out/` and `manifests/hub-docs/*.pdf`.
+alongside `out/` and `content/hub-docs/*.pdf`.
 
 ---
 
@@ -594,20 +603,20 @@ alongside `out/` and `manifests/hub-docs/*.pdf`.
 For Toorcamp and beyond, until/unless this is automated:
 
 ```
-# 1. Save the curated PDFs into manifests/hub-docs/ from Drive,
+# 1. Save the curated PDFs into content/hub-docs/ from Drive,
 #    matching the filenames listed in manifest.md.
 
 # 2. Edit the manifest if anything changed
-vi manifests/hub-docs/manifest.md
+vi content/hub-docs/manifest.md
 
 # 3. Quick-check the manifest is parseable and all files exist
 uv run python scripts/build_hub_docs.py \
-    --source manifests/hub-docs/ \
+    --source content/hub-docs/ \
     --validate
 
 # 4. Build the zip
 uv run python scripts/build_hub_docs.py \
-    --source manifests/hub-docs/ \
+    --source content/hub-docs/ \
     --out out/
 
 # 5. Inspect (recommended for first few releases)
@@ -637,11 +646,11 @@ existing.
 ### CIV-90a — Build tool
 
 Implements §5. Standalone script. Produces a valid zip per §6 from
-the curated `manifest.md` and PDFs in `manifests/hub-docs/`. Includes
+the curated `manifest.md` and PDFs in `content/hub-docs/`. Includes
 both build and `--validate` modes.
 
 Acceptance: given the 12 demo PDFs from `civ-90-mvp-demo-pdfs.md`
-saved into `manifests/hub-docs/` and a written-out `manifest.md`,
+saved into `content/hub-docs/` and a written-out `manifest.md`,
 produces `out/hub-docs-<release_id>.zip`. A human can `unzip -p ...
 hub-docs/index.json | jq` and see the expected structure. Every PDF
 in the zip starts with `%PDF-`. `--validate` flags malformed
@@ -695,7 +704,7 @@ additions" during implementation:
   Future ticket. Same zip output shape.
 - **Drive API auth, automated fetching, change detection.** Future
   ticket. Same zip output shape. For now, a captain manually saves
-  files into `manifests/hub-docs/`.
+  files into `content/hub-docs/`.
 - **Multilingual UX features beyond a per-row badge.** Language
   pickers, `Accept-Language` autodetection, per-topic language
   pages — none needed if the UI is a flat categorized list with
