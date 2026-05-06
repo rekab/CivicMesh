@@ -153,8 +153,8 @@ shapes.
 |---|---|---|
 | `schema_version` | constant in build tool | Increment only on breaking changes. v1 covers this doc. |
 | `built_at` | build tool, UTC ISO-8601 | Surfaced in UI as "last sync …". Drives `<release_id>`. |
-| `source_label` | manifest top-level | Banner attribution. |
-| `note` | manifest top-level | Banner copy under the title. |
+| `source_label` | manifest top-level key | Banner attribution. Pass-through from manifest, never derived. |
+| `note` | manifest top-level key | Banner copy under the title. Pass-through from manifest, never derived. |
 | `categories[].name` | manifest `[[doc]].category` | Categories grouped by build tool; order = first-appearance order in manifest. |
 | `categories[].docs[].filename` | manifest `[[doc]].file` | Must end in `.pdf`, must be unique across manifest. Same name in zip and once installed. |
 | `categories[].docs[].title` | manifest `[[doc]].title` | Display title. UTF-8, punctuation OK. Displayed verbatim by the UI. |
@@ -377,9 +377,6 @@ uv run python scripts/build_hub_docs.py \
     --source content/hub-docs/ \
     --validate
 ```
-
-Both `source_label` and `note` come from the manifest itself, not
-from CLI flags.
 
 ### Build output
 
