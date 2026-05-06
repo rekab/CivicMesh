@@ -568,20 +568,23 @@ invoking as `sudo -u civicmesh civicmesh install-hub-docs ...`.
 3. **Peek at `index.json`** without committing to extraction. Parse
    `built_at` and derive `<release_id>` per §2.
 4. **Extract** to
-   `<var>/hub-docs.releases/<release_id>/.incoming/`. If
-   `<var>/hub-docs.releases/<release_id>/` already exists outside
-   `.incoming/` (i.e., a prior install used this exact release_id),
-   fail. If extraction itself fails partway (disk full, corrupt zip
-   member, process interrupt), follow the same cleanup contract as
-   step 5.
+   `<var>/hub-docs.releases/<release_id>.incoming/` — a sibling of
+   the eventual release directory, not nested inside it. The sibling
+   layout is what makes step 6 a single atomic rename. If
+   `<var>/hub-docs.releases/<release_id>/` already exists (i.e., a
+   prior install used this exact release_id), fail. If extraction
+   itself fails partway (disk full, corrupt zip member, process
+   interrupt), follow the same cleanup contract as step 5.
 5. **Apply all validation rules in §3** to the extracted contents. On
    any failure, `rm -rf` the incoming directory and abort.
 6. **Promote incoming to release**: rename
-   `<release_id>/.incoming/` to `<release_id>/`.
+   `<release_id>.incoming/` to `<release_id>/`. Single atomic POSIX
+   rename — under sibling layout the destination doesn't exist yet,
+   so the rename either succeeds or leaves no partial state.
 
    *Orphan-release recovery.* If the process is interrupted between
-   the `mv .incoming → <release_id>` rename here and the symlink
-   swap in step 7, the new release directory exists but is not
+   the `mv <release_id>.incoming → <release_id>` rename here and the
+   symlink swap in step 7, the new release directory exists but is not
    active. Re-running install with the same zip will hit step 4's
    "already exists" check and refuse. Operator recourse:
    `rm -rf <var>/hub-docs.releases/<release_id>/` and re-run
