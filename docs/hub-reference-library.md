@@ -711,7 +711,8 @@ existence.
     count, "last sync" date (from `built_at`).
   - Sectioned flat list, one section per category. Each row shows a
     PDF icon, title, a small language badge for non-`en` docs, and a
-    metadata strip (last reviewed date, size).
+    metadata strip (published date when present, size; last reviewed
+    date is in the bottom sheet).
 - **Tap a row** opens a metadata bottom sheet with title, category,
   language, published date (when present), last reviewed, size,
   source, and a single `Download PDF` button. `published` is rendered
