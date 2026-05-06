@@ -504,20 +504,22 @@ ssh user@some-node \
 **Stdout format** — terse, machine-readable, matching the existing
 `outbox cancel` / `cleanup` style:
 
-- install success: `installed release_id=<id> previous=<id_or_none> pruned=<N>`
+- install success: `installed release_id=<id> previous=<id> pruned=<N>`.
+  On first install (no prior release), the field is rendered
+  literally as `previous=none`.
 - rollback success: `rolled_back release_id=<id> previous=<id>`
   (with ` noop=true` appended on the already-current case)
 - errors go to stderr, prefixed `civicmesh install-hub-docs: ` /
   `civicmesh rollback-hub-docs: `, matching existing CLI error
   conventions.
 
-**`--dry-run` for install** runs steps 1–5 (mkdir, peek
-`index.json`, extract to `.incoming/`, validate per §3), then
-`rm -rf` the incoming directory and exits 0 without promoting or
-swapping. Prints the would-be `release_id` and the document count
-from the validated `index.json`. Useful for verifying a zip on a
-node before committing. No `--dry-run` for rollback — rollback is
-already pure symlink-swap with no extraction to preview.
+**`--dry-run` for install** runs steps 1–5 — through validation,
+stopping before promotion (step 6) and the symlink swap (step 7) —
+then `rm -rf` the incoming directory and exits 0. Prints the
+would-be `release_id` and the document count from the validated
+`index.json`. Useful for verifying a zip on a node before
+committing. No `--dry-run` for rollback — rollback is already pure
+symlink-swap with no extraction to preview.
 
 **No confirmation prompts.** The operator typed the zip path
 explicitly; install is atomic and instantly reversible via
@@ -570,8 +572,8 @@ invoking as `sudo -u civicmesh civicmesh install-hub-docs ...`.
    `<var>/hub-docs.releases/<release_id>/` already exists outside
    `.incoming/` (i.e., a prior install used this exact release_id),
    fail. If extraction itself fails partway (disk full, corrupt zip
-   member, process interrupt), `rm -rf` the incoming directory and
-   abort. Same cleanup contract as step 5.
+   member, process interrupt), follow the same cleanup contract as
+   step 5.
 5. **Apply all validation rules in §3** to the extracted contents. On
    any failure, `rm -rf` the incoming directory and abort.
 6. **Promote incoming to release**: rename
