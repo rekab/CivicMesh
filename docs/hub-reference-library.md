@@ -41,7 +41,7 @@ before they walk away from the AP.
 Three properties matter:
 
 1. **Read-only and curated.** Walk-up users cannot upload PDFs. The
-   list is editorial. A captain edits a markdown manifest; a build
+   list is editorial. A captain edits a TOML manifest; a build
    runs; a zip ships.
 2. **Optional.** A node with no hub-docs installed shows no hub-docs
    UI and serves no hub-docs files. The captive portal works exactly
@@ -54,7 +54,7 @@ Three properties matter:
 ## 2. ARCHITECTURE
 
 ```
-content/hub-docs/manifest.md         (a) checked in, human-edited
+content/hub-docs/manifest.toml         (a) checked in, human-edited
 content/hub-docs/*.pdf               (b) gitignored, captain's local saves
         │
         │ (c) scripts/build_hub_docs.py
@@ -152,12 +152,12 @@ shapes.
 |---|---|---|
 | `schema_version` | constant in build tool | Increment only on breaking changes. v1 covers this doc. |
 | `built_at` | build tool, UTC ISO-8601 | Surfaced in UI as "last sync …". Drives `<release_id>`. |
-| `source_label` | build tool flag, default `"Seattle Emergency Hubs"` | Banner attribution. |
-| `note` | build tool flag (or default constant) | Banner copy under the title. |
-| `categories[].name` | manifest `## ` heading | Display order = manifest order. |
-| `categories[].docs[].filename` | manifest `file:` field | Must end in `.pdf`, must be unique across manifest. Same name in zip and once installed. |
-| `categories[].docs[].title` | manifest `### ` heading | Display title. UTF-8, punctuation OK. Displayed verbatim by the UI. |
-| `categories[].docs[].lang` | manifest `lang:` field | ISO 639-1. `en` renders no badge; other values render a 2-letter uppercase badge (`ES`, `ZH`, `VI`). |
+| `source_label` | manifest top-level | Banner attribution. |
+| `note` | manifest top-level | Banner copy under the title. |
+| `categories[].name` | manifest `[[doc]].category` | Categories grouped by build tool; order = first-appearance order in manifest. |
+| `categories[].docs[].filename` | manifest `[[doc]].file` | Must end in `.pdf`, must be unique across manifest. Same name in zip and once installed. |
+| `categories[].docs[].title` | manifest `[[doc]].title` | Display title. UTF-8, punctuation OK. Displayed verbatim by the UI. |
+| `categories[].docs[].lang` | manifest `[[doc]].lang` | ISO 639-1. `en` renders no badge; other values render a 2-letter uppercase badge (`ES`, `ZH`, `VI`). |
 | `categories[].docs[].last_reviewed` | derived: `os.path.getmtime` | Source PDF's mtime, formatted YYYY-MM-DD in UTC. To bump the date, `touch` the file. |
 | `categories[].docs[].size_bytes` | derived: `os.path.getsize` | Verified by install tool against on-disk size. |
 
@@ -183,53 +183,67 @@ running hub-docs are unaffected.
 
 ## 4. MANIFEST FORMAT
 
-The manifest is a markdown file with strict parsing rules. Markdown
-(rather than CSV or TOML) because humans actually read and review
-this file as part of curation; the manifest doubles as the editorial
-artifact.
+The manifest is a TOML file. TOML rather than markdown or CSV because
+parsing collapses to one stdlib call (`tomllib.load`), error messages
+with line numbers come for free, comments are supported natively, and
+the schema is enforced by TOML's grammar rather than hand-rolled
+parser rules. The manifest captures all editorial decisions —
+including banner copy and source attribution — in one place.
 
-`content/hub-docs/manifest.md`:
+`content/hub-docs/manifest.toml`:
 
-```markdown
-# Hub Reference Library
+```toml
+# Top-level banner metadata, surfaced in the UI's Reference banner.
+source_label = "Seattle Emergency Hubs"
+note = "Mirrored from printed Hub handouts. Tap any document to read or download as PDF for offline use."
 
-## First Aid & Medical
+[[doc]]
+category = "First Aid & Medical"
+title    = "Pet First Aid & CPR"
+file     = "pet-first-aid-cpr.pdf"
+lang     = "en"
 
-### Pet First Aid & CPR
-- file: pet-first-aid-cpr.pdf
-- lang: en
+[[doc]]
+category = "First Aid & Medical"
+title    = "Psychological First Aid (Hub Volunteers)"
+file     = "psychological-first-aid.pdf"
+lang     = "en"
 
-### Psychological First Aid (Hub Volunteers)
-- file: psychological-first-aid.pdf
-- lang: en
+[[doc]]
+category = "Water"
+title    = "Disinfection of Drinking Water (EPA)"
+file     = "disinfection-of-drinking-water.pdf"
+lang     = "en"
 
-## Water
+[[doc]]
+category = "Water"
+title    = "Drinking Water from Your Water Heater"
+file     = "drinking-water-from-your-water-heater.pdf"
+lang     = "en"
 
-### Disinfection of Drinking Water (EPA)
-- file: disinfection-of-drinking-water.pdf
-- lang: en
+[[doc]]
+category = "Sanitation"
+title    = "Emergency Toilet — Directions"
+file     = "emergency-toilet-directions.pdf"
+lang     = "en"
 
-### Drinking Water from Your Water Heater
-- file: drinking-water-from-your-water-heater.pdf
-- lang: en
+[[doc]]
+category = "Sanitation"
+title    = "Emergency Toilet — Instructions"
+file     = "emergency-toilet-instructions.pdf"
+lang     = "en"
 
-## Sanitation
+[[doc]]
+category = "Sanitation"
+title    = "Emergency Toilet — Instructions (ES)"
+file     = "emergency-toilet-instructions-es.pdf"
+lang     = "es"
 
-### Emergency Toilet — Directions
-- file: emergency-toilet-directions.pdf
-- lang: en
-
-### Emergency Toilet — Instructions
-- file: emergency-toilet-instructions.pdf
-- lang: en
-
-### Emergency Toilet — Instructions (ES)
-- file: emergency-toilet-instructions-es.pdf
-- lang: es
-
-### Emergency Toilet — Instructions (ZH)
-- file: emergency-toilet-instructions-zh.pdf
-- lang: zh
+[[doc]]
+category = "Sanitation"
+title    = "Emergency Toilet — Instructions (ZH)"
+file     = "emergency-toilet-instructions-zh.pdf"
+lang     = "zh"
 ```
 
 The captain disambiguates language variants by writing them into the
@@ -237,45 +251,52 @@ title (`Instructions (ES)`). The system does no clever rendering; the
 title is displayed exactly as written. The language badge in the UI
 is additional, not a replacement.
 
-### Strict parsing rules
+### Schema
 
-The build tool's parser MUST enforce all of the following. Violations
-fail the build with a line-number error.
+Top-level keys (all required):
 
-1. **Top-of-file `# ` heading.** Optional, ignored by parser. Treat as
-   doc title for human readers.
-2. **`## ` lines are category headings.** The text after `## ` is the
-   category name (trimmed). A category heading begins a category
-   section that runs until the next `## ` line or end of file.
-3. **`### ` lines are document titles.** Must appear inside a category
-   section (i.e., after a `## ` and before any subsequent `## `). The
-   text after `### ` is the document `title`.
-4. **Each `### ` must be followed by one or more `- key: value`
-   bullet lines with no blank lines between them**, terminated by a
-   blank line, EOF, or the next `## ` / `### `. Bullets begin with
-   exactly `- ` (dash, single space). Each bullet has the form
-   `key: value`, where the key is `[a-z_]+` and the value is the rest
-   of the line trimmed.
-5. **Required keys per document: `file`, `lang`.** Order of bullets
-   does not matter. Unknown keys fail the build (no silent ignoring).
-6. **`file` value** is a bare filename (no path components), must end
-   in `.pdf`, must be unique across the entire manifest, and must
-   exist in the source directory.
-7. **`lang` value** is an ISO 639-1 code (lowercase, two letters).
-8. **Blank lines are allowed** before any `## ` or `### `, and
-   immediately after a bullet list. Blank lines between bullets in a
-   single document's metadata are a parse error.
-9. **Anything else is a parse error.** No HTML comments, no nested
-   lists, no inline emphasis in headings, no fenced code blocks. The
-   manifest is data, not prose.
+| Key | Type | Notes |
+|---|---|---|
+| `source_label` | string | Banner attribution. Surfaced in `index.json`. |
+| `note` | string | Banner copy under the title. Surfaced in `index.json`. |
+| `doc` | array of tables | One entry per document to ship. |
+
+Per-`[[doc]]` keys (all required):
+
+| Key | Type | Notes |
+|---|---|---|
+| `category` | string | Free text. Documents with the same `category` are grouped under that heading in the UI. |
+| `title` | string | Display title. UTF-8, punctuation OK. Displayed verbatim by the UI. |
+| `file` | string | Bare filename (no path components), must end in `.pdf`, must be unique across the entire manifest, must exist in the source directory. |
+| `lang` | string | ISO 639-1 code (lowercase, two letters). `en` renders no badge in the UI; other values render a 2-letter uppercase badge. |
+
+### Build-tool validation (in addition to TOML grammar)
+
+The build tool MUST enforce, post-parse:
+
+1. All four required top-level keys are present and have the correct
+   type.
+2. Every `[[doc]]` has all four required keys with the correct type.
+3. No `[[doc]]` has unknown keys (defends against typos).
+4. `file` values are unique across the manifest.
+5. Every `file` exists at `<source_dir>/<file>` and starts with
+   `%PDF-` magic bytes.
+6. `lang` values match `^[a-z]{2}$`.
+
+Any failure aborts the build with a clear message naming the failing
+`[[doc]]` (by index and title) and the violated rule.
+
+### Order
 
 Order in the manifest is order in the rendered UI:
 
-- Categories appear in the order their `## ` headings first appear.
-- Documents within a category appear in the order of their `### `
-  headings.
+- Categories appear in the order they first appear in any `[[doc]]`'s
+  `category` field.
+- Documents within a category appear in the order their `[[doc]]`
+  blocks appear in the file.
 
-There is no `order` field. The file is the order.
+There is no explicit `order` field. The file is the order. Moving a
+document is a matter of moving its `[[doc]]` block.
 
 ### Source files
 
@@ -292,7 +313,7 @@ add them.
 
 ```
 content/hub-docs/
-├── manifest.md                         (checked in)
+├── manifest.toml                       (checked in)
 ├── pet-first-aid-cpr.pdf              (gitignored)
 ├── psychological-first-aid.pdf        (gitignored)
 ├── disinfection-of-drinking-water.pdf (gitignored)
@@ -308,8 +329,8 @@ var/
 ```
 
 Captains save the files manually from Drive (or wherever) into
-`content/hub-docs/`. The build tool reads them by the `file:` value
-in the manifest.
+`content/hub-docs/`. The build tool reads them by the `file` value in
+the manifest.
 
 `last_reviewed` for each document is derived from the source PDF's
 mtime. To mark a document as freshly reviewed, `touch
@@ -342,12 +363,8 @@ uv run python scripts/build_hub_docs.py \
     --validate
 ```
 
-Optional flags applicable to both modes:
-
-```
---source-label "Seattle Emergency Hubs"     # default
---note "Mirrored from printed Hub handouts. ..."   # default
-```
+Both `source_label` and `note` come from the manifest itself, not
+from CLI flags.
 
 ### Build output
 
@@ -359,40 +376,43 @@ nonetheless).
 
 ### Inputs
 
-- `content/hub-docs/manifest.md`
-- `content/hub-docs/*.pdf` (one per `file:` entry in manifest)
+- `content/hub-docs/manifest.toml`
+- `content/hub-docs/*.pdf` (one per `file` entry in manifest)
 
 ### Pipeline (build mode)
 
-1. Parse `manifest.md` per §4 rules. Fail loudly on any deviation,
-   pointing at the offending line number.
-2. For each manifest entry:
-   a. Open `content/hub-docs/<filename>` for reading.
+1. Parse `manifest.toml` with `tomllib.load`. Apply post-parse
+   validation per §4 (required keys, unique filenames, lang format,
+   etc.). Any failure aborts with a clear message.
+2. For each `[[doc]]` entry:
+   a. Open `content/hub-docs/<file>` for reading.
    b. Validate magic bytes start with `%PDF-`. If not, fail.
    c. Read `size_bytes = os.path.getsize(...)`.
    d. Read `last_reviewed = strftime("%Y-%m-%d",
       gmtime(os.path.getmtime(...)))`.
    e. Stage the file in a build temp directory at
-      `hub-docs/<filename>`.
+      `hub-docs/<file>`.
 3. Construct `index.json` from the manifest + derived facts. Compute
-   `built_at = utcnow()` and derive `<release_id>` from it.
+   `built_at = utcnow()` and derive `<release_id>` from it. Group
+   docs by category (in first-appearance order); preserve doc order
+   within each category.
 4. Write the temp directory to `out/hub-docs-<release_id>.zip.tmp`.
 5. Rename `out/hub-docs-<release_id>.zip.tmp` to
    `out/hub-docs-<release_id>.zip`. **This rename is the atomic
    commit point** — an interrupted build leaves a `.tmp` file (which
    the operator can delete) and never a corrupt `.zip`.
 
-Failure handling: any parse error or missing file aborts the build
-with a nonzero exit and a clear message. Partial zips are never
-written.
+Failure handling: any parse error, validation error, or missing file
+aborts the build with a nonzero exit and a clear message. Partial
+zips are never written.
 
 ### Validate mode (`--validate`)
 
-Runs steps 1 and 2 above (manifest parse, per-file existence and
-magic-byte check) and exits. No staging directory, no zip output, no
-`built_at` computation. Exit code 0 means the manifest and source
-directory are in a state where a real build would succeed; nonzero
-prints the same line-number errors a build would.
+Runs steps 1 and 2 above (manifest parse + post-parse validation,
+per-file existence and magic-byte check) and exits. No staging
+directory, no zip output, no `built_at` computation. Exit code 0
+means the manifest and source directory are in a state where a real
+build would succeed; nonzero prints the same errors a build would.
 
 This is the fast inner loop while editing the manifest: edit, run
 `--validate`, fix, repeat. Real builds are reserved for when
@@ -400,9 +420,11 @@ something is actually being shipped.
 
 ### Dependencies
 
-- Python stdlib (`zipfile`, `json`, `os`, `pathlib`, `argparse`,
-  `time`, `re`)
+- Python stdlib (`tomllib`, `zipfile`, `json`, `os`, `pathlib`,
+  `argparse`, `time`)
 - Nothing else. No `pypdf`, no `requests`, no Drive client.
+- Requires Python 3.11+ for `tomllib` (the project's existing
+  baseline; if this changes, swap for the `tomli` backport).
 
 This is intentional. The build tool's risk surface should be
 arbitrarily close to zero so that it stays out of the way and never
@@ -582,7 +604,7 @@ loses the document.
 
 | | DEV | PROD |
 |---|---|---|
-| Manifest | `<project_root>/content/hub-docs/manifest.md` | (not present — built artifact only) |
+| Manifest | `<project_root>/content/hub-docs/manifest.toml` | (not present — built artifact only) |
 | Source PDFs | `<project_root>/content/hub-docs/*.pdf` | (not present) |
 | Build script | `<project_root>/scripts/build_hub_docs.py` | (not present) |
 | Build output | `<project_root>/out/hub-docs-*.zip` | (not present) |
@@ -604,10 +626,10 @@ For Toorcamp and beyond, until/unless this is automated:
 
 ```
 # 1. Save the curated PDFs into content/hub-docs/ from Drive,
-#    matching the filenames listed in manifest.md.
+#    matching the filenames listed in manifest.toml.
 
 # 2. Edit the manifest if anything changed
-vi content/hub-docs/manifest.md
+vi content/hub-docs/manifest.toml
 
 # 3. Quick-check the manifest is parseable and all files exist
 uv run python scripts/build_hub_docs.py \
@@ -646,11 +668,11 @@ existing.
 ### CIV-90a — Build tool
 
 Implements §5. Standalone script. Produces a valid zip per §6 from
-the curated `manifest.md` and PDFs in `content/hub-docs/`. Includes
+the curated `manifest.toml` and PDFs in `content/hub-docs/`. Includes
 both build and `--validate` modes.
 
 Acceptance: given the 12 demo PDFs from `civ-90-mvp-demo-pdfs.md`
-saved into `content/hub-docs/` and a written-out `manifest.md`,
+saved into `content/hub-docs/` and a written-out `manifest.toml`,
 produces `out/hub-docs-<release_id>.zip`. A human can `unzip -p ...
 hub-docs/index.json | jq` and see the expected structure. Every PDF
 in the zip starts with `%PDF-`. `--validate` flags malformed
