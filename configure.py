@@ -24,6 +24,7 @@ import tomli_w
 from config import (
     _COUNTRY_RE,
     _IFACE_RE,
+    _validate_callsign,
     _validate_ssid,
     load_config,
 )
@@ -226,8 +227,15 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
 
     print("Configuring CivicMesh node. Press Enter to accept defaults shown in brackets.\n")
 
-    name = _prompt_string("node.name", str(node.get("name", "CivicMesh")))
-    location = _prompt_string("node.location", str(node.get("location") or "") or None)
+    site_name = _prompt_string(
+        "node.site_name",
+        str(node.get("site_name") or node.get("name") or "") or None,
+    )
+    callsign = _prompt_string(
+        "node.callsign",
+        str(node.get("callsign") or "") or None,
+        _validate_callsign,
+    )
 
     print("\nchannels.names — channels this node joins on the mesh.")
     chan_names = _prompt_channels([str(x) for x in channels.get("names", [])])
@@ -255,8 +263,8 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
     )
 
     return {
-        "node.name": name,
-        "node.location": location,
+        "node.site_name": site_name,
+        "node.callsign": callsign,
         "channels.names": chan_names,
         "radio.serial_port": serial_port,
         "ap.ssid": ssid,
@@ -326,8 +334,10 @@ def _confirm_write(config_path: Path, tier1: dict[str, Any]) -> bool:
 
 def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     """Mutate baseline so Tier-1 prompted values land in the right sections."""
-    baseline.setdefault("node", {})["name"] = tier1["node.name"]
-    baseline["node"]["location"] = tier1["node.location"]
+    baseline.setdefault("node", {})["site_name"] = tier1["node.site_name"]
+    baseline["node"]["callsign"] = tier1["node.callsign"]
+    baseline["node"].pop("name", None)       # strip deprecated alias
+    baseline["node"].pop("location", None)   # strip removed field
     baseline.setdefault("channels", {})["names"] = list(tier1["channels.names"])
     baseline.setdefault("radio", {})["serial_port"] = tier1["radio.serial_port"]
     baseline.setdefault("ap", {})["ssid"] = tier1["ap.ssid"]

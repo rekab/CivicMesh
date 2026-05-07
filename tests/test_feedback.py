@@ -84,8 +84,7 @@ class TestFeedbackPostHandler(unittest.TestCase):
 
         # Mock server
         server = MagicMock()
-        server.cfg.node.name = "TestNode"
-        server.cfg.node.location = "test-hub"
+        server.cfg.node.site_name = "TestNode"
         server.db_cfg.path = db_path
         server.feedback_path = feedback_path
         server.log = logging.getLogger("test_feedback_handler")
@@ -139,7 +138,9 @@ class TestFeedbackPostHandler(unittest.TestCase):
             entry = json.loads(line)
             self.assertEqual(entry["text"], "hello world")
             self.assertEqual(entry["ip"], "10.0.0.42")
-            self.assertEqual(entry["location"], "test-hub")
+            # CIV-11: feedback entry's "location" field is stamped with
+            # cfg.node.site_name (the old node.location was removed).
+            self.assertEqual(entry["location"], "TestNode")
             self.assertIn("ts", entry)
             # Verify ts is parseable by fromisoformat (the circuit breaker requirement)
             datetime.fromisoformat(entry["ts"])

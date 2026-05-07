@@ -25,13 +25,25 @@ logger = logging.getLogger(__name__)
 
 _IFACE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
+_CALLSIGN_RE = re.compile(r"^[a-z0-9_-]{1,9}$")  # post-lowercase
 _NON_OVERLAPPING_CHANNELS = frozenset({1, 6, 11})
 
 
 @dataclass(frozen=True)
 class NodeConfig:
-    name: str
-    location: str
+    """Identity fields for this node.
+
+    site_name: human-readable name of the physical hub/site this
+        node serves; distinct from the on-wire `callsign`. Used
+        for the portal masthead, captive-portal page titles, and
+        the `session.location` stamp on new sessions.
+    callsign: short on-wire identity, 1-9 chars, [A-Za-z0-9_-];
+        lowercased on load. Set as the firmware SenderName so the
+        MeshCore companion app uses it as the avatar header on
+        every channel post.
+    """
+    site_name: str
+    callsign: str
 
 
 @dataclass(frozen=True)
@@ -145,6 +157,16 @@ def _validate_alias(raw: Any) -> str:
     return host
 
 
+def _validate_callsign(raw: Any) -> str:
+    s = str(raw).strip().lower()
+    if not _CALLSIGN_RE.match(s):
+        raise ValueError(
+            f"node.callsign {raw!r} must match ^[A-Za-z0-9_-]{{1,9}}$ "
+            "(short on-wire identity; lowercased on load)"
+        )
+    return s
+
+
 def _load_network(raw: dict[str, Any]) -> NetworkConfig:
     ip = IPv4Address(str(raw["ip"]))
     subnet_cidr = IPv4Network(str(raw["subnet_cidr"]), strict=False)
@@ -239,7 +261,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
     were in the source file (load_config silently ignores those).
     """
     return {
-        "node": {"name": cfg.node.name, "location": cfg.node.location},
+        "node": {"site_name": cfg.node.site_name, "callsign": cfg.node.callsign},
         "network": {
             "ip": str(cfg.network.ip),
             "subnet_cidr": str(cfg.network.subnet_cidr),
@@ -338,10 +360,42 @@ def load_config(path: str) -> AppConfig:
     if local_names is None:
         local_names = ["#local"]
 
+    if "location" in node:
+        raise ValueError(
+            "node.location is no longer supported. The geographic-coords "
+            "ticket lands separately. Use node.site_name (long, human, "
+            "for masthead and session.location stamping) and node.callsign "
+            "(short on-wire identity, <=9 chars [A-Za-z0-9_-])."
+        )
+
+    raw_name = node.get("name")
+    raw_site = node.get("site_name")
+    if raw_name is not None and raw_site is not None:
+        if str(raw_name).strip() != str(raw_site).strip():
+            raise ValueError(
+                "node.name and node.site_name disagree "
+                f"(name={raw_name!r}, site_name={raw_site!r}). "
+                "Remove node.name; node.site_name is the new field."
+            )
+    elif raw_name is not None and raw_site is None:
+        logger.warning(
+            "config: node.name is deprecated; rename to node.site_name. "
+            "Accepting %r as site_name for now.", raw_name,
+        )
+        raw_site = raw_name
+
+    if raw_site is None or not str(raw_site).strip():
+        raise ValueError("node.site_name is required (non-empty string)")
+    site_name = str(raw_site).strip()
+
+    if "callsign" not in node:
+        raise ValueError("node.callsign is required (short on-wire identity)")
+    callsign = _validate_callsign(node["callsign"])
+
     return AppConfig(
         node=NodeConfig(
-            name=str(node.get("name", "CivicMesh")),
-            location=str(node.get("location", "")),
+            site_name=site_name,
+            callsign=callsign,
         ),
         network=network,
         ap=ap,

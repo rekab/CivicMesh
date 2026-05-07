@@ -4,8 +4,8 @@
 # what setup_ap.sh would produce for an equivalent config.
 
 [node]
-name = "CivicMesh"
-location = "Test Hub, Test City"
+site_name = "CivicMesh"
+callsign = "civic1"
 
 [network]
 ip = "10.0.0.1"
