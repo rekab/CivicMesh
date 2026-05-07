@@ -101,7 +101,7 @@ See `docs/message_lifecycle.md` for the message/outbox state machine and atomici
 |--------|------|-------|
 | session_id | TEXT PRIMARY KEY | |
 | name | TEXT | display name |
-| location | TEXT | hub location |
+| location | TEXT | stamped with `cfg.node.site_name` on session create/update (CIV-11; column name kept for back-compat) |
 | mac_address | TEXT | for abuse prevention |
 | fingerprint | TEXT | browser fingerprint |
 | created_ts | INTEGER | |

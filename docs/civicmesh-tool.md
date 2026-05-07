@@ -390,8 +390,8 @@ Tier 1 / Tier 2 split).
 
 ```toml
 [node]
-name = "CivicMesh"
-location = "Fremont, Seattle"
+site_name = "CivicMesh"           # human-readable hub label
+callsign = "civic1"               # short on-wire identity, <=9 chars
 
 [network]                            # NEW: addressing/DHCP/wireless-iface concerns
 ip = "10.0.0.1"

@@ -110,6 +110,81 @@ class ConfigureRoundTripTest(unittest.TestCase):
             self.assertEqual(cfg.node.site_name, "CivicMesh")
             self.assertEqual(cfg.ap.channel, 6)
 
+    def test_legacy_node_shape_migrates_through_walk(self) -> None:
+        """A pre-CIV-11 config with [node] name + location migrates to the
+        new shape after one configure walk: site_name defaults to the legacy
+        name, the operator supplies a callsign, and name + location keys are
+        stripped from the resulting file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            # Hand-built legacy text so we exercise the alias path that
+            # _good_config_text (post-CIV-11) no longer covers.
+            legacy = f"""\
+[node]
+name = "Old Hub"
+location = "Fremont, Seattle"
+
+[network]
+ip = "10.0.0.1"
+subnet_cidr = "10.0.0.0/24"
+iface = "wlan0"
+country_code = "US"
+dhcp_range_start = "10.0.0.10"
+dhcp_range_end = "10.0.0.250"
+dhcp_lease = "15m"
+
+[ap]
+ssid = "CivicMesh-Messages"
+channel = 6
+
+[radio]
+serial_port = "/dev/null"
+freq_mhz = 910.525
+bw_khz = 62.5
+sf = 7
+cr = 5
+
+[channels]
+names = ["#test"]
+
+[web]
+port = 8080
+portal_aliases = ["civicmesh.internal"]
+
+[logging]
+log_dir = "{tmp / 'logs'}"
+log_level = "WARNING"
+"""
+            cfg_path.write_text(legacy)
+            walk = [
+                "",          # node.site_name (default = legacy "Old Hub")
+                "fremont1",  # node.callsign (no default; required)
+                "d",         # channels: done
+                "",          # radio.serial_port
+                "",          # ap.ssid
+                "",          # ap.channel
+                "",          # network.iface
+                "",          # network.country_code
+                "",          # debug.allow_eth0
+                "y",         # confirm write
+            ]
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=walk):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+
+            cfg = load_config(str(cfg_path))
+            self.assertEqual(cfg.node.site_name, "Old Hub")
+            self.assertEqual(cfg.node.callsign, "fremont1")
+
+            # Legacy keys must not survive the walk.
+            written = cfg_path.read_text()
+            self.assertNotIn("\nname = ", written)
+            self.assertNotIn("location = ", written)
+
     def test_live_file_preserved_on_validation_failure(self) -> None:
         """Bad Tier-2 (dhcp_range_start outside subnet) survives Tier-1 walk;
         post-write validation fails; live file is untouched, no .tmp left."""
