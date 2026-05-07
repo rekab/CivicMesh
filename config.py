@@ -326,15 +326,31 @@ def load_config(path: str) -> AppConfig:
     flags: list[str] = []
     if "portal_host" in raw.get("web", {}):
         flags.append(
-            "  - `web.portal_host` is no longer supported; the portal host is now derived from `network.ip`."
+            "  - `web.portal_host` is no longer supported; the portal host is now derived from `network.ip`. (CIV-60)"
         )
     if raw.get("network") is None:
-        flags.append("  - Required section `[network]` is missing.")
+        flags.append("  - Required section `[network]` is missing. (CIV-60)")
     if raw.get("ap") is None:
-        flags.append("  - Required section `[ap]` is missing.")
+        flags.append("  - Required section `[ap]` is missing. (CIV-60)")
+
+    # CIV-11: [node] split into site_name + callsign. Legacy `name`
+    # auto-aliases to site_name with a WARN further down, but `callsign`
+    # has no value migration — semantics differ (short on-wire identity,
+    # not a human label) and the operator must supply a fresh value.
+    # Surface this as a schema-changed flag pointing at `civicmesh
+    # configure` so legacy configs don't silently default callsign to "".
+    _node_raw = raw.get("node") or raw.get("hub") or {}
+    if "name" in _node_raw and "callsign" not in _node_raw:
+        flags.append(
+            "  - `[node]` has legacy `name` but no `callsign`; callsign "
+            "is the new short on-wire identity (no value migration from "
+            "`name` or `location`). Run `civicmesh configure` to add it. "
+            "(CIV-11)"
+        )
+
     if flags:
         raise ValueError(
-            "config.toml schema has changed (CIV-60).\n"
+            "config.toml schema has changed.\n"
             + "\n".join(flags)
             + "\nSee docs/civicmesh-tool.md § CONFIGURATION FILE."
         )
