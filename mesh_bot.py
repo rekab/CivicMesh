@@ -333,6 +333,13 @@ async def _announce_identity(mesh_client, cfg, log, advert_state, EventType):
             )
             return
         log.info("mesh:set_name_ok callsign=%s", callsign)
+        # Refresh self_info so _self_name (used by the heard-count
+        # echo-match handler) sees the new firmware name. Without this,
+        # self_info["name"] keeps the create_serial-time value
+        # (typically the pubkey hex prefix on a fresh device) and the
+        # echo-match expected_text won't match incoming echoes. Same
+        # refresh pattern as the post-set_radio block above.
+        await mesh_client.commands.send_appstart()
     except Exception as e:
         log.warning("mesh:set_name_exception err=%s", e, exc_info=True)
         return
