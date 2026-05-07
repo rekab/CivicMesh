@@ -40,8 +40,8 @@ def _err(payload: str = "boom") -> _Event:
 
 
 def _make_client(set_name_result=None, send_advert_result=None):
-    """Mock mesh_client whose .commands.set_name / .send_advert are
-    AsyncMocks. Defaults both to OK events."""
+    """Mock mesh_client whose .commands.set_name / .send_advert /
+    .send_appstart are AsyncMocks. Defaults all to OK events."""
     if set_name_result is None:
         set_name_result = _ok()
     if send_advert_result is None:
@@ -50,6 +50,7 @@ def _make_client(set_name_result=None, send_advert_result=None):
     client.commands = types.SimpleNamespace(
         set_name=AsyncMock(return_value=set_name_result),
         send_advert=AsyncMock(return_value=send_advert_result),
+        send_appstart=AsyncMock(return_value=_ok()),
     )
     return client
 
@@ -75,6 +76,9 @@ class AnnounceIdentityTest(unittest.TestCase):
         with patch("mesh_bot.time.time", return_value=1000.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
+        # send_appstart must run after a successful set_name to refresh
+        # self_info["name"] for the heard-count echo-match handler.
+        client.commands.send_appstart.assert_called_once_with()
         client.commands.send_advert.assert_called_once_with(flood=False)
         self.assertEqual(state["last_callsign"], "civic1")
         self.assertEqual(state["last_ts"], 1000.0)
@@ -123,6 +127,9 @@ class AnnounceIdentityTest(unittest.TestCase):
         with patch("mesh_bot.time.time", return_value=1000.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
+        # set_name failure: don't refresh self_info (firmware name
+        # unchanged), don't advert.
+        client.commands.send_appstart.assert_not_called()
         client.commands.send_advert.assert_not_called()
         # State unchanged so the next connect retries the advert.
         self.assertIsNone(state["last_callsign"])
