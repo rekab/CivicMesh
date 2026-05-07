@@ -752,7 +752,8 @@ the operator is running over wlan0.
    | 1 | `systemctl daemon-reload` |
    | 2 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi` |
    | 3 | `systemctl disable wpa_supplicant.service` |
-   | 4 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |
+   | 4 | `systemctl enable civicmesh-web civicmesh-mesh` |
+   | 5 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |
 
    System-stack config changes (hostapd / dnsmasq / nftables /
    networkd / NetworkManager / sysctl) require a reboot to take
