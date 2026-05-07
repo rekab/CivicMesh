@@ -286,6 +286,28 @@ class NodeIdentityTest(unittest.TestCase):
                 })
             self.assertIn("callsign", str(ctx.exception))
 
+    def test_legacy_node_without_callsign_flagged_at_load(self) -> None:
+        """A pre-CIV-11 [node] (name + location, no callsign) loaded directly
+        via load_config raises a schema-changed ValueError that names the
+        missing field and points at civicmesh configure. The asymmetric
+        migration (name -> site_name aliases, but location -> callsign does
+        not) means absence of callsign must surface loudly rather than
+        silently default to "". Partner to
+        test_legacy_node_shape_migrates_through_walk in test_configure.py."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            sections = _good_sections(tmp)
+            sections["node"] = {"name": "Old Hub"}  # no callsign
+            cfg_path = _write(tmp, sections)
+            with self.assertRaises(ValueError) as ctx:
+                load_config(str(cfg_path))
+            msg = str(ctx.exception)
+            self.assertIn("callsign", msg)
+            self.assertIn("civicmesh configure", msg)
+            self.assertIn("CIV-11", msg)
+            self.assertIn("schema has changed", msg)
+
     def test_callsign_lowercased_on_load(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
