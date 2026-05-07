@@ -67,12 +67,14 @@ class ApplyOrderingTest(unittest.TestCase):
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
              "rfkill-unblock-wifi"],
             ["systemctl", "disable", "wpa_supplicant.service"],
+            ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
             ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
         ])
 
     def test_skips_app_restart_when_no_civicmesh_unit_changed(self) -> None:
-        """If no civicmesh-*.service file changed, the app restart is omitted —
-        but the cutover-staging triple still fires."""
+        """If no civicmesh-*.service file changed, the app restart is
+        omitted — but the cutover-staging steps (including the
+        unconditional `enable civicmesh-web civicmesh-mesh`) still fire."""
         plan = Plan(
             changes=(_change("/etc/hostapd/hostapd.conf"),),
             services=(),
@@ -92,6 +94,7 @@ class ApplyOrderingTest(unittest.TestCase):
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
              "rfkill-unblock-wifi"],
             ["systemctl", "disable", "wpa_supplicant.service"],
+            ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
         ])
 
     def test_short_circuits_on_validation_failure(self) -> None:

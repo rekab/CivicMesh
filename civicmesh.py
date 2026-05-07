@@ -601,6 +601,17 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             check=True,
         )
         _sub.run(["systemctl", "disable", "wpa_supplicant.service"], check=True)
+        # Enable the app-tier units unconditionally (idempotent). bootstrap
+        # lays the unit files down via promote, but only `apply` knows the
+        # operator has reached the configure-then-apply step that means
+        # "yes, run these on boot." Without this, `systemctl is-enabled
+        # civicmesh-web civicmesh-mesh` returns `disabled` after a fresh
+        # bootstrap + configure + apply — they only run today because the
+        # restart below side-effect-starts them in the same boot.
+        _sub.run(
+            ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
+            check=True,
+        )
         actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
         if actions:
             restart.run_actions(actions)
