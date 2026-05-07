@@ -25,8 +25,8 @@ def _good_config_text(
     aliases_repr = ", ".join(f'"{a}"' for a in portal_aliases)
     return f"""\
 [node]
-name = "{sentinel_name}"
-location = "Test"
+site_name = "{sentinel_name}"
+callsign = "civic1"
 
 [network]
 ip = "10.0.0.1"
@@ -70,8 +70,8 @@ log_level = "WARNING"
 # _detect_serial_port and _detect_iface mocked to []. Final "y" confirms
 # the write.
 _ENTER_THROUGH_WALK = [
-    "",   # node.name (default accepted)
-    "",   # node.location
+    "",   # node.site_name (default accepted)
+    "",   # node.callsign (default accepted)
     "d",  # channels sub-loop: done immediately
     "",   # radio.serial_port (no detection -> just prompt)
     "",   # ap.ssid
@@ -107,7 +107,7 @@ class ConfigureRoundTripTest(unittest.TestCase):
             self.assertEqual(cfg.limits.posts_per_hour, 99)
             self.assertEqual(cfg.web.portal_aliases, ("civicmesh.internal",))
             # Tier 1 round-tripped too (defaults accepted).
-            self.assertEqual(cfg.node.name, "CivicMesh")
+            self.assertEqual(cfg.node.site_name, "CivicMesh")
             self.assertEqual(cfg.ap.channel, 6)
 
     def test_live_file_preserved_on_validation_failure(self) -> None:
@@ -213,6 +213,16 @@ class ConfigurePromptTest(unittest.TestCase):
         with patch("builtins.input", side_effect=[""]):
             result = configure._prompt_choice("ap.channel", (1, 6, 11), default=6)
         self.assertEqual(result, 6)
+
+    def test_callsign_invalid_then_valid(self) -> None:
+        """The callsign validator is wired into _prompt_string; an
+        invalid entry is rejected and a valid one is accepted next."""
+        # First entry too long, second entry valid.
+        with patch("builtins.input", side_effect=["abcdefghij", "fremont1"]):
+            result = configure._prompt_string(
+                "node.callsign", None, configure._validate_callsign,
+            )
+        self.assertEqual(result, "fremont1")
 
 
 # ------------------------------------- subprocess tests for the CLI

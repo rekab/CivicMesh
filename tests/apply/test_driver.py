@@ -45,10 +45,10 @@ class PlanTest(unittest.TestCase):
             ap=dataclasses.replace(self.cfg.ap, channel=new),
         )
 
-    def _swap_node_name(self, new: str):
+    def _swap_site_name(self, new: str):
         return dataclasses.replace(
             self.cfg,
-            node=dataclasses.replace(self.cfg.node, name=new),
+            node=dataclasses.replace(self.cfg.node, site_name=new),
         )
 
     def test_empty_plan_when_etc_matches(self) -> None:
@@ -89,11 +89,11 @@ class PlanTest(unittest.TestCase):
             changed = {c.abs_path for c in plan.changes}
             self.assertEqual(changed, {Path("/etc/hostapd/hostapd.conf")})
 
-    def test_node_name_change_invalidates_nothing(self) -> None:
+    def test_site_name_change_invalidates_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             etc_root = Path(td)
             _populate_etc(etc_root, self.cfg)
-            new_cfg = self._swap_node_name("DifferentName")
+            new_cfg = self._swap_site_name("DifferentName")
             plan = driver.plan(new_cfg, etc_root=etc_root)
             self.assertEqual(plan.changes, ())
 

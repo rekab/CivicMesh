@@ -637,8 +637,8 @@ inside the mode's allowed tree.
 
 | Field | Default | Notes |
 |---|---|---|
-| `node.name` | `CivicMesh` | Display name; also seeds SSID suggestion. |
-| `node.location` | _(none)_ | E.g., `Fremont, Seattle`. Stored on sessions. |
+| `node.site_name` | _(required)_ | Human-readable name of the physical hub/site this node serves. Portal masthead, captive-portal `<title>`s, stamped into `session.location` for new sessions. |
+| `node.callsign` | _(required)_ | Short on-wire identity, 1-9 chars `[A-Za-z0-9_-]`, lowercased on load. Firmware sets this as the SenderName prefix on every channel message. |
 | `channels.names` | _(none)_ | Subprompt: add / remove / clear / done. |
 | `radio.serial_port` | auto-detected if exactly one CP2102 USB-serial device exists | Otherwise prompts with detected candidates. |
 | `ap.ssid` | `CivicMesh-Messages` | 1–32 chars. |

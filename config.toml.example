@@ -2,11 +2,20 @@
 # on `civicmesh apply`. Fields marked [runtime] are read by the running
 # Python services; edit-and-restart with `systemctl restart civicmesh-*`.
 
-# Identity and location. Tier 1 — civicmesh configure will prompt for these.
-# All [node] fields are [runtime] (consumed by web/mesh services, never apply).
+# Identity. site_name is the human-readable name of the physical
+# hub/site this node serves (portal masthead, captive-portal
+# titles, stamped into session.location for new sessions).
+# callsign is the short on-wire identity — firmware sets this as
+# the SenderName, which the MeshCore companion app uses as the
+# avatar header on every channel post. Tier 1 — civicmesh
+# configure prompts for both. [runtime]
 [node]
-name = "CivicMesh"
-location = "Your Hub, Your City"  # Used for session location metadata; changing it will only affect new/updated sessions.
+site_name = "Your Hub Name"
+# 1-9 chars, [A-Za-z0-9_-]; lowercased on load. Airtime matters
+# because this rides every channel message. The 9-char ceiling
+# matches the RFC-1459 / EFnet IRC nick convention and stays
+# safely under any plausible MeshCore advert-name limit.
+callsign = "civic1"
 
 # Network addressing, interface, and DHCP. Consumed by `civicmesh apply`
 # to render hostapd / dnsmasq / networkd / nftables. These are pure

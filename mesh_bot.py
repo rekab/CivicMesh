@@ -4,7 +4,7 @@ import functools
 import hashlib
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from config import load_config
 from database import (
@@ -162,7 +162,7 @@ async def _outbox_task(
             sender = item["sender"]
             content = item["content"]
             try:
-                outbound = f"<{sender}@{cfg.node.name}> {content}"
+                outbound = f"<{sender}> {content}"
                 log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
                 channel_idx = channel_name_to_idx.get(channel)
 
@@ -308,6 +308,70 @@ async def _outbox_task(
             log.error("outbox:error %s", e, exc_info=True)
 
 
+# An advert costs ~0.5s of LoRa airtime on the PNW config (SF7,
+# BW 62.5 kHz, CR=5). The shared mesh budget across the contiguous
+# flood domain is ~1-2 kbps. Without throttling, a flapping
+# reconnect cycle would push adverts as a measurable percentage of
+# total mesh airtime. set_name is firmware-side cheap and stays
+# unthrottled; send_advert is gated.
+_ADVERT_COOLDOWN_SEC = 6 * 3600
+
+
+async def _announce_identity(mesh_client, cfg, log, advert_state, EventType):
+    """Set the firmware name on every connect; advertise only when
+    the cooldown has elapsed, the callsign changed, or this is the
+    first connect of the process. advert_state is a mutable dict
+    shared across reconnects: {"last_callsign", "last_ts"}.
+    """
+    callsign = cfg.node.callsign
+    try:
+        result = await mesh_client.commands.set_name(callsign)
+        if result.type == EventType.ERROR:
+            log.warning(
+                "mesh:set_name_failed callsign=%s err=%s",
+                callsign, result.payload,
+            )
+            return
+        log.info("mesh:set_name_ok callsign=%s", callsign)
+    except Exception as e:
+        log.warning("mesh:set_name_exception err=%s", e, exc_info=True)
+        return
+
+    now = time.time()
+    last_callsign = advert_state.get("last_callsign")
+    last_ts = advert_state.get("last_ts")
+    if last_callsign is None:
+        reason = "first_connect"
+    elif last_callsign != callsign:
+        reason = "callsign_changed"
+    elif last_ts is None or (now - last_ts) >= _ADVERT_COOLDOWN_SEC:
+        reason = "cooldown_elapsed"
+    else:
+        log.info(
+            "mesh:advert_skipped callsign=%s age_sec=%.0f cooldown_sec=%d",
+            callsign, now - last_ts, _ADVERT_COOLDOWN_SEC,
+        )
+        return
+
+    try:
+        # flood=False is explicit so a future maintainer (or upstream
+        # default change) doesn't silently break the airtime/throttle
+        # cost model the comment above this helper depends on.
+        advert = await mesh_client.commands.send_advert(flood=False)
+        if advert.type == EventType.ERROR:
+            # Don't update advert_state — let the next reconnect retry.
+            log.warning(
+                "mesh:send_advert_failed reason=%s err=%s",
+                reason, advert.payload,
+            )
+            return
+        log.info("mesh:advert_sent callsign=%s reason=%s", callsign, reason)
+        advert_state["last_callsign"] = callsign
+        advert_state["last_ts"] = now
+    except Exception as e:
+        log.warning("mesh:send_advert_exception err=%s", e, exc_info=True)
+
+
 async def _setup_mesh_client(
     mesh_client,
     cfg,
@@ -316,6 +380,7 @@ async def _setup_mesh_client(
     active_outbox: ActiveOutboxIndex,
     known_channel_names: set[str],
     EventType,
+    advert_state: dict,
 ):
     """Configure a connected MeshCore client: verify/set radio params,
     set up channels, enable auto-fetch and decryption, subscribe handlers.
@@ -421,6 +486,8 @@ async def _setup_mesh_client(
         log.info("mesh:decrypt_channel_logs_enabled")
     except Exception as e:
         log.error("mesh:decrypt_channel_logs_failed err=%s", e, exc_info=True)
+
+    await _announce_identity(mesh_client, cfg, log, advert_state, EventType)
 
     # RX_LOG_DATA handler — increments heard_count on the
     # outbox row whose echo we just observed. Filter on
@@ -557,6 +624,11 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
     controller = RecoveryController(cfg.recovery, db_cfg, cfg.radio.serial_port, log)
 
+    # Shared across reconnects within this process. On service
+    # restart this is fresh, so the next connect adverts once
+    # (first_connect). See _announce_identity.
+    advert_state: dict[str, Any] = {"last_callsign": None, "last_ts": None}
+
     async def _connect_loop():
         backoff = 1
         while True:
@@ -576,6 +648,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 await _setup_mesh_client(
                     mesh_client, cfg, db_cfg, log,
                     active_outbox, known_channel_names, EventType,
+                    advert_state,
                 )
 
                 controller.set_client(mesh_client)
@@ -597,6 +670,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         await _setup_mesh_client(
             mc, cfg, db_cfg, log,
             active_outbox, known_channel_names, EventType,
+            advert_state,
         )
 
     def _self_name():

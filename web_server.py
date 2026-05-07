@@ -350,7 +350,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         self.server.db_cfg,
                         session_id=sid,
                         name=sess.get("name") or "",
-                        location=sess.get("location") or self.server.cfg.node.location,
+                        location=sess.get("location") or self.server.cfg.node.site_name,
                         mac_address=mac,
                         fingerprint=sess.get("fingerprint"),
                         log=log,
@@ -396,7 +396,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/welcome":
-            node_name = self.server.cfg.node.name
+            node_name = self.server.cfg.node.site_name
             url = f"{portal_url}/"
             portal_aliases = self.server.cfg.web.portal_aliases
             alias_hint = ""
@@ -538,7 +538,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/feedback":
-            node_name = self.server.cfg.node.name
+            node_name = self.server.cfg.node.site_name
             html = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -618,7 +618,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/feedback/thanks":
-            node_name = self.server.cfg.node.name
+            node_name = self.server.cfg.node.site_name
             html = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -680,7 +680,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                         self.server.db_cfg,
                         session_id=sid,
                         name="",
-                        location=self.server.cfg.node.location,
+                        location=self.server.cfg.node.site_name,
                         mac_address=mac,
                         log=log,
                     )
@@ -766,7 +766,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
-            node_name = self.server.cfg.node.name
+            node_name = self.server.cfg.node.site_name
             now = _now_ts()
 
             if not row or not row.get("last_seen_ts"):
@@ -925,7 +925,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 self.server.db_cfg,
                 session_id=sid,
                 name=name,
-                location=self.server.cfg.node.location,
+                location=self.server.cfg.node.site_name,
                 mac_address=mac or sess.get("mac_address"),
                 fingerprint=fingerprint or None,
                 log=log,
@@ -1014,7 +1014,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             text = form.get("text", [""])[0]
 
             def _feedback_error(status, title, message):
-                node_name = self.server.cfg.node.name
+                node_name = self.server.cfg.node.site_name
                 h = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html_mod.escape(title)} — {html_mod.escape(node_name)}</title>
@@ -1048,7 +1048,7 @@ a{{color:#0f4c81}}</style></head><body><div class="wrap">
             entry = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "ip": self._client_ip(),
-                "location": self.server.cfg.node.location,
+                "location": self.server.cfg.node.site_name,
                 "text": text.strip(),
                 "ctx": _feedback_ctx(self.server.db_cfg.path),
             }
