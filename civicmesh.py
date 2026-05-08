@@ -501,7 +501,11 @@ def _cmd_configure(args: argparse.Namespace) -> None:
         )
     from configure import run_configure
 
-    sys.exit(run_configure(_resolve_config_path(args), _MODE))
+    sys.exit(run_configure(
+        _resolve_config_path(args),
+        _MODE,
+        explicit_config=getattr(args, "config", None) is not None,
+    ))
 
 
 def _cmd_config_show(args: argparse.Namespace) -> None:
