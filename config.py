@@ -135,7 +135,11 @@ class AppConfig:
     logging: LoggingConfig
     debug: DebugConfig
     recovery: RecoveryConfig
-    db_path: str = "civic_mesh.db"
+    # Required, no default. The previous "civic_mesh.db" fallback resolved
+    # against cwd and silently landed on whatever sat in the working
+    # directory — exactly the trapdoor that let a misconfigured test
+    # write fixture rows into the dev DB and broadcast them over LoRa.
+    db_path: str
 
 
 def _load_toml(path: str) -> dict[str, Any]:
@@ -369,8 +373,22 @@ def load_config(path: str) -> AppConfig:
     debug_raw = raw.get("debug", {})
     recovery_raw = raw.get("recovery", {})
 
-    db_path = raw.get("db_path") or raw.get("db", {}).get("path") or "civic_mesh.db"
+    db_path = raw.get("db_path") or raw.get("db", {}).get("path")
+    if not db_path:
+        raise ValueError(
+            f"config: db_path is required (set top-level "
+            f"`db_path = \"...\"` in {path})"
+        )
     db_path = os.path.expanduser(db_path)
+    # Required absolute so cwd never enters DB resolution. A relative
+    # path on a service that runs with WorkingDirectory=/usr/local/civicmesh/app
+    # would silently land in the wrong tree; tests with a relative path
+    # would land on the dev DB. Same root cause both ways.
+    if not os.path.isabs(db_path):
+        raise ValueError(
+            f"config: db_path must be absolute (got {db_path!r} in {path}). "
+            f"Use an absolute path or one prefixed with ~/ which expanduser will resolve."
+        )
 
     local_names = local.get("names")
     if local_names is None:

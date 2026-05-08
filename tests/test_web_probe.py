@@ -19,11 +19,6 @@ from database import DBConfig, init_db
 from web_server import CivicMeshHandler
 
 
-_MINIMAL_CONFIG_SRC = os.path.join(
-    os.path.dirname(__file__), "apply", "goldens", "minimal-config.toml"
-)
-
-
 PROBE_PATHS = [
     "/generate_204",
     "/gen_204",
@@ -32,6 +27,37 @@ PROBE_PATHS = [
     "/connecttest.txt",
     "/ncsi.txt",
 ]
+
+
+_BASE_NETWORK = {
+    "ip": "10.0.0.1",
+    "subnet_cidr": "10.0.0.0/24",
+    "iface": "wlan0",
+    "country_code": "US",
+    "dhcp_range_start": "10.0.0.10",
+    "dhcp_range_end": "10.0.0.250",
+    "dhcp_lease": "15m",
+}
+
+
+def _render_test_config(db_path: str, sections: dict) -> str:
+    """Inline TOML render. db_path is emitted as a top-level key BEFORE any
+    section header so it cannot get bound to a trailing section."""
+    lines = [f'db_path = "{db_path}"', ""]
+    for section, fields in sections.items():
+        lines.append(f"[{section}]")
+        for k, v in fields.items():
+            if isinstance(v, str):
+                lines.append(f'{k} = "{v}"')
+            elif isinstance(v, bool):
+                lines.append(f"{k} = {'true' if v else 'false'}")
+            elif isinstance(v, list):
+                inner = ", ".join(f'"{x}"' for x in v)
+                lines.append(f"{k} = [{inner}]")
+            else:
+                lines.append(f"{k} = {v}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 class _ProbeServer:
@@ -72,13 +98,29 @@ class TestAlwaysCaptive(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = tempfile.mkdtemp(prefix="civicmesh_probe_test_")
+        db_path = os.path.join(cls.tmpdir, "test.db")
+        sections = {
+            "node":     {"site_name": "TestHub", "callsign": "test1"},
+            "network":  dict(_BASE_NETWORK),
+            "ap":       {"ssid": "CivicMesh-Test", "channel": 6},
+            "channels": {"names": ["#civicmesh-test"]},
+            "web":      {"port": 8080, "portal_aliases": ["civicmesh.internal"]},
+            "logging":  {"log_dir": os.path.join(cls.tmpdir, "logs"),
+                         "log_level": "WARNING"},
+        }
         cfg_path = os.path.join(cls.tmpdir, "config.toml")
-        with open(_MINIMAL_CONFIG_SRC, "r") as src, open(cfg_path, "w") as dst:
-            dst.write(src.read())
-            dst.write(f'\ndb_path = "{os.path.join(cls.tmpdir, "test.db")}"\n')
+        with open(cfg_path, "w") as f:
+            f.write(_render_test_config(db_path, sections))
 
         cls.cfg = load_config(cfg_path)
         cls.db_cfg = DBConfig(path=cls.cfg.db_path)
+        # Sandbox assertion: see test_web_messages_api.py for the rationale.
+        # This file previously had the prepend-after-sections bug, so it had
+        # been silently opening the dev DB on every run.
+        assert cls.db_cfg.path.startswith(cls.tmpdir), (
+            f"test DB escaped sandbox: {cls.db_cfg.path!r} "
+            f"(expected to be under {cls.tmpdir!r})"
+        )
         init_db(cls.db_cfg, log=logging.getLogger("test_web_probe"))
         cls.server = _ProbeServer(cls.cfg, cls.db_cfg, cls.tmpdir)
 

@@ -22,11 +22,39 @@ from database import DBConfig, init_db
 from web_server import CivicMeshHandler
 
 
-_MINIMAL_CONFIG_SRC = os.path.join(
-    os.path.dirname(__file__), "apply", "goldens", "minimal-config.toml"
-)
-_PORTAL_HOST = "10.0.0.1"  # matches network.ip in the minimal config
+_PORTAL_HOST = "10.0.0.1"  # matches network.ip in the inline test config
 _PDF_BYTES = b"%PDF-1.4\n%dummy\n%%EOF\n"
+
+
+_BASE_NETWORK = {
+    "ip": _PORTAL_HOST,
+    "subnet_cidr": "10.0.0.0/24",
+    "iface": "wlan0",
+    "country_code": "US",
+    "dhcp_range_start": "10.0.0.10",
+    "dhcp_range_end": "10.0.0.250",
+    "dhcp_lease": "15m",
+}
+
+
+def _render_test_config(db_path: str, sections: dict) -> str:
+    """Inline TOML render. db_path is emitted as a top-level key BEFORE any
+    section header so it cannot get bound to a trailing section."""
+    lines = [f'db_path = "{db_path}"', ""]
+    for section, fields in sections.items():
+        lines.append(f"[{section}]")
+        for k, v in fields.items():
+            if isinstance(v, str):
+                lines.append(f'{k} = "{v}"')
+            elif isinstance(v, bool):
+                lines.append(f"{k} = {'true' if v else 'false'}")
+            elif isinstance(v, list):
+                inner = ", ".join(f'"{x}"' for x in v)
+                lines.append(f"{k} = [{inner}]")
+            else:
+                lines.append(f"{k} = {v}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 class _VarServer:
@@ -72,14 +100,27 @@ class _VarTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._cls_tmp = tempfile.mkdtemp(prefix="civicmesh_var_test_cls_")
+        db_path = os.path.join(cls._cls_tmp, "test.db")
+        sections = {
+            "node":     {"site_name": "TestHub", "callsign": "test1"},
+            "network":  dict(_BASE_NETWORK),
+            "ap":       {"ssid": "CivicMesh-Test", "channel": 6},
+            "channels": {"names": ["#civicmesh-test"]},
+            "web":      {"port": 8080, "portal_aliases": ["civicmesh.internal"]},
+            "logging":  {"log_dir": os.path.join(cls._cls_tmp, "logs"),
+                         "log_level": "WARNING"},
+        }
         cfg_path = os.path.join(cls._cls_tmp, "config.toml")
-        with open(_MINIMAL_CONFIG_SRC, "r") as src, open(cfg_path, "w") as dst:
-            dst.write(src.read())
-            dst.write(
-                f'\ndb_path = "{os.path.join(cls._cls_tmp, "test.db")}"\n'
-            )
+        with open(cfg_path, "w") as f:
+            f.write(_render_test_config(db_path, sections))
         cls.cfg = load_config(cfg_path)
         cls.db_cfg = DBConfig(path=cls.cfg.db_path)
+        # Sandbox assertion: see test_web_messages_api.py for the rationale.
+        # This file previously had the prepend-after-sections bug.
+        assert cls.db_cfg.path.startswith(cls._cls_tmp), (
+            f"test DB escaped sandbox: {cls.db_cfg.path!r} "
+            f"(expected to be under {cls._cls_tmp!r})"
+        )
         init_db(cls.db_cfg, log=logging.getLogger(cls.LOGGER_NAME))
 
     @classmethod

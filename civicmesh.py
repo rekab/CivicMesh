@@ -460,6 +460,18 @@ def _default_config_path() -> Path:
     return _PROJECT_ROOT / "config.toml"
 
 
+def _default_db_path() -> Path:
+    """Single source of truth for the SQLite DB location, mode-aware.
+
+    Used by `civicmesh configure` to bake an absolute path into emitted
+    config.toml files. config.py rejects non-absolute db_path values, so
+    callers must resolve any returned path before writing it out.
+    """
+    if _MODE == "prod":
+        return Path("/usr/local/civicmesh/var/civic_mesh.db")
+    return _PROJECT_ROOT / "civic_mesh.db"
+
+
 def _resolve_config_path(args: argparse.Namespace) -> Path:
     return Path(args.config).resolve() if args.config else _default_config_path()
 
