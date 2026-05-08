@@ -434,6 +434,8 @@ outbox_idle_reset_sec = 60
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240   # 10 GiB
 hub_docs_retention_count = 3            # hub-docs releases retained; oldest pruned on install
+global_egress_per_hour = 200            # sliding-hour mesh egress ceiling; sized below ~360/hr radio capacity
+outbox_max_depth = 60                   # queued-row cap; over-cap POSTs get 429 with retry_after_sec=60
 
 [logging]
 log_level = "INFO"

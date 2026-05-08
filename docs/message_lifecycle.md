@@ -97,6 +97,25 @@ between the two autocommit INSERTs, sends successfully, calls
 Later, web_server creates the messages row with `status='queued'`, and
 it stays queued forever.
 
+**Queue depth cap.** The same transaction also enforces
+`limits.outbox_max_depth`: the function takes a required
+`max_queue_depth` keyword and `SELECT COUNT(*) FROM outbox WHERE
+status='queued'` runs before the INSERTs. If depth ≥ cap, the function
+returns `None` and `/api/post` translates that to `429 {"error": "queue
+full — try again in a few minutes", "retry_after_sec": 60}`. The user's
+hourly quota is not consumed for refused posts (`record_post_for_session`
+is skipped on the 429 path). This is the input gate for egress audit
+F3 — it pairs with the `_outbox_task` token bucket (`limits.global_egress_per_hour`)
+that gates output.
+
+**Why `BEGIN IMMEDIATE` (not `BEGIN`).** `queue_outbox_and_message` opens
+its transaction as `BEGIN IMMEDIATE` so the writer lock is acquired at
+BEGIN time, before the `SELECT COUNT(*)`. With plain (deferred) `BEGIN`,
+two `ThreadingHTTPServer` workers can both take read snapshots at
+depth=N-1, both pass the cap check, and both INSERT — racing the cap by
+N. `_retry_on_locked` covers `SQLITE_BUSY` contention but is not
+load-bearing for cap correctness; `BEGIN IMMEDIATE` is.
+
 ### 2. Status transitions: send success/failure
 
 When mesh_bot resolves a send (success or failure), it must update both
