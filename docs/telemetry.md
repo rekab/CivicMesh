@@ -96,9 +96,12 @@ Indexed on `(ts)` and `(kind, ts)`.
 | Kind | Emitted by | Detail JSON |
 |------|-----------|-------------|
 | `throttle_change` | `telemetry.py` (on bitmask change) | `{"old": "0x1", "new": "0x5", "changed_bits": ["Currently throttled (+)"], "active_now": ["Under-voltage detected", "Currently throttled"]}` |
-| `rate_limit` | `web_server.py` (rate limit hit) | `{"session_id": "..."}` |
+| `rate_limit` | `web_server.py` (per-session quota hit) | `{"session_id": "..."}` |
 | `mac_mismatch` | `web_server.py` (MAC rotation) | `{"ip": "...", "session_id": "..."}` |
 | `http_error` | `web_server.py` (status >= 400) | `{"status": 429, "path": "/api/post"}` |
+| `outbox_full` | `web_server.py` (queue depth cap, F3) | `{"session_id": "...", "channel": "...", "depth": 60}` |
+| `egress_bucket_throttled` | `mesh_bot.py` (entered global-cap pause, F1) | `{"wait_sec": 30.0, "queue_depth": 47, "queue_oldest_age_s": 720}` |
+| `egress_bucket_resumed` | `mesh_bot.py` (exited global-cap pause, F1) | `{"paused_sec": 287.4}` |
 
 Throttle change detection emits on **any** bitmask value change (not
 just 0↔nonzero), so transitions like `0x1 → 0x5` are captured. The
@@ -251,7 +254,30 @@ request handling.
 
 - **`mac_mismatch`**: emitted in `_require_session()` when a session's
   stored MAC doesn't match the current request MAC.
-- **`rate_limit`**: emitted in `do_POST` `/api/post` when the per-hour
-  post limit is exceeded.
+- **`rate_limit`**: emitted in `do_POST` `/api/post` when the per-session
+  quota (`limits.posts_per_hour`) is exceeded.
+- **`outbox_full`**: emitted in `do_POST` `/api/post` when the queue
+  depth cap (`limits.outbox_max_depth`, audit F3) refuses an enqueue.
+  Distinct from `rate_limit`: the user's quota is intact; the relay is
+  over capacity.
 - **`http_error`**: emitted in `_json()` for any response with status
   >= 400. Detail includes the status code and request path.
+
+## Event emission in mesh_bot.py
+
+`_outbox_task` consults a sliding-hour token bucket
+(`limits.global_egress_per_hour`, audit F1) before each `send_chan_msg`
+call. Pause/resume telemetry fires on **state transitions only**, not on
+every 30s recheck — sampling at the recheck cadence would write ~120
+rows/hour during a sustained pause without adding signal:
+
+- **`egress_bucket_throttled`**: emitted on entry to the paused state.
+  Detail carries actual queue depth + oldest-row age (from
+  `get_outbox_snapshot`), not the pending-batch size that the function
+  happened to hold — operators reading this row during incident triage
+  will reasonably interpret `queue_depth` as the table depth.
+- **`egress_bucket_resumed`**: emitted on exit, with `paused_sec` so
+  the entry/exit pair tells the full duration story without polling.
+
+The mid-pause operator log line (`outbox:global_cap_still_paused`) is
+also rate-limited to ~30s; only the entry log line writes telemetry.

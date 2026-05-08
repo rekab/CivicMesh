@@ -164,7 +164,9 @@ See `docs/message_lifecycle.md` for the full state machine.
 
 ### Summary
 - `/api/post` atomically creates both an outbox row and a messages row (`status='queued'`).
+- Input gate: the same transaction enforces `limits.outbox_max_depth`. If queue depth ≥ cap, `queue_outbox_and_message` returns `None` and `/api/post` responds `429 {"retry_after_sec": 60}` without enqueueing. The check runs under `BEGIN IMMEDIATE` so two `ThreadingHTTPServer` workers can't both pass at depth=N-1 and both INSERT.
 - mesh_bot's `_outbox_task` polls `outbox WHERE status='queued'`, sends via radio, and atomically updates both tables on success or failure.
+- Output gate: a sliding-hour token bucket (`limits.global_egress_per_hour`) consulted before `send_chan_msg`. Consume-on-attempt (a flaky radio still puts bytes on air); monotonic clock. State transitions emit `egress_bucket_throttled` / `egress_bucket_resumed` telemetry, not per-tick samples.
 - Echo-aware retry: after `no_event_received`, waits for mesh echoes before retrying. Pre-retry echo check on each subsequent attempt.
 - Backoff: `[0, 2, 5, max_delay_sec]` sequence, reset after idle period. 3 consecutive send failures trigger `RecoveryController` (see `docs/recovery.md`).
 - Max retries: 3 (configurable via `outbox_max_retries`).
