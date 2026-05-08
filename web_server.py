@@ -30,6 +30,7 @@ from database import (
     create_or_update_session,
     get_message,
     get_messages,
+    get_outbox_snapshot,
     get_status,
     get_session,
     get_user_vote,
@@ -782,6 +783,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
             node_name = self.server.cfg.node.site_name
             now = _now_ts()
+            queue_depth, _ = get_outbox_snapshot(self.server.db_cfg, now_ts=now, log=log)
 
             if not row or not row.get("last_seen_ts"):
                 _json(self, 200, {
@@ -791,6 +793,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "mesh_bot_seen": False,
                     "node_name": node_name,
                     "hub_name": node_name,  # deprecated — use node_name
+                    "outbox_queue_depth": queue_depth,
                 })
                 return
 
@@ -821,6 +824,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "age_sec": int(age),
                     "node_name": node_name,
                     "hub_name": node_name,  # deprecated — use node_name
+                    "outbox_queue_depth": queue_depth,
                 },
             )
             return
@@ -963,7 +967,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             now = _now_ts()
-            oid, mid = queue_outbox_and_message(
+            result = queue_outbox_and_message(
                 self.server.db_cfg,
                 ts=now,
                 channel=channel,
@@ -971,8 +975,36 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 content=content,
                 session_id=sid,
                 fingerprint=fingerprint or None,
+                max_queue_depth=self.server.cfg.limits.outbox_max_depth,
                 log=log,
             )
+            if result is None:
+                # Queue full (egress audit F3). Distinct from the per-session
+                # 429 above: that means "your quota is spent"; this means
+                # "the relay is over capacity, anyone's posts get this."
+                # Different response shape signals a different remediation
+                # (wait, then retry — the per-session quota is still intact).
+                # We deliberately do NOT call record_post_for_session here:
+                # the user's hourly quota is not consumed for refused posts.
+                if sec:
+                    sec.error(
+                        "OutboxFull", ip=ip, mac=mac,
+                        msg="outbox queue full",
+                        session_id=sid,
+                        depth=self.server.cfg.limits.outbox_max_depth,
+                        channel=channel,
+                    )
+                _record_telemetry_event(
+                    self.server.db_cfg, "outbox_full",
+                    {"session_id": sid, "channel": channel,
+                     "depth": self.server.cfg.limits.outbox_max_depth},
+                )
+                _json(self, 429, {
+                    "error": "queue full — try again in a few minutes",
+                    "retry_after_sec": 60,
+                })
+                return
+            oid, mid = result
             record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=now, log=log)
             log.info("post:queued outbox_id=%d message_id=%d channel=%s session=%s len=%d", oid, mid, channel, sid, len(content))
             _json(self, 200, {"ok": True, "outbox_id": oid, "message_id": mid})

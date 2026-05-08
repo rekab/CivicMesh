@@ -640,18 +640,41 @@ def queue_outbox_and_message(
     content: str,
     session_id: str,
     fingerprint: Optional[str] = None,
+    max_queue_depth: int,
     log=None,
-) -> tuple[int, int]:
+) -> Optional[tuple[int, int]]:
     """Atomically create an outbox row and its linked messages row.
 
     Uses an explicit transaction so mesh_bot cannot see the outbox row
     before the messages row exists — prevents the race where
-    update_message_status matches 0 rows."""
+    update_message_status matches 0 rows.
+
+    Refuses the insert and returns None if the queued depth is already
+    at max_queue_depth (egress audit F3). The depth check + INSERT run
+    inside a single BEGIN IMMEDIATE transaction so two ThreadingHTTPServer
+    workers cannot both pass the cap check concurrently."""
     conn = _connect(cfg)
     try:
         if log:
             log.debug("db:queue_outbox_and_message channel=%s sender=%s session=%s len=%d", channel, sender, session_id, len(content))
-        conn.execute("BEGIN")
+        # BEGIN IMMEDIATE acquires the writer lock at BEGIN time so the SELECT
+        # below sees the post-commit state of any peer transaction. With
+        # plain BEGIN (deferred), two /api/post threads can both take read
+        # snapshots at depth=N-1, both pass the cap check, both INSERT —
+        # racing the cap by N. _retry_on_locked covers SQLITE_BUSY contention
+        # but is not load-bearing for cap correctness here.
+        conn.execute("BEGIN IMMEDIATE")
+        depth = conn.execute(
+            "SELECT COUNT(*) FROM outbox WHERE status='queued'"
+        ).fetchone()[0]
+        if depth >= max_queue_depth:
+            conn.execute("ROLLBACK")
+            if log:
+                log.warning(
+                    "db:outbox_full depth=%d cap=%d dropping channel=%s session=%s",
+                    depth, max_queue_depth, channel, session_id,
+                )
+            return None
         cur = conn.execute(
             "INSERT INTO outbox (ts, channel, sender, content, session_id, fingerprint, sent) VALUES (?,?,?,?,?,?,0)",
             (ts, channel, sender, content, session_id, fingerprint),

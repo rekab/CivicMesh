@@ -83,7 +83,7 @@ port = 8080                                # [apply] nftables (port-redirect tar
 portal_aliases = ["civicmesh.internal"]    # [runtime]
 
 # Rate limits and message constraints. Tier 2.
-# All [limits] fields are [runtime] (consumed by web_server only).
+# All [limits] fields are [runtime] (consumed by web_server and mesh_bot).
 [limits]
 posts_per_hour = 10
 message_max_chars = 100
@@ -96,6 +96,18 @@ outbox_max_retries = 3
 # Must be < ActiveOutboxIndex lifetime (20s) to catch late echoes.
 outbox_echo_wait_sec = 8
 retention_bytes_per_channel = 10737418240  # 10GB
+# Global mesh egress ceiling (sliding hour). Sized below radio capacity
+# (~360/hr at PNW LoRa profile) so the relay does not dominate a shared
+# channel even when its outbox is full. Combined with outbox_max_depth this
+# is the relay-wide spambot ceiling: per-session throttling can be
+# multiplied by free session minting (egress audit F1); this cannot.
+global_egress_per_hour = 200
+# Hard cap on queued (status='queued') outbox rows. New POSTs above this
+# get 429 with retry_after_sec=60 and DO NOT enqueue. Drains in ~18 minutes
+# at the global_egress_per_hour rate above — long enough to absorb a normal
+# radio reconnect, short enough that a sustained outage cannot store hours
+# of work to flood the channel on recovery (egress audit F3).
+outbox_max_depth = 60
 
 # Log output. Tier 2. All [logging] fields are [runtime].
 [logging]
