@@ -231,8 +231,10 @@ Configuration:
 Deployment:
   apply               Render system files from config.toml. Prod only.     [NEW]
   apply --dry-run     Preview what apply would change. Both modes.         [NEW]
-  promote             Push dev tree to prod tree, restart services.        [NEW]
-                      Dev-mode only.
+  promote             Push dev tree to prod tree.                          [NEW]
+                      Dev-mode only. Pass --restart to also restart
+                      services (default: leaves services running on
+                      the old code; operator picks the cutover moment).
 
 Hub-docs releases:
   # A separate category from Deployment: content updates (curated
@@ -817,11 +819,11 @@ need to reboot?"
 
 | Change type | promote | apply | reboot |
 |---|:---:|:---:|:---:|
-| Pure code change (`mesh_bot.py`, `web_server.py`, `civicmesh.py`, `database.py`, etc.) | yes | no | no |
-| `civicmesh-web.service` / `civicmesh-mesh.service` unit-file change | yes | yes | no — `apply` restarts these in-place |
-| `apply/renderers.py` change | yes | yes | depends — see below |
-| `config.toml` schema change (new field consumed by `config.py`) | yes | yes | depends — see below |
-| Rendered output changes for `hostapd.conf`, `dnsmasq.d/civicmesh.conf`, `nftables.conf`, `99-unmanaged-<iface>.conf`, `20-<iface>-ap.network`, or `90-civicmesh-disable-ipv6.conf` | yes | yes | yes |
+| Pure code change (`mesh_bot.py`, `web_server.py`, `civicmesh.py`, `database.py`, etc.) | yes (with `--restart`, or restart manually after) | no | no |
+| `civicmesh-web.service` / `civicmesh-mesh.service` unit-file change | yes (no `--restart` needed — `apply` restarts these in-place) | yes | no |
+| `apply/renderers.py` change | yes (no `--restart` needed — `apply` restarts in-place if a unit file changed) | yes | depends — see below |
+| `config.toml` schema change (new field consumed by `config.py`) | yes — but run `configure` and `apply` *before* restarting; otherwise the new code will reject the existing config | yes | depends — see below |
+| Rendered output changes for `hostapd.conf`, `dnsmasq.d/civicmesh.conf`, `nftables.conf`, `99-unmanaged-<iface>.conf`, `20-<iface>-ap.network`, or `90-civicmesh-disable-ipv6.conf` | yes (no `--restart` needed — reboot is the cutover) | yes | yes |
 
 **The "depends" rows:** the reboot requirement is determined by
 which *rendered* file changes, not by which source file you
@@ -858,11 +860,20 @@ require a reboot.
 ### promote                                                              [NEW]
 
 ```
-DEV ONLY:  uv run civicmesh promote --from <dev-tree> [--dry-run]
+DEV ONLY:  uv run civicmesh promote --from <dev-tree> [--dry-run] [--restart]
 ```
 
-Push the dev tree's `main` branch to the prod tree, rebuild prod's
-venv, restart services.
+Push the dev tree's `main` branch to the prod tree and rebuild prod's
+venv. **Does not restart `civicmesh-web` / `civicmesh-mesh` by
+default** — the running services keep serving the old code until the
+operator restarts them. Pass `--restart` to restart automatically.
+
+> **Behavior change.** Earlier versions of promote always restarted
+> services on success. The default flipped because promote can't tell
+> whether the new code is config-compatible: a schema-breaking change
+> would crash-loop the units the moment systemd restarted them, and
+> "is now a good moment for a brief outage" is operator context that
+> promote doesn't have.
 
 `<dev-tree>` defaults to `.` (current directory). `--from` is required
 in argument form for explicitness; if omitted, the cwd must be a dev
@@ -896,8 +907,14 @@ underlying state.
 4. `sudo -u civicmesh sh -c 'cd /usr/local/civicmesh/app && uv sync --frozen'`
    — rebuilds prod venv with prod's absolute paths in launcher
    shebangs.
-5. `sudo systemctl restart civicmesh-web civicmesh-mesh`.
-6. Print summary of what changed and service-restart status.
+5. **Only if `--restart` was passed:**
+   `sudo systemctl restart civicmesh-web civicmesh-mesh`.
+6. Print summary of what changed and service-restart status. When
+   `--restart` was *not* passed, the summary names the literal
+   `sudo systemctl restart civicmesh-web civicmesh-mesh` command for
+   the operator to run when ready, and reminds them to run
+   `sudo -u civicmesh civicmesh configure` first if the PR changed
+   the config schema.
 
 **What promote does NOT do:**
 
@@ -1232,9 +1249,11 @@ uv run civicmesh-web --config config.toml      # your dev config, your dev db, y
 
 # Once you're happy, commit and promote:
 git checkout main && git merge fix-rfkill
-uv run civicmesh promote --from .
+uv run civicmesh promote --from . --restart
 
-# Production resumes (promote restarts services automatically)
+# Production resumes (--restart bounces the units; without that flag,
+# promote ships the code but leaves the running services on the old
+# version until you restart them yourself).
 ```
 
 ### Updating a Tier 1 field (e.g., adding a channel)
@@ -1276,7 +1295,10 @@ cd ~/code/CivicMesh
 uv run civicmesh config validate               # static check
 uv run civicmesh apply --dry-run               # would-be-rendered diff vs prod /etc
 uv run civicmesh promote --from . --dry-run    # what promote would do
-uv run civicmesh promote --from .              # commit
+uv run civicmesh promote --from .              # commit (services keep running old code)
+# Then, when you're ready to cut over:
+sudo systemctl restart civicmesh-web civicmesh-mesh
+# (or pass --restart to the promote above to combine the two steps)
 ```
 
 ### Shipping new hub-docs to a node
@@ -1505,12 +1527,18 @@ safe across `apply` runs.
 
 If new code expects a config field that doesn't exist in the existing
 `/usr/local/civicmesh/etc/config.toml`, promote will succeed but the
-restarted services will fail. Operator must run
-`sudo -u civicmesh civicmesh configure` (or hand-edit) and possibly
-`sudo civicmesh apply` after a schema-changing promote. We could
-detect this in promote by running `civicmesh config validate` against
-prod's config with the new code's validators after the rsync — worth
-considering as a follow-up, not a blocker.
+services will fail the moment they're restarted on the new code.
+Operator must run `sudo -u civicmesh civicmesh configure` (or
+hand-edit) and possibly `sudo civicmesh apply` *before* restarting
+the services after a schema-changing promote. (This is one of the
+reasons promote no longer restarts services by default — see the
+`### promote` section above. The `--restart` opt-in is appropriate
+for pure-code changes where the schema is known compatible; for
+schema-touching PRs, the operator should configure and apply between
+the promote and the restart.) We could detect schema mismatch in
+promote by running `civicmesh config validate` against prod's config
+with the new code's validators after the rsync — worth considering
+as a follow-up, not a blocker.
 
 ---
 
