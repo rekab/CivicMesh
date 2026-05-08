@@ -90,6 +90,7 @@ def _run_promote_capture(
     *,
     mode: str = "dev",
     dry_run: bool = True,
+    restart: bool = False,
     prod_app: Path | None = None,
     prod_var: Path | None = None,
     input_responses: list[str] | None = None,
@@ -114,6 +115,7 @@ def _run_promote_capture(
             src_dir,
             mode=mode,
             dry_run=dry_run,
+            restart=restart,
             prod_app=prod_app,
             prod_var=prod_var,
             input_fn=input_fn,
@@ -274,7 +276,7 @@ class BehaviorTest(unittest.TestCase):
             with patch("promote.subprocess.run", return_value=ok) as mock_run, \
                  patch("promote.subprocess.Popen", return_value=popen_inst):
                 rc = promote._run_deploy_pipeline(
-                    src, "abc123", None, prod_app, prod_var,
+                    src, "abc123", None, prod_app, prod_var, restart=True,
                 )
             self.assertEqual(rc, 0)
             # Flatten every argv passed to subprocess.run into one
@@ -289,6 +291,78 @@ class BehaviorTest(unittest.TestCase):
                 joined, r"(?<![/\w])uv sync",
                 "found bare `uv sync` — fix regressed",
             )
+        finally:
+            subprocess.run(["rm", "-rf", str(src)], check=True)
+
+    def test_restart_flag_runs_systemctl_and_reports(self) -> None:
+        """With restart=True, the deploy pipeline issues
+        `systemctl restart civicmesh-web civicmesh-mesh` and prints the
+        legacy "Services restarted: ..." line."""
+        src = make_dev_tree()
+        try:
+            prod_app = _existing_prod_app(src)
+            prod_var = src / "fake-prod-var"
+            prod_var.mkdir(exist_ok=True)
+            ok = subprocess.CompletedProcess([], 0, b"", b"")
+            popen_inst = MagicMock()
+            popen_inst.wait.return_value = 0
+            popen_inst.stdout = MagicMock()
+            out_buf = io.StringIO()
+            with patch("promote.subprocess.run", return_value=ok) as mock_run, \
+                 patch("promote.subprocess.Popen", return_value=popen_inst), \
+                 redirect_stdout(out_buf):
+                rc = promote._run_deploy_pipeline(
+                    src, "abc123", None, prod_app, prod_var, restart=True,
+                )
+            self.assertEqual(rc, 0)
+            argvs = [c.args[0] for c in mock_run.call_args_list]
+            self.assertIn(
+                ["sudo", "systemctl", "restart",
+                 "civicmesh-web", "civicmesh-mesh"],
+                argvs,
+            )
+            self.assertIn(
+                "Services restarted: civicmesh-web, civicmesh-mesh",
+                out_buf.getvalue(),
+            )
+        finally:
+            subprocess.run(["rm", "-rf", str(src)], check=True)
+
+    def test_default_does_not_restart_and_prints_instructions(self) -> None:
+        """Default invocation (restart=False) ships code without
+        restarting services, and stdout names the literal systemctl
+        command the operator should run when ready."""
+        src = make_dev_tree()
+        try:
+            prod_app = _existing_prod_app(src)
+            prod_var = src / "fake-prod-var"
+            prod_var.mkdir(exist_ok=True)
+            ok = subprocess.CompletedProcess([], 0, b"", b"")
+            popen_inst = MagicMock()
+            popen_inst.wait.return_value = 0
+            popen_inst.stdout = MagicMock()
+            out_buf = io.StringIO()
+            with patch("promote.subprocess.run", return_value=ok) as mock_run, \
+                 patch("promote.subprocess.Popen", return_value=popen_inst), \
+                 redirect_stdout(out_buf):
+                rc = promote._run_deploy_pipeline(
+                    src, "abc123", None, prod_app, prod_var, restart=False,
+                )
+            self.assertEqual(rc, 0)
+            argvs = [c.args[0] for c in mock_run.call_args_list]
+            self.assertNotIn(
+                ["sudo", "systemctl", "restart",
+                 "civicmesh-web", "civicmesh-mesh"],
+                argvs,
+            )
+            stdout = out_buf.getvalue()
+            self.assertNotIn("Services restarted:", stdout)
+            self.assertIn(
+                "sudo systemctl restart civicmesh-web civicmesh-mesh",
+                stdout,
+            )
+            self.assertIn("--restart", stdout)
+            self.assertIn("civicmesh configure", stdout)
         finally:
             subprocess.run(["rm", "-rf", str(src)], check=True)
 

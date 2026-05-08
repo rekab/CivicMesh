@@ -744,7 +744,9 @@ def _cmd_promote(args: argparse.Namespace) -> None:
     from promote import run_promote
 
     src_dir = Path(args.src_dir).resolve()
-    sys.exit(run_promote(src_dir, mode=_MODE, dry_run=args.dry_run))
+    sys.exit(run_promote(
+        src_dir, mode=_MODE, dry_run=args.dry_run, restart=args.restart,
+    ))
 
 
 def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
@@ -828,6 +830,10 @@ def main():
     p_promote = sub.add_parser("promote")
     p_promote.add_argument("--from", dest="src_dir", default=".")
     p_promote.add_argument("--dry-run", action="store_true")
+    # --restart is opt-in: promote ships code, restart is an operational
+    # decision the operator owns (a schema-breaking change should not
+    # trigger an automatic restart that crash-loops the units).
+    p_promote.add_argument("--restart", action="store_true")
 
     p_install_hd = sub.add_parser("install-hub-docs")
     p_install_hd.add_argument("zip_path")

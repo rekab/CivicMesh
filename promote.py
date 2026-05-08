@@ -220,6 +220,8 @@ def _run_deploy_pipeline(
     prod_sha: str | None,
     prod_app: Path,
     prod_var: Path,
+    *,
+    restart: bool,
 ) -> int:
     # Cache sudo credentials before the pipeline. `sudo tar`'s stdin is
     # the git-archive stream — sudo can't read a password there.
@@ -256,24 +258,30 @@ def _run_deploy_pipeline(
               file=sys.stderr)
         return 2
 
-    result = subprocess.run(
-        ["sudo", "systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(
-            "civicmesh: promote: systemctl restart failed: "
-            f"{result.stderr.rstrip()}",
-            file=sys.stderr,
+    # Restart is opt-in (--restart). Default: ship code, leave the running
+    # services on the old code, let the operator pick the moment to cut
+    # over. promote has no way to know if the new code is config-compatible
+    # — a schema-breaking change would put the units into a crash loop the
+    # moment systemd restarts them. The operator does know.
+    if restart:
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
+            capture_output=True, text=True,
         )
-        if "not found" in result.stderr.lower():
+        if result.returncode != 0:
             print(
-                "(if the unit was 'not found' — this box hasn't been fully\n"
-                " set up; run 'sudo civicmesh apply' first to render the "
-                "unit files.)",
+                "civicmesh: promote: systemctl restart failed: "
+                f"{result.stderr.rstrip()}",
                 file=sys.stderr,
             )
-        return 2
+            if "not found" in result.stderr.lower():
+                print(
+                    "(if the unit was 'not found' — this box hasn't been fully\n"
+                    " set up; run 'sudo civicmesh apply' first to render the "
+                    "unit files.)",
+                    file=sys.stderr,
+                )
+            return 2
 
     # Marker file. Soft-warn on failure: deploy succeeded, only the next
     # promote's diff display is degraded.
@@ -307,7 +315,18 @@ def _run_deploy_pipeline(
     print()
     print(f"Promoted {(prod_sha or 'unknown')[:12]} -> {new_sha[:12]}")
     print(files_line)
-    print("Services restarted: civicmesh-web, civicmesh-mesh")
+    if restart:
+        print("Services restarted: civicmesh-web, civicmesh-mesh")
+    else:
+        print(
+            "Services were not restarted (pass --restart to restart\n"
+            "automatically). To pick up the new code:\n"
+            "  sudo systemctl restart civicmesh-web civicmesh-mesh\n"
+            "\n"
+            "If this PR changed the config schema, run\n"
+            "`sudo -u civicmesh civicmesh configure` BEFORE restarting,\n"
+            "otherwise the new code may reject the existing config."
+        )
     return 0
 
 
@@ -319,6 +338,7 @@ def run_promote(
     *,
     mode: str,
     dry_run: bool,
+    restart: bool = False,
     prod_app: Path = _DEFAULT_PROD_APP,
     prod_var: Path = _DEFAULT_PROD_VAR,
     input_fn: Callable[[str], str] = input,
@@ -361,4 +381,6 @@ def run_promote(
         print("Aborted, no changes made.", file=sys.stderr)
         return 3
 
-    return _run_deploy_pipeline(src_dir, new_sha, prod_sha, prod_app, prod_var)
+    return _run_deploy_pipeline(
+        src_dir, new_sha, prod_sha, prod_app, prod_var, restart=restart,
+    )
