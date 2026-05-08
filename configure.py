@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -228,10 +229,15 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
 
     print("Configuring CivicMesh node. Press Enter to accept defaults shown in brackets.\n")
 
+    print("\nnode.site_name — human-readable name shown to walk-up users "
+          "on the captive portal welcome page. e.g. 'Fremont Hub'.")
     site_name = _prompt_string(
         "node.site_name",
         str(node.get("site_name") or node.get("name") or "") or None,
     )
+    print("\nnode.callsign — short handle broadcast on the LoRa mesh; "
+          "other MeshCore users see this in their contact list. Keep "
+          "it short (limits.name_max_chars caps it). e.g. 'fremont1'.")
     callsign = _prompt_string(
         "node.callsign",
         str(node.get("callsign") or "") or None,
@@ -241,6 +247,8 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
     print("\nchannels.names — channels this node joins on the mesh.")
     chan_names = _prompt_channels([str(x) for x in channels.get("names", [])])
 
+    print("\nradio.serial_port — USB path to the Heltec V3 mesh radio. "
+          "Auto-detected when a CP2102 / Silicon Labs USB-UART bridge is plugged in.")
     serial_port = _prompt_serial(str(radio.get("serial_port") or "") or None)
     ssid = _prompt_string(
         "ap.ssid",
@@ -258,6 +266,9 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         str(network.get("country_code") or "US"),
         _validate_country,
     )
+    print("\ndebug.allow_eth0 — DEV ONLY. When true, traffic on eth0 "
+          "bypasses MAC validation and auto-creates portal sessions. "
+          "Leave false for any deployed node.")
     allow_eth0 = _prompt_bool(
         "Is this a development machine reachable over wired ethernet?",
         bool(debug.get("allow_eth0", False)),
@@ -409,20 +420,34 @@ def _write_validated(
 # --------------------------------------------------------------- next steps
 
 
-def _print_next_steps(config_path: Path, mode: str) -> None:
+def _print_next_steps(
+    config_path: Path, mode: str, *, explicit_config: bool,
+) -> None:
     print(f"\nWrote {config_path}")
+    # If the user invoked configure with --config, suggested follow-ups
+    # that read the config need the same flag — otherwise apply silently
+    # switches to the default path. Bare invocation prints bare commands
+    # so the common case stays terse. promote ships code only (via
+    # `git archive main`) and never reads the config, so the flag is
+    # NOT propagated to the promote line.
+    cfg_flag = f" --config={shlex.quote(str(config_path))}" if explicit_config else ""
     if mode == "prod":
-        print("\nNext: sudo civicmesh apply")
+        print(f"\nNext: sudo civicmesh{cfg_flag} apply")
     else:
         print("\nNext:")
-        print("  uv run civicmesh apply --dry-run    # preview the system files this config would render")
-        print("  uv run civicmesh promote --from .   # deploy this branch's main to prod")
+        print(f"  uv run civicmesh{cfg_flag} apply --dry-run    # preview the system files this config would render")
+        print( "  uv run civicmesh promote --from .   # ship code to prod (config is not carried)")
+        print( "                                      # if the schema changed, also run")
+        print( "                                      # `sudo -u civicmesh civicmesh configure`")
+        print( "                                      # on each prod node")
 
 
 # ------------------------------------------------------------------- entry
 
 
-def run_configure(config_path: Path, mode: str) -> int:
+def run_configure(
+    config_path: Path, mode: str, *, explicit_config: bool = False,
+) -> int:
     try:
         try:
             baseline = _load_baseline(config_path)
@@ -447,7 +472,7 @@ def run_configure(config_path: Path, mode: str) -> int:
         except OSError as e:
             print(f"civicmesh: configure: {e}", file=sys.stderr)
             return 1
-        _print_next_steps(config_path, mode)
+        _print_next_steps(config_path, mode, explicit_config=explicit_config)
         return 0
     except KeyboardInterrupt:
         print("\nAborted, no changes made.", file=sys.stderr)
