@@ -108,7 +108,14 @@ def _require_config(args: argparse.Namespace) -> str:
 
 def _load_runtime(args: argparse.Namespace):
     """Common per-subcommand setup: config, logger, DBConfig."""
-    cfg = load_config(_require_config(args))
+    try:
+        cfg = load_config(_require_config(args))
+    except (ValueError, KeyError, OSError) as e:
+        # Same shape as _cmd_config_show / _cmd_config_validate, no
+        # subcommand name in the prefix because _load_runtime is shared
+        # across many subcommands.
+        print(f"civicmesh: {e}", file=sys.stderr)
+        sys.exit(1)
     log, _ = setup_logging("civicmesh", cfg.logging)
     log.info("civicmesh:cmd=%s", args.cmd)
     db_cfg = DBConfig(path=cfg.db_path)
