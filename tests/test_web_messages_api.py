@@ -141,6 +141,8 @@ class TestApiMessagesShape(unittest.TestCase):
         # Two portal-origin posts (one per session) and one mesh-origin post.
         # The mesh row carries a NULL session_id, mirroring how mesh_bot.py
         # calls insert_message without passing session_id.
+        # max_queue_depth=100_000 — generous fixture cap, never trips. The
+        # function became required-arg in the F1+F3 PR; this is fixture data.
         cls.poster_oid, cls.poster_mid = queue_outbox_and_message(
             cls.db_cfg,
             ts=1_700_000_000,
@@ -149,6 +151,7 @@ class TestApiMessagesShape(unittest.TestCase):
             content="hello from poster",
             session_id=_POSTER_SID,
             fingerprint="ffffffffffffffffffffffffffffffffffffffff",
+            max_queue_depth=100_000,
         )
         cls.other_oid, cls.other_mid = queue_outbox_and_message(
             cls.db_cfg,
@@ -158,6 +161,7 @@ class TestApiMessagesShape(unittest.TestCase):
             content="hello from other",
             session_id=_OTHER_SID,
             fingerprint="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            max_queue_depth=100_000,
         )
         cls.mesh_mid = insert_message(
             cls.db_cfg,

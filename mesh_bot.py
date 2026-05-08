@@ -4,6 +4,7 @@ import functools
 import hashlib
 import logging
 import time
+from collections import deque
 from typing import Any, Optional
 
 from config import load_config
@@ -11,12 +12,14 @@ from database import (
     DBConfig,
     cleanup_retention_bytes_per_channel,
     get_outbox_message,
+    get_outbox_snapshot,
     get_pending_outbox,
     increment_heard,
     init_db,
     increment_outbox_retry,
     insert_heard_packet,
     insert_message,
+    insert_telemetry_event,
     mark_outbox_failed,
     prune_heard_packets,
     prune_telemetry,
@@ -107,6 +110,41 @@ async def _heartbeat_task(cfg, db_cfg: DBConfig, log, controller: RecoveryContro
         await asyncio.sleep(10)
 
 
+class _GlobalEgressBucket:
+    """Sliding-hour token bucket for mesh egress (egress audit F1).
+
+    Single-actor: only `_outbox_task` consults it. The asyncio
+    single-threaded event loop removes any need for locking.
+
+    `try_consume` is atomic check + record: a successful claim adds an
+    entry to the deque before any send is attempted. The bucket therefore
+    counts attempts, not successes — a flaky radio that throws ERROR on
+    every send still spends budget, because bytes hit the air regardless
+    of higher-level result.
+
+    In-memory only. On process restart the deque is empty; F3's queue
+    depth cap (`limits.outbox_max_depth`) bounds what pre-restart
+    backlog can build, so cold-start granting full budget is not an
+    amplification surface.
+
+    Time is `time.monotonic()` from the caller, not wall clock — a
+    single NTP step backward must not retroactively grant tokens.
+    """
+
+    def __init__(self, capacity_per_hour: int):
+        self._capacity = capacity_per_hour
+        self._sends: deque[float] = deque()
+
+    def try_consume(self, now: float) -> tuple[bool, float]:
+        cutoff = now - 3600
+        while self._sends and self._sends[0] < cutoff:
+            self._sends.popleft()
+        if len(self._sends) < self._capacity:
+            self._sends.append(now)
+            return True, 0.0
+        return False, 3600 - (now - self._sends[0])
+
+
 async def _outbox_task(
     cfg,
     db_cfg: DBConfig,
@@ -115,6 +153,7 @@ async def _outbox_task(
     channel_name_to_idx: dict[str, int],
     active_outbox: ActiveOutboxIndex,
     self_name_provider,
+    egress_bucket: _GlobalEgressBucket,
 ):
     # Backoff levels map to a delay sequence [0, 2, 5, max_delay_sec].
     # The last entry is configurable so operators can cap the max pacing.
@@ -128,6 +167,13 @@ async def _outbox_task(
     # Retry cap prevents infinite resend loops when the radio acks are missing.
     max_retries = getattr(cfg.limits, "outbox_max_retries", 3)
     consecutive_send_failures = 0
+    # Egress bucket pause-state tracking. Telemetry fires once on entry and
+    # once on exit, never on the per-30s recheck — sampling at the recheck
+    # cadence would add no signal but would write ~120 rows/hour during a
+    # sustained pause. The mid-pause log line below is also throttled.
+    in_paused_state = False
+    pause_started_mono = 0.0
+    last_pause_log_ts = 0.0
 
     while True:
         try:
@@ -161,6 +207,52 @@ async def _outbox_task(
             channel = item["channel"]
             sender = item["sender"]
             content = item["content"]
+            # Global egress cap (F1). Consume on attempt, not success — bytes
+            # hit the air regardless of higher-level result. Placed OUTSIDE
+            # the inner try so a pause-and-continue does not advance the
+            # backoff state machine via the inner finally.
+            now_mono = time.monotonic()
+            allowed, wait_sec = egress_bucket.try_consume(now_mono)
+            if not allowed:
+                if not in_paused_state:
+                    queue_depth, queue_oldest_age_s = await asyncio.to_thread(
+                        get_outbox_snapshot, db_cfg,
+                        now_ts=int(time.time()), log=log,
+                    )
+                    await asyncio.to_thread(
+                        insert_telemetry_event, db_cfg,
+                        ts=int(time.time()),
+                        kind="egress_bucket_throttled",
+                        detail={
+                            "wait_sec": round(wait_sec, 1),
+                            "queue_depth": queue_depth,
+                            "queue_oldest_age_s": queue_oldest_age_s,
+                        },
+                        log=log,
+                    )
+                    log.info(
+                        "outbox:global_cap_pause wait_sec=%.1f queue_depth=%d oldest_age_s=%s",
+                        wait_sec, queue_depth, queue_oldest_age_s,
+                    )
+                    in_paused_state = True
+                    pause_started_mono = now_mono
+                    last_pause_log_ts = now_mono
+                elif now_mono - last_pause_log_ts > 30:
+                    log.info("outbox:global_cap_still_paused wait_sec=%.1f", wait_sec)
+                    last_pause_log_ts = now_mono
+                await asyncio.sleep(min(wait_sec, 30))
+                continue
+            elif in_paused_state:
+                paused_sec = now_mono - pause_started_mono
+                await asyncio.to_thread(
+                    insert_telemetry_event, db_cfg,
+                    ts=int(time.time()),
+                    kind="egress_bucket_resumed",
+                    detail={"paused_sec": round(paused_sec, 1)},
+                    log=log,
+                )
+                log.info("outbox:global_cap_resumed paused_sec=%.1f", paused_sec)
+                in_paused_state = False
             try:
                 outbound = f"<{sender}> {content}"
                 log.debug("outbox:send id=%s channel=%s len=%d", item["id"], channel, len(content))
@@ -627,6 +719,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
 
     channel_name_to_idx = {name: idx for idx, name in enumerate(cfg.channels.names)}
     active_outbox = ActiveOutboxIndex()
+    egress_bucket = _GlobalEgressBucket(cfg.limits.global_egress_per_hour)
     known_channel_names = set(cfg.channels.names)
 
     controller = RecoveryController(cfg.recovery, db_cfg, cfg.radio.serial_port, log)
@@ -688,7 +781,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
     await asyncio.gather(
         _outbox_task(
             cfg, db_cfg, log, controller, channel_name_to_idx,
-            active_outbox, _self_name,
+            active_outbox, _self_name, egress_bucket,
         ),
         _retention_task(cfg, db_cfg, log),
         _heartbeat_task(cfg, db_cfg, log, controller),

@@ -100,6 +100,8 @@ class LimitsConfig:
     outbox_echo_wait_sec: int
     retention_bytes_per_channel: int
     hub_docs_retention_count: int
+    global_egress_per_hour: int
+    outbox_max_depth: int
 
 
 @dataclass(frozen=True)
@@ -229,6 +231,26 @@ def _validate_hub_docs_retention_count(value: int) -> int:
     return value
 
 
+def _validate_global_egress_per_hour(value: int) -> int:
+    # Zero would deadlock the outbox loop (no token ever granted); negative is
+    # nonsense. The radio's physical ceiling is ~360/hr at the PNW LoRa profile,
+    # so reject obvious operator typos that would silently disable mesh egress.
+    if value < 1:
+        raise ValueError(
+            f"limits.global_egress_per_hour must be >= 1, got {value}"
+        )
+    return value
+
+
+def _validate_outbox_max_depth(value: int) -> int:
+    # Zero would 429 every post; negative is nonsense.
+    if value < 1:
+        raise ValueError(
+            f"limits.outbox_max_depth must be >= 1, got {value}"
+        )
+    return value
+
+
 def _validate_network_consistency(network: NetworkConfig) -> None:
     if network.ip not in network.subnet_cidr:
         raise ValueError(
@@ -300,6 +322,8 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "outbox_echo_wait_sec": cfg.limits.outbox_echo_wait_sec,
             "retention_bytes_per_channel": cfg.limits.retention_bytes_per_channel,
             "hub_docs_retention_count": cfg.limits.hub_docs_retention_count,
+            "global_egress_per_hour": cfg.limits.global_egress_per_hour,
+            "outbox_max_depth": cfg.limits.outbox_max_depth,
         },
         "logging": {
             "log_dir": cfg.logging.log_dir,
@@ -464,6 +488,17 @@ def load_config(path: str) -> AppConfig:
             retention_bytes_per_channel=int(limits.get("retention_bytes_per_channel", 10 * 1024 * 1024 * 1024)),
             hub_docs_retention_count=_validate_hub_docs_retention_count(
                 int(limits.get("hub_docs_retention_count", 3))
+            ),
+            # Sized below radio capacity (~360/hr at PNW LoRa profile) so the
+            # relay does not dominate a shared channel. Pairs with outbox_max_depth.
+            global_egress_per_hour=_validate_global_egress_per_hour(
+                int(limits.get("global_egress_per_hour", 200))
+            ),
+            # Drains in ~18 minutes at the policy bucket rate above; long enough
+            # for normal radio reconnect, short enough that sustained outage
+            # cannot store hours of work for a recovery flood.
+            outbox_max_depth=_validate_outbox_max_depth(
+                int(limits.get("outbox_max_depth", 60))
             ),
         ),
         logging=LoggingConfig(
