@@ -506,36 +506,58 @@ def get_messages(
     cfg: DBConfig,
     *,
     channel: str,
+    viewer_session_id: Optional[str],
     limit: int = 50,
     offset: int = 0,
     include_pinned: bool = True,
     log=None,
 ) -> list[dict[str, Any]]:
+    """Return messages for a channel, with `is_own` projected against the
+    viewer's session id. `session_id` and `fingerprint` are intentionally
+    omitted from the projection — the row's session_id IS the poster's
+    cookie value, and exposing it lets any portal viewer hijack any other
+    walk-up's session (see docs/audits/mesh-to-portal-2026-05-07.md F2).
+    Pass `viewer_session_id=None` for an anonymous viewer; every row will
+    come back with `is_own = 0`.
+    """
     conn = _connect(cfg)
     try:
         if log:
             log.debug("db:get_messages channel=%s limit=%d offset=%d", channel, limit, offset)
 
+        # Hand-rolled column list (not messages.*) so a future column
+        # added to the messages table does not auto-flow into HTTP
+        # responses. New columns must be opted in here explicitly.
+        cols = (
+            "messages.id, messages.ts, messages.channel, messages.sender,"
+            " messages.content, messages.source,"
+            " messages.upvotes, messages.downvotes,"
+            " messages.pinned, messages.pin_order,"
+            " messages.outbox_id, messages.status,"
+            " (messages.session_id IS NOT NULL AND messages.session_id = ?) AS is_own,"
+            " outbox.heard_count, outbox.retry_count"
+        )
+
         rows: list[sqlite3.Row] = []
         if include_pinned:
             rows.extend(
                 conn.execute(
-                    "SELECT messages.*, outbox.heard_count, outbox.retry_count"
+                    f"SELECT {cols}"
                     " FROM messages"
                     " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
                     " WHERE messages.channel=? AND messages.pinned=1"
                     " ORDER BY messages.pin_order ASC NULLS LAST, messages.ts DESC",
-                    (channel,),
+                    (viewer_session_id, channel),
                 ).fetchall()
             )
         rows.extend(
             conn.execute(
-                "SELECT messages.*, outbox.heard_count, outbox.retry_count"
+                f"SELECT {cols}"
                 " FROM messages"
                 " LEFT JOIN outbox ON messages.outbox_id = outbox.id"
                 " WHERE messages.channel=? AND messages.pinned=0"
                 " ORDER BY messages.ts DESC LIMIT ? OFFSET ?",
-                (channel, limit, offset),
+                (viewer_session_id, channel, limit, offset),
             ).fetchall()
         )
         return [dict(r) for r in rows]

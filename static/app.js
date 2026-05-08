@@ -610,7 +610,6 @@ function renderMessages(msgs) {
   // Radio banner is now a separate element outside the scroll area
 
   var lastDateKey = "";
-  var sid = getCookie("civicmesh_session") || "";
 
   for (var i = 0; i < msgs.length; i++) {
     var m = msgs[i];
@@ -625,7 +624,7 @@ function renderMessages(msgs) {
       wrap.appendChild(sep);
     }
 
-    var isOwn = m.session_id && m.session_id === sid;
+    var isOwn = !!m.is_own;
     var isPending = m.source === "wifi" && m.status === "queued";
     var isFailed = m.source === "wifi" && m.status === "failed";
     var div = document.createElement("div");
@@ -641,7 +640,7 @@ function renderMessages(msgs) {
     // Vote
     var uv = Number(m.upvotes || 0);
     var my = Number(m.user_vote || 0);
-    var canVote = !m.session_id || m.session_id !== sid;
+    var canVote = !m.is_own;
     var upActive = my === 1 ? " active-up" : "";
     var badge = uv > 0 ? " \u2605" + uv : "";
     var voteHtml = "";

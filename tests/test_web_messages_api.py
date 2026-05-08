@@ -1,0 +1,204 @@
+"""Regression tests for the /api/messages JSON contract.
+
+Pins the fix for the F2 finding in
+docs/audits/mesh-to-portal-2026-05-07.md: the messages endpoint must not
+expose `session_id` (which IS the poster's cookie value) or
+`fingerprint` to other portal viewers, and must instead project a
+server-computed `is_own` boolean against the requesting viewer's
+session id.
+
+If a future change reintroduces `messages.*` in the projection or adds
+session_id/fingerprint back to the response shape,
+`test_session_id_absent_from_response` fires immediately.
+"""
+
+import http.client
+import http.server
+import json
+import logging
+import os
+import shutil
+import tempfile
+import threading
+import unittest
+import urllib.parse
+
+from config import load_config
+from database import (
+    DBConfig,
+    init_db,
+    insert_message,
+    queue_outbox_and_message,
+)
+from web_server import CivicMeshHandler
+
+
+_MINIMAL_CONFIG_SRC = os.path.join(
+    os.path.dirname(__file__), "apply", "goldens", "minimal-config.toml"
+)
+_CHANNEL = "#civicmesh"  # matches channels.names in minimal-config.toml
+
+_POSTER_SID = "poster-session-aaaaaaaaaaaaaa"
+_OTHER_SID = "other-session-bbbbbbbbbbbbbbbb"
+
+
+class _MessagesServer:
+    """Minimal stand-in for web_server._Server. Mirrors test_web_probe.py."""
+
+    def __init__(self, cfg, db_cfg, tmpdir):
+        log = logging.getLogger("test_web_messages_api")
+        log.addHandler(logging.NullHandler())
+
+        static_dir = os.path.join(
+            os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "static"
+        )
+
+        class _S(http.server.ThreadingHTTPServer):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.cfg = cfg
+                self.db_cfg = db_cfg
+                self.log = log
+                self.sec = log
+                self.feedback_path = os.path.join(tmpdir, "feedback.jsonl")
+
+        def handler(*a, **kw):
+            return CivicMeshHandler(*a, directory=static_dir, **kw)
+
+        self.srv = _S(("127.0.0.1", 0), handler)
+        self.port = self.srv.server_port
+        self.thread = threading.Thread(target=self.srv.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        self.thread.join(timeout=2)
+
+
+class TestApiMessagesShape(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.mkdtemp(prefix="civicmesh_messages_test_")
+        cfg_path = os.path.join(cls.tmpdir, "config.toml")
+        # Top-level keys must appear before any section header in TOML, or
+        # they get bound to the trailing [logging] section instead.
+        with open(_MINIMAL_CONFIG_SRC, "r") as src:
+            base_toml = src.read()
+        with open(cfg_path, "w") as dst:
+            dst.write(f'db_path = "{os.path.join(cls.tmpdir, "test.db")}"\n')
+            dst.write(base_toml)
+
+        cls.cfg = load_config(cfg_path)
+        cls.db_cfg = DBConfig(path=cls.cfg.db_path)
+        init_db(cls.db_cfg, log=logging.getLogger("test_web_messages_api"))
+
+        # Two portal-origin posts (one per session) and one mesh-origin post.
+        # The mesh row carries a NULL session_id, mirroring how mesh_bot.py
+        # calls insert_message without passing session_id.
+        cls.poster_oid, cls.poster_mid = queue_outbox_and_message(
+            cls.db_cfg,
+            ts=1_700_000_000,
+            channel=_CHANNEL,
+            sender="poster",
+            content="hello from poster",
+            session_id=_POSTER_SID,
+            fingerprint="ffffffffffffffffffffffffffffffffffffffff",
+        )
+        cls.other_oid, cls.other_mid = queue_outbox_and_message(
+            cls.db_cfg,
+            ts=1_700_000_001,
+            channel=_CHANNEL,
+            sender="other",
+            content="hello from other",
+            session_id=_OTHER_SID,
+            fingerprint="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        cls.mesh_mid = insert_message(
+            cls.db_cfg,
+            ts=1_700_000_002,
+            channel=_CHANNEL,
+            sender="mesh-peer",
+            content="hello from mesh",
+            source="mesh",
+        )
+
+        cls.server = _MessagesServer(cls.cfg, cls.db_cfg, cls.tmpdir)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def _get_messages(self, cookie=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=5)
+        try:
+            headers = {}
+            if cookie is not None:
+                headers["Cookie"] = f"civicmesh_session={cookie}"
+            qs = urllib.parse.urlencode({"channel": _CHANNEL})
+            conn.request("GET", f"/api/messages?{qs}", headers=headers)
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            body = json.loads(resp.read().decode("utf-8"))
+        finally:
+            conn.close()
+        self.assertIn("messages", body)
+        return body["messages"]
+
+    def _by_id(self, rows, mid):
+        for r in rows:
+            if r["id"] == mid:
+                return r
+        self.fail(f"no row with id={mid} in response")
+
+    # ---- the leak fix itself --------------------------------------------
+
+    def test_session_id_absent_from_response(self):
+        """No row in the response may carry session_id or fingerprint, and
+        every row must carry is_own. Pins the F2 fix; if a future change
+        reverts to `SELECT messages.*`, this test fires before the leak
+        ships."""
+        rows = self._get_messages(cookie=_POSTER_SID)
+        self.assertGreater(len(rows), 0)
+        for r in rows:
+            self.assertNotIn(
+                "session_id", r,
+                f"row id={r.get('id')} leaks session_id (mesh-to-portal F2 regression)",
+            )
+            self.assertNotIn(
+                "fingerprint", r,
+                f"row id={r.get('id')} leaks fingerprint (mesh-to-portal F2 regression)",
+            )
+            self.assertIn("is_own", r, f"row id={r.get('id')} missing is_own")
+
+    # ---- is_own semantics -----------------------------------------------
+
+    def test_is_own_true_for_viewer_session(self):
+        rows = self._get_messages(cookie=_POSTER_SID)
+        self.assertIs(self._by_id(rows, self.poster_mid)["is_own"], True)
+
+    def test_is_own_false_for_other_session(self):
+        rows = self._get_messages(cookie=_POSTER_SID)
+        self.assertIs(self._by_id(rows, self.other_mid)["is_own"], False)
+
+    def test_is_own_false_for_anonymous(self):
+        rows = self._get_messages(cookie=None)
+        for r in rows:
+            self.assertIs(
+                r["is_own"], False,
+                f"row id={r['id']} should be is_own=False for anonymous viewer",
+            )
+
+    def test_is_own_false_for_mesh_origin(self):
+        # Mesh-origin rows have NULL session_id; the SQL guard
+        # (session_id IS NOT NULL AND session_id = ?) must keep them
+        # is_own=False even when the viewer cookie is set.
+        rows = self._get_messages(cookie=_POSTER_SID)
+        self.assertIs(self._by_id(rows, self.mesh_mid)["is_own"], False)
+        rows_anon = self._get_messages(cookie=None)
+        self.assertIs(self._by_id(rows_anon, self.mesh_mid)["is_own"], False)
+
+
+if __name__ == "__main__":
+    unittest.main()
