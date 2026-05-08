@@ -754,13 +754,27 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if not channel:
                 _json(self, 400, {"error": "channel required"})
                 return
-            rows = get_messages(self.server.db_cfg, channel=channel, limit=limit, offset=offset, include_pinned=True, log=log)
-
-            # Add user's vote if cookie present
             sid = self._get_session_id()
-            if sid:
-                for r in rows:
-                    r["user_vote"] = get_user_vote(self.server.db_cfg, message_id=int(r["id"]), session_id=sid, log=log)
+            rows = get_messages(
+                self.server.db_cfg,
+                channel=channel,
+                viewer_session_id=sid,
+                limit=limit,
+                offset=offset,
+                include_pinned=True,
+                log=log,
+            )
+            for r in rows:
+                # Cast 0/1 from SQLite to true/false in JSON. Cleaner wire
+                # format than a numeric flag.
+                r["is_own"] = bool(r["is_own"])
+                if sid:
+                    r["user_vote"] = get_user_vote(
+                        self.server.db_cfg,
+                        message_id=int(r["id"]),
+                        session_id=sid,
+                        log=log,
+                    )
             _json(self, 200, {"messages": rows})
             return
 
