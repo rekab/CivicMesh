@@ -15,9 +15,11 @@ class CivicmeshSmokeTest(unittest.TestCase):
             log_dir = tmp / "logs"
             log_dir.mkdir()
 
-            # config.toml.example has log_dir under [logging] but no db_path
-            # (it falls through to the default). Prepend a top-level db_path
-            # and rewrite log_dir in place.
+            # config.toml.example carries top-level db_path and a [logging]
+            # log_dir; rewrite both in place to point at our tmpdir. (Prior
+            # to the db_path-required change, this prepended db_path; that
+            # would now produce a duplicate top-level key and tomllib would
+            # raise.)
             edited = re.sub(
                 r'^log_dir\s*=.*$',
                 f'log_dir = "{log_dir}"',
@@ -25,7 +27,13 @@ class CivicmeshSmokeTest(unittest.TestCase):
                 count=1,
                 flags=re.MULTILINE,
             )
-            edited = f'db_path = "{db_path}"\n' + edited
+            edited = re.sub(
+                r'^db_path\s*=.*$',
+                f'db_path = "{db_path}"',
+                edited,
+                count=1,
+                flags=re.MULTILINE,
+            )
 
             cfg_path = tmp / "config.toml"
             cfg_path.write_text(edited)

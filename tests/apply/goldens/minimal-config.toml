@@ -2,6 +2,11 @@
 # Pinned values; do not source from anywhere else (config.toml.example
 # could drift). Mirrors the example file's defaults so renders match
 # what setup_ap.sh would produce for an equivalent config.
+#
+# db_path is required by load_config but unused by any renderer (no
+# render_*() function consumes it), so the goldens in goldens/minimal/
+# remain byte-identical regardless of this value.
+db_path = "/tmp/civicmesh-renderer-test.db"
 
 [node]
 site_name = "CivicMesh"

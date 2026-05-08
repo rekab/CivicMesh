@@ -44,7 +44,10 @@ def _render(sections: dict[str, dict[str, object]]) -> str:
 
 def _write(tmp: Path, sections: dict[str, dict[str, object]]) -> Path:
     cfg_path = tmp / "config.toml"
-    cfg_path.write_text(_render(sections))
+    # db_path emitted as a top-level key BEFORE any section header. config.py
+    # rejects missing/relative db_path; tmp is always absolute (mkdtemp).
+    body = f'db_path = "{tmp / "test.db"}"\n\n' + _render(sections)
+    cfg_path.write_text(body)
     return cfg_path
 
 

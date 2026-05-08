@@ -16,6 +16,7 @@ import configure
 def _good_config_text(
     *,
     log_dir: Path,
+    db_path: Path,
     posts_per_hour: int = 10,
     portal_aliases: tuple[str, ...] = ("civicmesh.internal",),
     channel: int = 6,
@@ -23,7 +24,11 @@ def _good_config_text(
     sentinel_name: str = "CivicMesh",
 ) -> str:
     aliases_repr = ", ".join(f'"{a}"' for a in portal_aliases)
+    # db_path emitted as a top-level key BEFORE any section header; required
+    # by config.py and rejected unless absolute.
     return f"""\
+db_path = "{db_path}"
+
 [node]
 site_name = "{sentinel_name}"
 callsign = "civic1"
@@ -94,6 +99,7 @@ class ConfigureRoundTripTest(unittest.TestCase):
             cfg_path = tmp / "config.toml"
             cfg_path.write_text(_good_config_text(
                 log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
                 posts_per_hour=99,
                 portal_aliases=("civicmesh.internal",),
             ))
@@ -120,8 +126,11 @@ class ConfigureRoundTripTest(unittest.TestCase):
             (tmp / "logs").mkdir()
             cfg_path = tmp / "config.toml"
             # Hand-built legacy text so we exercise the alias path that
-            # _good_config_text (post-CIV-11) no longer covers.
+            # _good_config_text (post-CIV-11) no longer covers. db_path is
+            # required by load_config and must be top-level + absolute.
             legacy = f"""\
+db_path = "{tmp / 'test.db'}"
+
 [node]
 name = "Old Hub"
 location = "Fremont, Seattle"
@@ -194,6 +203,7 @@ log_level = "WARNING"
             cfg_path = tmp / "config.toml"
             original_text = _good_config_text(
                 log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
                 # dhcp_range_start outside the 10.0.0.0/24 subnet:
                 dhcp_range_start="192.168.0.10",
                 sentinel_name="ORIGINAL",
@@ -331,7 +341,7 @@ class ConfigCliTest(unittest.TestCase):
             tmp = Path(tmpdir)
             (tmp / "logs").mkdir()
             bad = tmp / "config.toml"
-            bad.write_text(_good_config_text(log_dir=tmp / "logs", channel=5))
+            bad.write_text(_good_config_text(log_dir=tmp / "logs", db_path=tmp / "test.db", channel=5))
             result = self._run("--config", str(bad), "config", "validate")
             self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
             self.assertRegex(result.stderr, r"ap\.channel 5: must be 1, 6, or 11")

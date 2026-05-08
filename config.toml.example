@@ -1,3 +1,9 @@
+# Where the SQLite DB lives. Required, no default. Must be absolute (or
+# ~/-prefixed; expanduser resolves it). `civicmesh configure` writes the
+# resolved absolute path automatically. Production convention is the /var
+# path below; in dev, configure points it at <project_root>/civic_mesh.db.
+db_path = "/usr/local/civicmesh/var/civic_mesh.db"
+
 # CivicMesh config. Fields marked [apply] trigger system-file regeneration
 # on `civicmesh apply`. Fields marked [runtime] are read by the running
 # Python services; edit-and-restart with `systemctl restart civicmesh-*`.

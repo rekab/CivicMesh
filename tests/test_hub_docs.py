@@ -637,7 +637,15 @@ class CliDispatchSmokeTest(unittest.TestCase):
                 # reassigns _MODE / _PROJECT_ROOT during dispatch from
                 # the binary path, so patching those globals doesn't
                 # survive into the dispatcher.
+                #
+                # Patch _default_config_path to a non-existent file so the
+                # _load_retention call inside install-hub-docs takes the
+                # "no config, no --config => default retention" branch
+                # instead of trying to load the dev's local config.toml
+                # (which may or may not exist on the test runner's box).
                 with patch("civicmesh._hub_docs_var_dir", return_value=var), \
+                     patch("civicmesh._default_config_path",
+                           return_value=tmp / "no-such-config.toml"), \
                      _capture() as (out, _):
                     civicmesh.main()
                 self.assertIn("dry_run release_id=20260401T143200Z", out.getvalue())

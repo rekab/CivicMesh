@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import tomli_w
 
+from civicmesh import _default_db_path
 from config import (
     _COUNTRY_RE,
     _IFACE_RE,
@@ -345,6 +346,20 @@ def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     baseline.setdefault("network", {})["iface"] = tier1["network.iface"]
     baseline["network"]["country_code"] = tier1["network.country_code"]
     baseline.setdefault("debug", {})["allow_eth0"] = tier1["debug.allow_eth0"]
+
+    # Bake an absolute db_path. config.py refuses any other shape.
+    baseline["db_path"] = str(_default_db_path().resolve())
+    # If a stray db_path landed inside a section from the legacy bug
+    # (top-level key written after a section header), strip it so the
+    # rendered file has exactly one db_path and tomllib doesn't choke
+    # on the next read.
+    for section in (
+        "logging", "node", "network", "ap", "radio",
+        "channels", "local", "web", "limits", "debug", "recovery",
+    ):
+        sect = baseline.get(section)
+        if isinstance(sect, dict):
+            sect.pop("db_path", None)
 
 
 class _PostWriteValidationError(Exception):
