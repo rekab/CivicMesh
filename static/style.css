@@ -1962,6 +1962,15 @@ body {
 
 /* Desktop: library view occupies the right pane like chat. */
 @media (min-width: 768px) {
-  .lib-detail { left: auto; right: 24px; bottom: 24px; max-width: 420px; border-radius: 16px; }
+  /* translateY must clear the 24px bottom inset too, otherwise a sliver
+     of the sheet (the brown Download PDF button) peeks above the
+     viewport bottom edge in the resting state. The mobile variant
+     pins bottom: 0 so 102% alone is enough; the desktop inset is
+     not. .lib-detail.active wins on specificity (two classes). */
+  .lib-detail {
+    left: auto; right: 24px; bottom: 24px;
+    max-width: 420px; border-radius: 16px;
+    transform: translateY(calc(100% + 24px));
+  }
   .lib-detail__sheet { border-radius: 16px; }
 }
