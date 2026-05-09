@@ -66,6 +66,32 @@ _stats_cache: dict = {"ts": 0.0, "data": None}
 _FEEDBACK_WINDOW_S = 12 * 3600
 _FEEDBACK_BUDGET_BYTES = 1_000_000
 
+# Hardening cap on JSON request bodies (CIV-86). Sized at ~4× the largest
+# realistic /api/post body (~1KB given limits.message_max_chars defaults).
+# If message_max_chars is ever raised above ~3KB, raise this in step.
+_MAX_JSON_BODY_BYTES = 4096
+
+# Per-page cap on /api/messages limit. Frontend pageSize is 80
+# (static/app.js:184); 100 gives modest headroom while bounding the
+# worst-case scan width.
+_MAX_MESSAGE_LIMIT = 100
+
+# Total pagination-depth cap on /api/messages offset. Frontend
+# loadOlderMessages (static/app.js:825) increments offset by pageSize per
+# scroll-up, so offset reaches into the thousands during normal use.
+# 10000 = ~125 pages of 80, past any realistic deployment scroll pattern,
+# while still bounding LIMIT/OFFSET scan cost.
+_MAX_MESSAGE_OFFSET = 10000
+
+
+class _HTTPError(Exception):
+    """Helper-raised request-aborting error. Caught at the top of
+    do_GET / do_POST and mapped to _json(status, {"error": message})."""
+    def __init__(self, status: int, message: str):
+        super().__init__(f"{status}: {message}")
+        self.status = status
+        self.message = message
+
 
 def _recent_feedback_bytes(path, log, window_s=_FEEDBACK_WINDOW_S):
     """Sum line lengths of feedback entries with ts within the last window_s seconds."""
@@ -127,10 +153,54 @@ def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) ->
     handler.wfile.write(body)
 
 
+def _read_body_bounded(handler: http.server.BaseHTTPRequestHandler,
+                       max_bytes: int) -> bytes:
+    """Validate Content-Length and read the body, capping at max_bytes
+    BEFORE allocation so a client cannot OOM us with a huge declared
+    length. Raises _HTTPError(400) on bad header, _HTTPError(413) on
+    over-limit. Used by _read_json for API endpoints and by /feedback
+    POST for its (much larger) text-form budget."""
+    raw_len = handler.headers.get("Content-Length", "0") or "0"
+    try:
+        length = int(raw_len)
+    except ValueError:
+        raise _HTTPError(400, "invalid content-length")
+    if length < 0:
+        raise _HTTPError(400, "invalid content-length")
+    if length > max_bytes:
+        raise _HTTPError(413, "request too large")
+    if length == 0:
+        return b""
+    return handler.rfile.read(length)
+
+
 def _read_json(handler: http.server.BaseHTTPRequestHandler) -> Any:
-    length = int(handler.headers.get("Content-Length", "0") or "0")
-    raw = handler.rfile.read(length) if length else b"{}"
-    return json.loads(raw.decode("utf-8"))
+    raw = _read_body_bounded(handler, _MAX_JSON_BODY_BYTES)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise _HTTPError(400, "invalid json")
+
+
+def _parse_int(value: Optional[str], *, name: str, lo: int, hi: int,
+               default: Optional[int] = None) -> int:
+    """Parse a string-or-None query/body integer with bounds. Raises
+    _HTTPError(400) on missing-with-no-default, non-integer, or
+    out-of-range. Used at every numeric-parameter site so the
+    "no traceback to client" guarantee is enforceable from one place."""
+    if value is None or value == "":
+        if default is not None:
+            return default
+        raise _HTTPError(400, f"{name} required")
+    try:
+        n = int(value)
+    except ValueError:
+        raise _HTTPError(400, f"{name} must be an integer")
+    if n < lo or n > hi:
+        raise _HTTPError(400, f"{name} out of range")
+    return n
 
 
 def _parse_cookies(cookie_header: str) -> dict[str, str]:
@@ -362,6 +432,18 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         return sess, ip, mac
 
     def do_GET(self):
+        try:
+            self._do_GET_inner()
+        except _HTTPError as e:
+            _json(self, e.status, {"error": e.message})
+        except Exception:
+            self.server.log.error(
+                "handler:unhandled path=%s method=GET",
+                self.path, exc_info=True,
+            )
+            _json(self, 500, {"error": "internal error"})
+
+    def _do_GET_inner(self):
         log = self.server.log
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -750,8 +832,17 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/messages":
             qs = urllib.parse.parse_qs(parsed.query)
             channel = (qs.get("channel") or [""])[0]
-            limit = int((qs.get("limit") or ["50"])[0])
-            offset = int((qs.get("offset") or ["0"])[0])
+            limit = _parse_int(
+                (qs.get("limit") or [None])[0],
+                name="limit", lo=1, hi=_MAX_MESSAGE_LIMIT, default=50,
+            )
+            # Different hi than limit: offset bounds total reach (frontend
+            # infinite-scroll grows offset by pageSize per scroll-up), not
+            # per-query work.
+            offset = _parse_int(
+                (qs.get("offset") or [None])[0],
+                name="offset", lo=0, hi=_MAX_MESSAGE_OFFSET, default=0,
+            )
             if not channel:
                 _json(self, 400, {"error": "channel required"})
                 return
@@ -842,7 +933,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/votes":
             qs = urllib.parse.parse_qs(parsed.query)
-            mid = int((qs.get("message_id") or ["0"])[0])
+            # default=0 preserves the existing "no id" semantics
+            # (returns zero votes for absent message_id).
+            mid = _parse_int(
+                (qs.get("message_id") or [None])[0],
+                name="message_id", lo=0, hi=2**31 - 1, default=0,
+            )
             up, down = get_vote_counts(self.server.db_cfg, message_id=mid, log=log)
             sid = self._get_session_id()
             uv = get_user_vote(self.server.db_cfg, message_id=mid, session_id=sid, log=log) if sid else 0
@@ -889,6 +985,18 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        try:
+            self._do_POST_inner()
+        except _HTTPError as e:
+            _json(self, e.status, {"error": e.message})
+        except Exception:
+            self.server.log.error(
+                "handler:unhandled path=%s method=POST",
+                self.path, exc_info=True,
+            )
+            _json(self, 500, {"error": "internal error"})
+
+    def _do_POST_inner(self):
         log = self.server.log
         sec = getattr(self.server, "sec", None)
         parsed = urllib.parse.urlparse(self.path)
@@ -1016,8 +1124,17 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 403, {"error": "session invalid"})
                 return
             data = _read_json(self)
-            mid = int(data.get("message_id", 0))
-            vt = int(data.get("vote_type", 0))
+            mid_raw = data.get("message_id")
+            mid = _parse_int(
+                str(mid_raw) if mid_raw is not None else None,
+                name="message_id", lo=1, hi=2**31 - 1,
+            )
+            # vote_type semantics: -1 down, 0 retract, 1 up.
+            vt_raw = data.get("vote_type")
+            vt = _parse_int(
+                str(vt_raw) if vt_raw is not None else None,
+                name="vote_type", lo=-1, hi=1,
+            )
             sid = sess["session_id"]
             try:
                 msg = get_message(self.server.db_cfg, message_id=mid, log=log)
@@ -1054,11 +1171,6 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/feedback":
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            raw = self.rfile.read(length) if length else b""
-            form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
-            text = form.get("text", [""])[0]
-
             def _feedback_error(status, title, message):
                 node_name = self.server.cfg.node.site_name
                 h = f"""<!doctype html>
@@ -1075,6 +1187,21 @@ a{{color:#0f4c81}}</style></head><body><div class="wrap">
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            # /feedback returns HTML, not JSON, so the top-level _HTTPError
+            # → _json wrapper is bypassed here. Catch the bounded-read
+            # errors locally and translate to the HTML _feedback_error shape.
+            try:
+                raw = _read_body_bounded(self, _FEEDBACK_BUDGET_BYTES)
+            except _HTTPError as e:
+                _feedback_error(
+                    e.status,
+                    "Too long" if e.status == 413 else "Bad request",
+                    e.message,
+                )
+                return
+            form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
+            text = form.get("text", [""])[0]
 
             if not text.strip():
                 _feedback_error(400, "Empty feedback", "Please enter some feedback.")
