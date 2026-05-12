@@ -631,9 +631,15 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
             check=True,
         )
+        # systemd-networkd is the unit that consumes the
+        # /etc/systemd/network/20-<iface>-ap.network file the renderer
+        # writes. Raspberry Pi OS ships with NetworkManager as the
+        # default and networkd not enabled — without this, wlan0 never
+        # gets the static AP IP at boot, dnsmasq fails with "unknown
+        # interface wlan0", and no client gets DHCP.
         _sub.run(
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
-             "rfkill-unblock-wifi"],
+             "rfkill-unblock-wifi", "systemd-networkd"],
             check=True,
         )
         _sub.run(["systemctl", "disable", "wpa_supplicant.service"], check=True)
