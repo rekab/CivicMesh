@@ -755,7 +755,7 @@ the operator is running over wlan0.
    |---|---|
    | 1 | `systemctl daemon-reload` |
    | 2 | `systemctl unmask hostapd.service dnsmasq.service` *(satisfies Debian package contract — see below)* |
-   | 3 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi` |
+   | 3 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi systemd-networkd` |
    | 4 | `systemctl disable wpa_supplicant.service` |
    | 5 | `systemctl enable civicmesh-web civicmesh-mesh` |
    | 6 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |

@@ -66,7 +66,7 @@ class ApplyOrderingTest(unittest.TestCase):
             ["systemctl", "daemon-reload"],
             ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
-             "rfkill-unblock-wifi"],
+             "rfkill-unblock-wifi", "systemd-networkd"],
             ["systemctl", "disable", "wpa_supplicant.service"],
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
             ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
@@ -94,7 +94,7 @@ class ApplyOrderingTest(unittest.TestCase):
             ["systemctl", "daemon-reload"],
             ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
-             "rfkill-unblock-wifi"],
+             "rfkill-unblock-wifi", "systemd-networkd"],
             ["systemctl", "disable", "wpa_supplicant.service"],
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
         ])
