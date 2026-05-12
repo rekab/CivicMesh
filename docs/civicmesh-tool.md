@@ -754,10 +754,19 @@ the operator is running over wlan0.
    | Step | Action |
    |---|---|
    | 1 | `systemctl daemon-reload` |
-   | 2 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi` |
-   | 3 | `systemctl disable wpa_supplicant.service` |
-   | 4 | `systemctl enable civicmesh-web civicmesh-mesh` |
-   | 5 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |
+   | 2 | `systemctl unmask hostapd.service dnsmasq.service` *(satisfies Debian package contract — see below)* |
+   | 3 | `systemctl enable hostapd dnsmasq nftables rfkill-unblock-wifi` |
+   | 4 | `systemctl disable wpa_supplicant.service` |
+   | 5 | `systemctl enable civicmesh-web civicmesh-mesh` |
+   | 6 | `systemctl restart civicmesh-web civicmesh-mesh` *(only if their unit files changed)* |
+
+   The `unmask` step exists because the Debian `hostapd` and `dnsmasq`
+   package postinst masks the unit at install time with the rationale
+   "don't auto-start until the operator has rendered a config." apply
+   is the operator-driven step that renders those configs (the
+   immediately-preceding write phase wrote them), so unmasking belongs
+   here — not in bootstrap. `systemctl unmask` is idempotent on
+   already-unmasked units, so this is safe on every re-run.
 
    System-stack config changes (hostapd / dnsmasq / nftables /
    networkd / NetworkManager / sysctl) require a reboot to take
@@ -808,6 +817,25 @@ manually `rm` the stale `99-unmanaged-wlan0.conf` and
   Inspect with `journalctl -u <service> -e`. Re-run `apply` (no-op for
   unchanged files) once underlying issue is fixed.
 - Always prefer `--dry-run` first on a live hub.
+
+**Testing the unmask path without reimaging:**
+
+To re-exercise the fresh-postinst code path (e.g. after touching the
+`systemctl unmask` step) without flashing a new SD card:
+
+```bash
+# Reset to fresh-postinst state to re-test the unmask path:
+sudo systemctl unmask hostapd dnsmasq
+sudo apt-get install --reinstall -y hostapd dnsmasq
+# Verify postinst re-masked: should show /dev/null symlink.
+ls -la /etc/systemd/system/hostapd.service
+# Now exercise apply:
+sudo civicmesh apply
+```
+
+The reinstall step is what triggers the package postinst to re-mask
+the unit; without it, `apt-get install` would no-op since the package
+is already at the latest version.
 
 ---
 

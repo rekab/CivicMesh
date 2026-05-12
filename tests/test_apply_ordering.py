@@ -64,6 +64,7 @@ class ApplyOrderingTest(unittest.TestCase):
         argvs = [c[0][0] for c in mock_run.call_args_list]
         self.assertEqual(argvs, [
             ["systemctl", "daemon-reload"],
+            ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
              "rfkill-unblock-wifi"],
             ["systemctl", "disable", "wpa_supplicant.service"],
@@ -91,6 +92,7 @@ class ApplyOrderingTest(unittest.TestCase):
         argvs = [c[0][0] for c in mock_run.call_args_list]
         self.assertEqual(argvs, [
             ["systemctl", "daemon-reload"],
+            ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
              "rfkill-unblock-wifi"],
             ["systemctl", "disable", "wpa_supplicant.service"],

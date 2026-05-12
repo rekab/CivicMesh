@@ -618,6 +618,19 @@ def _cmd_apply(args: argparse.Namespace) -> None:
 
     try:
         _sub.run(["systemctl", "daemon-reload"], check=True)
+        # hostapd and dnsmasq are masked by their Debian package postinst
+        # (since Buster, 2019): "don't auto-start until the operator has
+        # rendered a config." apply is the operator-driven step that
+        # renders that config — the immediately-preceding
+        # driver.apply_plan() just wrote /etc/hostapd/hostapd.conf and
+        # the dnsmasq drop-in — so satisfying the unmask half of the
+        # package contract belongs here, not in bootstrap. systemctl
+        # unmask is idempotent on already-unmasked units, so this is
+        # safe on every apply re-run.
+        _sub.run(
+            ["systemctl", "unmask", "hostapd.service", "dnsmasq.service"],
+            check=True,
+        )
         _sub.run(
             ["systemctl", "enable", "hostapd", "dnsmasq", "nftables",
              "rfkill-unblock-wifi"],
