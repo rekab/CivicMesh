@@ -311,7 +311,11 @@ def _prompt_serial(current: str | None) -> str:
             print("  pick a number from the list or paste a /dev/... path.")
     else:
         print("\nradio.serial_port — no Heltec V3 / CP2102 device detected on /dev/serial/by-id.")
-    path = _prompt_string("radio.serial_port", current)
+    # Fall back to /dev/ttyUSB0 when there's no prior value and no
+    # detection — matches the runtime default in config.py load_config
+    # and lets the operator just press Enter when configuring a node
+    # ahead of the radio being plugged in.
+    path = _prompt_string("radio.serial_port", current or "/dev/ttyUSB0")
     _warn_serial_not_present(path)
     return path
 

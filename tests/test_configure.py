@@ -233,11 +233,20 @@ class ConfigurePromptTest(unittest.TestCase):
             result = configure._prompt_serial(None)
         self.assertEqual(result, "/dev/serial/by-id/usb-Silicon_Labs_X")
 
-    def test_prompt_serial_zero_detected(self) -> None:
+    def test_prompt_serial_zero_detected_defaults_to_ttyusb0(self) -> None:
+        # Pressing Enter at the no-detection prompt accepts the
+        # /dev/ttyUSB0 fallback — matches the runtime default in
+        # config.load_config so a configure-ahead-of-radio flow works.
         with patch("configure._detect_serial_port", return_value=[]), \
-             patch("builtins.input", side_effect=["/dev/ttyUSB0"]):
+             patch("builtins.input", side_effect=[""]):
             result = configure._prompt_serial(None)
         self.assertEqual(result, "/dev/ttyUSB0")
+
+    def test_prompt_serial_zero_detected_manual_override(self) -> None:
+        with patch("configure._detect_serial_port", return_value=[]), \
+             patch("builtins.input", side_effect=["/dev/ttyACM0"]):
+            result = configure._prompt_serial(None)
+        self.assertEqual(result, "/dev/ttyACM0")
 
     def test_prompt_serial_multiple_detected_pick_number(self) -> None:
         with patch("configure._detect_serial_port", return_value=[
