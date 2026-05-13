@@ -2,13 +2,7 @@
 
 **A walk-up MeshCore relay for Seattle Emergency Hubs.**
 
-<p align="center">
-  <span style="display:inline-block; background:white; padding:16px; border-radius:12px;">
-    <img src="docs/img/mesh-logo.svg" alt="CivicMesh animated mesh logo" width="300">
-  </span>
-</p>
-
-## What this is
+## What 
 
 CivicMesh is:
 
