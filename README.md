@@ -366,9 +366,13 @@ context.
 
 ## Issue tracking
 
-Open issues and planned work are tracked in Linear. Commits and PRs
-reference tickets by their `CIV-NNN` identifier (e.g., `CIV-86`,
-`CIV-44`). Tool choice may change later.
+Internal planning and the working backlog live in a private Linear
+workspace. Commits and PRs reference Linear tickets by their
+`CIV-NNN` identifier (e.g., `CIV-86`, `CIV-44`).
+
+For bug reports, external feature requests, and contribution
+discussion, please use **GitHub Issues** on this repo — that's the
+inbound channel for anyone outside the project.
 
 ## Project docs
 
