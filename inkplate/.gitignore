@@ -1,0 +1,6 @@
+# arduino-cli build artifacts (Makefile invokes `arduino-cli compile`
+# without --build-path, so build/ lands here under firmware/hello/).
+build/
+*.bin
+*.elf
+*.hex
