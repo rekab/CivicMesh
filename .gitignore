@@ -14,6 +14,7 @@ build/
 *.pyc
 .DS_Store
 feedback.jsonl
+TODO.md
 
 # CivicMesh radio diagnostics — harness source is tracked, runs are not.
 diagnostics/radio/runs/*
