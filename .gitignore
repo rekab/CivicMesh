@@ -18,6 +18,8 @@ feedback.jsonl
 # CivicMesh radio diagnostics — harness source is tracked, runs are not.
 diagnostics/radio/runs/*
 !diagnostics/radio/runs/.gitkeep
+# Per-operator node settings; copy nodes.toml.example to start.
+diagnostics/radio/nodes.toml
 # Hub Reference Library (CIV-90)
 out/
 var/

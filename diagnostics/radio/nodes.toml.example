@@ -1,0 +1,27 @@
+# Copy this file to nodes.toml and edit the values for your setup.
+# nodes.toml is gitignored so per-developer settings don't end up in
+# the public tree.
+#
+# The harness uses IPs directly (rather than ssh-config aliases) so it
+# works the same on any operator's machine, and so the captive-portal
+# node can be reached over its own AP without depending on the
+# operator's local ssh config.
+
+[pi4]
+ssh_host = "192.168.1.101"             # pi4 on your LAN
+ssh_user = "pi"                        # ssh user on the node
+serial_port = "/dev/ttyUSB0"
+baud = 115200
+repo_path = "/home/pi/code/CivicMesh"  # path to the CivicMesh checkout on the node
+
+[zero2w]
+ssh_host = "10.0.0.1"                  # zero2w's captive-portal AP gateway
+ssh_user = "pi"
+serial_port = "/dev/ttyUSB0"
+baud = 115200
+repo_path = "/home/pi/code/CivicMesh"
+
+[test]
+channel = "#civicmesh"
+message_prefix = "[RTTEST]"
+min_send_spacing_s = 5.0
