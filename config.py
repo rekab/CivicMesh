@@ -125,6 +125,17 @@ class RecoveryConfig:
 
 
 @dataclass(frozen=True)
+class ExternalDisplayConfig:
+    # Default false so an absent [external_display] section = disabled,
+    # which is the case for the majority of hubs (no physical e-paper
+    # display attached). Phase 0 gates only the HTTP endpoint; Phase 1
+    # will source real fields from server state, at which point the
+    # "enabled = false ⇒ zero cost" guarantee depends on this default
+    # surviving config-loader changes.
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     node: NodeConfig
     network: NetworkConfig
@@ -137,6 +148,7 @@ class AppConfig:
     logging: LoggingConfig
     debug: DebugConfig
     recovery: RecoveryConfig
+    external_display: ExternalDisplayConfig
     # Required, no default. The previous "civic_mesh.db" fallback resolved
     # against cwd and silently landed on whatever sat in the working
     # directory — exactly the trapdoor that let a misconfigured test
@@ -331,6 +343,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "enable_security_log": cfg.logging.enable_security_log,
         },
         "debug": {"allow_eth0": cfg.debug.allow_eth0},
+        "external_display": {"enabled": cfg.external_display.enabled},
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
             "liveness_timeout_sec": cfg.recovery.liveness_timeout_sec,
@@ -396,6 +409,7 @@ def load_config(path: str) -> AppConfig:
     logging_raw = raw.get("logging", {})
     debug_raw = raw.get("debug", {})
     recovery_raw = raw.get("recovery", {})
+    external_display_raw = raw.get("external_display", {})
 
     db_path = raw.get("db_path") or raw.get("db", {}).get("path")
     if not db_path:
@@ -521,6 +535,9 @@ def load_config(path: str) -> AppConfig:
             flapping_max_recoveries=int(recovery_raw.get("flapping_max_recoveries", 6)),
             backoff_base_sec=float(recovery_raw.get("backoff_base_sec", 60.0)),
             backoff_cap_sec=float(recovery_raw.get("backoff_cap_sec", 3600.0)),
+        ),
+        external_display=ExternalDisplayConfig(
+            enabled=bool(external_display_raw.get("enabled", False)),
         ),
         db_path=db_path,
     )

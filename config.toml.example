@@ -121,3 +121,12 @@ enable_security_log = true
 # Allow traffic arriving on eth0 to bypass MAC validation and auto-create sessions for local testing.
 # Requires the client to set the civicmesh_session cookie (set by the web UI); only applies when ARP shows eth0.
 allow_eth0 = false
+
+# Optional Inkplate 6 e-paper bulletin display for walk-up users.
+# Most hubs won't have one. When false (the default), the
+# /api/external-display/state endpoint returns 404 and the feature
+# imposes no runtime cost. Tier 2 — hand-edit only on hubs that
+# physically have the display. [runtime] (consumed by web_server
+# only). See docs/external-display-api.md.
+[external_display]
+enabled = false

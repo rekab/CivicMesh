@@ -829,6 +829,33 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
 
+        if path == "/api/external-display/state":
+            if not self.server.cfg.external_display.enabled:
+                _json(self, 404, {"error": "not found"})
+                return
+            _json(self, 200, {
+                "api_version": 1,
+                "hub": {
+                    "site_name": "Placeholder Hub",
+                    "callsign": "stub",
+                },
+                "messages": [
+                    {
+                        "id": 1,
+                        "channel": "#civicmesh",
+                        "sender": "alice",
+                        "body": "Hardcoded sample message — Phase 0 stub.",
+                    },
+                    {
+                        "id": 2,
+                        "channel": "#civicmesh",
+                        "sender": "bob",
+                        "body": "Real messages land in Phase 1.",
+                    },
+                ],
+            })
+            return
+
         if path == "/api/messages":
             qs = urllib.parse.parse_qs(parsed.query)
             channel = (qs.get("channel") or [""])[0]
