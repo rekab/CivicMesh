@@ -82,6 +82,18 @@ Pi sends a serial command asking the ESP32 firmware to toggle GPIO36, cutting th
 
 Pi tells the kernel to re-enumerate the USB device. On the Zero 2W, this does NOT cut VBUS power — it only resets the CP2102's logical state and causes `/dev/ttyUSB0` to disappear and reappear.
 
+**Prerequisite (pyusb path only):** by default the kernel restricts USB control transfers (like `device.reset()`) to root. Without a udev rule, pyusb raises `USBError: [Errno 13] Access denied`. The recovery characterization script in `diagnostics/radio/` and any future lifecycle manager that uses pyusb resets need this rule in place:
+
+```bash
+sudo tee /etc/udev/rules.d/99-cp2102.rules > /dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", MODE="0666"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Grants all users read/write access to Silicon Labs (VID `10c4`) USB devices. Applies immediately to newly attached devices; `udevadm trigger` re-applies to already-attached devices without unplug.
+
 - **Resets:** CP2102 only (on Zero 2W).
 - **Does not reset:** ESP32, SX1262 (VBUS stays powered on Zero 2W).
 - **Recovers:** CP2102 bridge hung, stale serial port state.

@@ -553,6 +553,12 @@ context.
   readable.
 - Support for e-paper display in development.
 
+## Issue tracking
+
+Open issues and planned work are tracked in Linear. Commits and PRs
+reference tickets by their `CIV-NNN` identifier (e.g., `CIV-86`,
+`CIV-44`). Tool choice may change later.
+
 ## Project docs
 
 Specs and planning:
