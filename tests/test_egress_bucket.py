@@ -1,4 +1,5 @@
-"""Unit tests for `mesh_bot._GlobalEgressBucket` (egress audit F1).
+"""Unit tests for `mesh_bot._GlobalEgressBucket`, the relay-wide
+hourly egress cap.
 
 The bucket is a sliding-hour token bucket consulted by `_outbox_task` to
 cap relay-wide mesh egress. Tests pass `now` explicitly to every method

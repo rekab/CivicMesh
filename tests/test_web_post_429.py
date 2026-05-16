@@ -1,4 +1,4 @@
-"""Integration tests for `/api/post` queue-full 429 (egress audit F3).
+"""Integration tests for `/api/post` queue-full 429 (relay-wide outbox depth cap).
 
 Pins:
   - Under-cap traffic returns 200 (the happy path is unchanged).

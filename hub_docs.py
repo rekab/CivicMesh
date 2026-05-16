@@ -153,8 +153,9 @@ def install_hub_docs(
         return {"release_id": release_id, "docs": doc_count}
 
     # The zip uses a `hub-docs/` prefix for ergonomic extraction; the
-    # on-disk release directory specified in §7 holds `index.json` and
-    # the PDFs directly. Bridge the two before promotion.
+    # on-disk release directory (per docs/hub-reference-library.md §7
+    # "INSTALL PROCESS") holds `index.json` and the PDFs directly.
+    # Bridge the two before promotion.
     try:
         _lift_inner_hub_docs(incoming)
     except HubDocsError:
@@ -243,10 +244,11 @@ def _lift_inner_hub_docs(incoming: Path) -> None:
     """Move `incoming/hub-docs/*` up to `incoming/` and remove the inner dir.
 
     The zip's `hub-docs/` prefix is namespacing for clean extraction;
-    the design doc (§7) specifies a release directory with `index.json`
-    directly under `<release_id>/`. The web server's slug-discovery
-    walk then sees `<var>/hub-docs/index.json` (via the symlink) and
-    surfaces the library at `/var/hub-docs/`.
+    docs/hub-reference-library.md §7 "INSTALL PROCESS" specifies a
+    release directory with `index.json` directly under `<release_id>/`.
+    The web server's slug-discovery walk then sees
+    `<var>/hub-docs/index.json` (via the symlink) and surfaces the
+    library at `/var/hub-docs/`.
     """
     inner = incoming / "hub-docs"
     if not inner.is_dir():
@@ -264,7 +266,7 @@ def _lift_inner_hub_docs(incoming: Path) -> None:
 
 
 def _validate_extracted(incoming: Path) -> None:
-    """Apply §3 install-time validation rules 1-5 to the extracted dir."""
+    """Apply docs/hub-reference-library.md §3 "THE CONTRACT" install-time validation rules 1-5 to the extracted dir."""
     index_path = incoming / "hub-docs" / "index.json"
     if not index_path.is_file():
         raise HubDocsError(

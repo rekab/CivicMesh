@@ -222,7 +222,7 @@ table inet filter {{
         iifname "{iface}" tcp dport 53 accept
 
         # HTTPS/QUIC: reject fast on the AP iface
-        # (see docs/captive-portal-precedent.md §4)
+        # (see docs/captive-portal-precedent.md §4 "HTTPS: why we don't have it, and what follows")
         #
         # Wildcard DNS hijack means every background HTTPS request from a
         # connected phone resolves to {iface}'s IP. RST on TCP and ICMP

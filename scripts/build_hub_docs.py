@@ -149,8 +149,9 @@ def parse_manifest(path: Path) -> dict:
                 doc_title=title,
             )
 
-        # Rule 4b: filename safety (prose-only constraint from §4
-        # schema description for [[doc]].file).
+        # Rule 4b: filename safety (prose-only constraint from
+        # docs/hub-reference-library.md §4 "MANIFEST FORMAT" schema
+        # description for [[doc]].file).
         filename = doc["file"]
         if "/" in filename or "\\" in filename:
             raise ManifestError(
@@ -250,7 +251,7 @@ def validate_sources(manifest: dict, source_dir: Path) -> list[DocFacts]:
 def build_index(
     manifest: dict, doc_facts: list[DocFacts], built_at: datetime
 ) -> dict:
-    """Construct the index.json dict per §3 of the design doc."""
+    """Construct the index.json dict per docs/hub-reference-library.md §3 "THE CONTRACT: `index.json` SCHEMA"."""
     by_category: dict[str, list[DocFacts]] = {}
     for fact in doc_facts:
         by_category.setdefault(fact.category, []).append(fact)

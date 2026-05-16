@@ -515,10 +515,9 @@ def get_messages(
     """Return messages for a channel, with `is_own` projected against the
     viewer's session id. `session_id` and `fingerprint` are intentionally
     omitted from the projection — the row's session_id IS the poster's
-    cookie value, and exposing it lets any portal viewer hijack any other
-    walk-up's session (see docs/audits/mesh-to-portal-2026-05-07.md F2).
-    Pass `viewer_session_id=None` for an anonymous viewer; every row will
-    come back with `is_own = 0`.
+    cookie value, and exposing it would let any portal viewer hijack any
+    other walk-up's session. Pass `viewer_session_id=None` for an
+    anonymous viewer; every row will come back with `is_own = 0`.
     """
     conn = _connect(cfg)
     try:
@@ -650,8 +649,9 @@ def queue_outbox_and_message(
     update_message_status matches 0 rows.
 
     Refuses the insert and returns None if the queued depth is already
-    at max_queue_depth (egress audit F3). The depth check + INSERT run
-    inside a single BEGIN IMMEDIATE transaction so two ThreadingHTTPServer
+    at max_queue_depth (the relay-wide outbox cap, distinct from the
+    per-session post quota). The depth check + INSERT run inside a
+    single BEGIN IMMEDIATE transaction so two ThreadingHTTPServer
     workers cannot both pass the cap check concurrently."""
     conn = _connect(cfg)
     try:
