@@ -1,3 +1,16 @@
+"""Schema and query functions for CivicMesh's SQLite database.
+
+The database is the sole IPC channel between `web_server.py` and
+`mesh_bot.py`. Tables: messages, outbox, votes, sessions, status,
+heard_packets, telemetry_events. WAL mode with synchronous=NORMAL
+and foreign keys enabled.
+
+Intentionally a flat collection of query functions — no ORM, no
+schema introspection at runtime. The outbox state machine and the
+atomicity rules around `queue_outbox_and_message` are documented in
+`docs/message_lifecycle.md`.
+"""
+
 import functools
 import json
 import logging

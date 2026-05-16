@@ -1,3 +1,17 @@
+"""Operator CLI for CivicMesh nodes (SSH-only).
+
+Subcommands cover read-only inspection (stats, sessions list,
+messages recent, outbox list), DB mutation (pin / unpin, outbox
+cancel, cleanup), config validation, the apply pipeline, hub-docs
+install/rollback, and the dev-to-prod `promote` flow.
+
+The same binary runs in two modes: DEV (invoked via `uv run
+civicmesh`, reads a checkout-local `config.toml`) and PROD (installed
+to /usr/local/civicmesh, reads /usr/local/civicmesh/etc/config.toml).
+Mode detection is by venv path; see `docs/civicmesh-tool.md` for the
+bright-line rules and the full command reference.
+"""
+
 import argparse
 import os
 import sys

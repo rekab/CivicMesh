@@ -1,3 +1,19 @@
+"""MeshCore radio relay for CivicMesh.
+
+Async process driving the Heltec V3 radio over USB serial via the
+`meshcore` library. Three concurrent asyncio tasks: an outbox sender
+(serial-queue, exponential backoff, echo-confirmed retries), a
+retention pruner (drops old rows from the messages / heard_packets /
+telemetry tables), and a heartbeat recorder that updates the status
+table for liveness monitoring.
+
+Reads from and writes to the same SQLite database as `web_server.py`;
+there is no other IPC. The radio link is best-effort — outbox sends
+are paced, the queue depth is capped, and a sustained hang triggers a
+`RecoveryController` reset via RTS pulse on the serial port (see
+`recovery.py`). Entry point: `civicmesh-mesh`.
+"""
+
 import argparse
 import asyncio
 import functools

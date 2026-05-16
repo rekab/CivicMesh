@@ -1,3 +1,17 @@
+"""Captive-portal HTTP server for CivicMesh.
+
+Synchronous, stdlib-`http.server`-based daemon on port 8080. Serves
+the SPA in `static/`, the `/api/*` JSON endpoints, OS captive-portal
+probes (which always 302 to /welcome), and the feedback POST. Handles
+session cookies, MAC-address validation via `/proc/net/arp`, and
+per-session rate limiting at ingest.
+
+Inbound posts queue into the outbox table and are picked up by
+`mesh_bot.py`. The two processes share a single SQLite database in
+WAL mode — see `docs/message_lifecycle.md` for the outbox state
+machine. Entry point: `civicmesh-web`.
+"""
+
 import argparse
 import html as html_mod
 import http.server
