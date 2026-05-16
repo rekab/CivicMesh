@@ -9,24 +9,27 @@ transmitted and the recipient received the packet.
 
 ## Prerequisites
 
-- Mac has SSH access to both nodes as user `james`:
-  - pi4   → `192.168.1.101`
-  - zero2w → `10.0.0.1` (on its captive-portal AP)
-- Each node has the CivicMesh repo at `/home/james/code/CivicMesh` with a
-  working virtualenv at `.venv/` that has `meshcore` installed.
+- Copy `nodes.toml.example` to `nodes.toml` and fill in your two nodes'
+  IPs, SSH user, and on-node repo path. `nodes.toml` is gitignored.
+- The driver machine has SSH access (key-based) to both nodes — by
+  convention `pi4` lives on your LAN and `zero2w` is reachable only
+  over its own captive-portal AP gateway.
+- Each node has the CivicMesh repo checked out at the `repo_path` set
+  in `nodes.toml`, with a working virtualenv at `.venv/` that has
+  `meshcore` installed.
 - **Mesh_bot must be stopped on both nodes before running.** The harness
   refuses to run if `/dev/ttyUSB0` is held by another process. Stop via
   tmux:
   ```
-  ssh james@192.168.1.101   # then tmux attach, Ctrl-C the mesh_bot pane
-  ssh james@10.0.0.1        # same
+  ssh <user>@<pi4-ip>     # then tmux attach, Ctrl-C the mesh_bot pane
+  ssh <user>@<zero2w-ip>  # same
   ```
   The harness never starts, stops, or kills mesh_bot itself. Restart
   mesh_bot manually after diagnostics are done.
 
 ## Invocation
 
-All from the repo root (`/Users/james/code/civicmesh/CivicMesh`):
+All from the CivicMesh repo root on the driver machine:
 
 ```
 python diagnostics/radio/run_test.py t0        # 30s passive listen — checks RX on both nodes

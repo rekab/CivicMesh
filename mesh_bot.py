@@ -111,7 +111,7 @@ async def _heartbeat_task(cfg, db_cfg: DBConfig, log, controller: RecoveryContro
 
 
 class _GlobalEgressBucket:
-    """Sliding-hour token bucket for mesh egress (egress audit F1).
+    """Sliding-hour token bucket capping relay-wide mesh egress.
 
     Single-actor: only `_outbox_task` consults it. The asyncio
     single-threaded event loop removes any need for locking.
@@ -122,8 +122,8 @@ class _GlobalEgressBucket:
     every send still spends budget, because bytes hit the air regardless
     of higher-level result.
 
-    In-memory only. On process restart the deque is empty; F3's queue
-    depth cap (`limits.outbox_max_depth`) bounds what pre-restart
+    In-memory only. On process restart the deque is empty; the outbox
+    queue-depth cap (`limits.outbox_max_depth`) bounds what pre-restart
     backlog can build, so cold-start granting full budget is not an
     amplification surface.
 
@@ -207,7 +207,7 @@ async def _outbox_task(
             channel = item["channel"]
             sender = item["sender"]
             content = item["content"]
-            # Global egress cap (F1). Consume on attempt, not success — bytes
+            # Global hourly egress cap. Consume on attempt, not success — bytes
             # hit the air regardless of higher-level result. Placed OUTSIDE
             # the inner try so a pause-and-continue does not advance the
             # backoff state machine via the inner finally.

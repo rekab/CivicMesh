@@ -133,7 +133,8 @@ def apply_plan(plan: Plan, etc_root: Path = Path("/")) -> None:
 
     Fail-fast: any I/O error bubbles up. Already-replaced files stay in
     place; the apply CLI maps an exception here to exit 4 with no
-    automatic rollback (per the design doc).
+    automatic rollback (see docs/civicmesh-tool.md § apply, exit-code
+    table).
     """
     for change in plan.changes:
         target = _on_disk_path(change.abs_path, etc_root)

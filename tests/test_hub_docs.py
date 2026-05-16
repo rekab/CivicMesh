@@ -173,7 +173,8 @@ class InstallHappyPathTest(unittest.TestCase):
                 os.readlink(link),
                 "hub-docs.releases/20260401T143200Z",
             )
-            # §7 layout: index.json + PDFs sit DIRECTLY under
+            # Release-dir layout (docs/hub-reference-library.md §7
+            # "INSTALL PROCESS"): index.json + PDFs sit DIRECTLY under
             # <release_id>/, not nested in <release_id>/hub-docs/.
             release = var / "hub-docs.releases" / "20260401T143200Z"
             self.assertTrue((release / "index.json").is_file())

@@ -2,7 +2,8 @@
 
 Every OS captive-portal probe URL must 302 to /welcome unconditionally.
 There is no longer any "accepted" state that flips probes to vendor-
-specific success bodies — see docs/captive-portal-precedent.md §2.
+specific success bodies — see docs/captive-portal-precedent.md §2
+"The two-state trap".
 """
 
 import http.client

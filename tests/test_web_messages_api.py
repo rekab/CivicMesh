@@ -1,11 +1,10 @@
 """Regression tests for the /api/messages JSON contract.
 
-Pins the fix for the F2 finding in
-docs/audits/mesh-to-portal-2026-05-07.md: the messages endpoint must not
-expose `session_id` (which IS the poster's cookie value) or
-`fingerprint` to other portal viewers, and must instead project a
-server-computed `is_own` boolean against the requesting viewer's
-session id.
+Pins the fix for the session-cookie-disclosure bug: the messages
+endpoint must not expose `session_id` (which IS the poster's cookie
+value) or `fingerprint` to other portal viewers, and must instead
+project a server-computed `is_own` boolean against the requesting
+viewer's session id.
 
 If a future change reintroduces `messages.*` in the projection or adds
 session_id/fingerprint back to the response shape,
@@ -141,8 +140,9 @@ class TestApiMessagesShape(unittest.TestCase):
         # Two portal-origin posts (one per session) and one mesh-origin post.
         # The mesh row carries a NULL session_id, mirroring how mesh_bot.py
         # calls insert_message without passing session_id.
-        # max_queue_depth=100_000 — generous fixture cap, never trips. The
-        # function became required-arg in the F1+F3 PR; this is fixture data.
+        # max_queue_depth=100_000 — generous fixture cap, never trips.
+        # The parameter became required when the relay-wide outbox cap
+        # landed; this is fixture data.
         cls.poster_oid, cls.poster_mid = queue_outbox_and_message(
             cls.db_cfg,
             ts=1_700_000_000,
@@ -205,19 +205,19 @@ class TestApiMessagesShape(unittest.TestCase):
 
     def test_session_id_absent_from_response(self):
         """No row in the response may carry session_id or fingerprint, and
-        every row must carry is_own. Pins the F2 fix; if a future change
-        reverts to `SELECT messages.*`, this test fires before the leak
-        ships."""
+        every row must carry is_own. Pins the session-cookie-disclosure
+        fix; if a future change reverts to `SELECT messages.*`, this
+        test fires before the leak ships."""
         rows = self._get_messages(cookie=_POSTER_SID)
         self.assertGreater(len(rows), 0)
         for r in rows:
             self.assertNotIn(
                 "session_id", r,
-                f"row id={r.get('id')} leaks session_id (mesh-to-portal F2 regression)",
+                f"row id={r.get('id')} leaks session_id (session-cookie-disclosure regression)",
             )
             self.assertNotIn(
                 "fingerprint", r,
-                f"row id={r.get('id')} leaks fingerprint (mesh-to-portal F2 regression)",
+                f"row id={r.get('id')} leaks fingerprint (session-cookie-disclosure regression)",
             )
             self.assertIn("is_own", r, f"row id={r.get('id')} missing is_own")
 

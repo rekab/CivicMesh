@@ -459,7 +459,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         # The OS sees a permanent walled garden and never tries to promote our
         # SSID to "validated" — which would otherwise cause it to revalidate
         # against the (nonexistent) internet, fail, and fall back to cellular.
-        # See docs/captive-portal-precedent.md §2.
+        # See docs/captive-portal-precedent.md §2 "The two-state trap".
         if path in (
             "/generate_204",
             "/gen_204",
@@ -1087,7 +1087,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 log=log,
             )
             if result is None:
-                # Queue full (egress audit F3). Distinct from the per-session
+                # Relay-wide outbox cap hit. Distinct from the per-session
                 # 429 above: that means "your quota is spent"; this means
                 # "the relay is over capacity, anyone's posts get this."
                 # Different response shape signals a different remediation
