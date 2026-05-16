@@ -17,7 +17,7 @@ CivicMesh is:
   &nbsp;&nbsp;
   <img src="docs/img/screenshot-thread.jpg" alt="Thread view on phone" width="260">
   &nbsp;&nbsp;
-  <img src="docs/img/screenshot-docs.jpg" alt="Thread view on phone" width="260">
+  <img src="docs/img/screenshot-docs.jpg" alt="Reference docs view on phone" width="260">
 </p>
 
 ## Why
@@ -57,11 +57,21 @@ CivicMesh is not:
 
 ## Threat model
 
-Messages are public and observable by anyone on the mesh or local WiFi.
-CivicMesh prioritizes accessibility and operability over confidentiality.
-Do not enter secrets, do not post anything you wouldn't write on a public
-board at the Hub. The captive portal is HTTP-only by design — see
-[Security](#security) for what that does and doesn't protect.
+Messages are public and observable by anyone on the mesh or local
+WiFi. CivicMesh prioritizes accessibility and operability over
+confidentiality. Do not enter secrets, do not post anything you
+wouldn't write on a public board at the Hub.
+
+The portal is HTTP-only by design — modern phones don't reliably
+trust self-signed certs on captive portals, and a public-information
+board doesn't need TLS to do its job. Posting and voting require a
+session cookie plus MAC-address validation (ARP lookup via
+`/proc/net/arp`), so a poster can't trivially impersonate another
+walk-up. Rate limits are configurable per-session, and MAC/cookie
+mismatches surface in the security log. None of this stops a
+determined adversary on the same WiFi from causing harm; it raises
+the cost of casual abuse and pins posts to a device when something
+goes wrong.
 
 ## How it works
 
@@ -127,9 +137,9 @@ radio backends later.
 
 ## Project status
 
-CivicMesh is a working prototype, not a finished product. Development
-consists of a few nodes run on the bench, but have not been deployed
-in a real emergency or stress-tested by strangers at scale.
+CivicMesh is a working prototype, not a finished product. A few
+nodes run on the bench; none have been deployed in a real emergency
+or stress-tested by strangers at scale.
 
 Near-term goals are field tests at hacker events, Seattle Emergency
 Hub drills, and similar gatherings. It needs places where the
@@ -251,205 +261,34 @@ AP configuration, package install, and the systemd unit's serial-device access.
 
 ## Deployment
 
-This section walks through deploying CivicMesh from a fresh Raspberry
-Pi and an unflashed Heltec. The flow is: flash radio → flash SD →
-SSH in → bootstrap → configure → (optional) install docs → apply → verify. 
-The cutover from your home network to the new CivicMesh AP
-happens when you `sudo reboot` at the end of step 6 — `apply` itself
-stages the change without touching the live radio, so your SSH
-session survives it. Either SSH in over Ethernet for the deploy
-(Pi 4 has wired Ethernet) or be ready to reconnect on the new SSID
-after the reboot.
-
-### 1. Flash the Heltec V3
-
-Flash the MeshCore companion firmware to the Heltec V3 using the
-official web flasher.
-
-1. Plug the Heltec into your computer with a USB-C **data** cable.
-2. Open <https://flasher.meshcore.co.uk> in Chrome or Edge (Web
-   Serial isn't available in Firefox or Safari).
-3. Select **Heltec V3** as the board, **Companion (USB)** as the
-   firmware variant, and your region's frequency profile.
-5. Click flash and follow the prompts. The flasher pops a serial
-   port picker — pick the Heltec.
-
-After flashing completes, press RST once. The OLED should show the MeshCore
-boot screen.
-
-Optional sanity check: open <https://config.meshcore.dev> in the
-same browser, connect, and confirm you can talk to the firmware.
-You don't need to configure anything here — `civicmesh configure`
-does that on the Pi side later.
-
-### 2. Flash and prep the SD card
-
-Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and
-fill in the pre-boot config (the gear icon):
-
-- **Hostname** (e.g. `civicmesh-test`)
-- **SSH** enabled
-- **WiFi credentials for your home network** — you'll SSH in over
-  WiFi during initial setup, *before* CivicMesh takes over the
-  radio
-
-The home WiFi creds matter for SSH-during-bootstrap. Once you reboot
-after step 7, the Pi runs its own AP and won't be on your home
-network anymore.
-
-### 3. First boot and SSH in
-
-Boot the Pi, find it on your network (`ping civicmesh-test.local`
-or check your router's client list), plug the flashed Heltec into a
-USB port on the Pi, and SSH in:
+CivicMesh installs onto a fresh Raspberry Pi running standard
+Raspberry Pi OS, paired with a Heltec V3 flashed with the MeshCore
+companion firmware. Once both are prepared and the Pi is reachable
+over SSH, the core flow is four commands:
 
 ```bash
-ssh <user>@civicmesh-test.local
-```
-
-#### Update and install optional packages
-
-This may be the last time the node has access to the internet, so now's the time to install updates.
-
-`sudo apt update && sudo apt upgrade`
-
-if you want to install utilities and convenience packages, now's the time.
-
-```bash
-sudo apt install \
-  apt-offline \
-  dnsutils \
-  fake-hwclock \
-  git \
-  htop \
-  iotop \
-  iw \
-  jq \
-  lsof \
-  nmap \
-  picocom \
-  ripgrep \
-  sqlite3 \
-  tcpdump \
-  tmux \
-  tree \
-  usbutils \
-  vim
-```
-
-These are bench-debugging conveniences plus a few things that matter for a Pi
-Zero 2W running offline. For example, because the Pi Zero 2W doesn't have a
-RTC, `fake-hwclock` keeps timestamps sane across reboots without network time.
-
-### 4. Run bootstrap
-
-Two flavors. Inspect-then-run is recommended:
-
-```bash
-curl -LO https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicmesh-bootstrap.sh
-less civicmesh-bootstrap.sh   # eyeball what it'll do
-sudo bash civicmesh-bootstrap.sh
-```
-
-Or one-liner, if you've already vetted the script:
-
-```bash
+# Bootstrap: install dependencies, build the prod venv, create the
+# civicmesh service user, and stage the deployment tree.
 curl -sSL https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicmesh-bootstrap.sh | sudo bash
-```
 
-Bootstrap installs system packages, disables conflicting services,
-sets up rfkill, creates the `civicmesh` user, installs uv, clones
-the repo into `/usr/local/civicmesh/app/`, builds the prod venv, and
-symlinks `civicmesh{,-web,-mesh}` into `/usr/local/bin/`. It stops
-at "venv built" — it does not run `configure` or `apply`. Re-running
-bootstrap on a configured Pi is safe.
-
-### 5. Configure
-
-```bash
+# Configure: walk through prompts for hub name, channels, AP SSID,
+# and radio settings.
 sudo -u civicmesh civicmesh configure
-```
 
-Walks through prompts for hub name, location, channels, AP SSID,
-etc. Writes `/usr/local/civicmesh/etc/config.toml`.
-
-### 6. Install the hub reference library (optional)
-
-While the Pi still has internet access, install the Seattle Hub reference
-library so the Reference section appears in the channel list:
-
-```bash
-curl -LO https://github.com/rekab/hub-docs-content/releases/download/v1/hub-docs-20260506T224246Z.zip
-sudo -u civicmesh civicmesh install-hub-docs hub-docs-20260506T224246Z.zip
-```
-
-For newer releases, see
-[`rekab/hub-docs-content` releases](https://github.com/rekab/hub-docs-content/releases).
-Skip this step entirely if you want a messaging-only deployment.
-
-### 7. Apply and reboot
-
-```bash
+# Apply: render system files (hostapd, dnsmasq, nftables, networkd,
+# systemd units) and stage AP mode for the next boot.
 sudo civicmesh apply
+
+# Reboot: cutover. hostapd takes the radio; the Pi comes back up
+# as an AP serving the SSID configured in `configure`.
 sudo reboot
 ```
 
-`apply` renders the system files (hostapd, dnsmasq, nftables,
-NetworkManager unmanage config, systemd-networkd config, sysctl
-IPv6 disable, the two CivicMesh systemd units), validates them,
-writes them, and **stages** AP mode for the next boot. Your SSH
-session survives `apply` — it doesn't touch the live radio.
-
-The cutover happens when you `sudo reboot`. That's when hostapd
-takes the radio, your home-network SSH session drops, and the Pi
-comes back up on its own AP. Reconnect by joining the
-`CivicMesh-*` SSID configured in step 5. (On a Pi 4 with wired
-Ethernet, only WiFi drops; an SSH session over Ethernet survives
-the reboot.)
-
-### 8. Verify
-
-```bash
-civicmesh stats
-```
-
-prints a counters line. The AP SSID configured in step 5 should
-appear in WiFi scans, and walk-up users on that AP land on the
-captive portal at `http://10.0.0.1/`. If you installed hub-docs in step 6, you
-should also see the Reference section in the channel list on the portal.
-
-The UI should indicate that the radio is online, and you should be able to send
-messages to public mesh channels.
-
-If not, check `systemctl status civicmesh-mesh` and `journalctl -u civicmesh-mesh`.
-
-### Updates after first deploy
-
-Bootstrap is one-shot. To roll new code out to a Pi after the
-initial deploy, `git clone` the civicmesh repo, then use `civicmesh promote`
-from your dev checkout:
-
-```bash
-# On your dev machine, in your CivicMesh checkout on main:
-uv run civicmesh promote --from .
-```
-
-`promote` ships your `main` branch to the Pi, rebuilds the prod
-venv, and restarts services. It does not touch config or database.
-
-Most code changes need only `promote`. Some changes also require
-`sudo civicmesh apply` (rendered system files, systemd unit files,
-config schema), and a few of those also require a reboot (changes
-to hostapd, dnsmasq, nftables, networkd, NetworkManager, or sysctl
-output). See the
+Full procedure — flashing the Heltec, prepping the SD card, the
+optional reference-document library install, and post-deploy
+verification — is in [docs/deploy.md](docs/deploy.md). The
 [promote / apply / reboot decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot)
-for the rule.
-
-### Getting the machine back on the internet
-
-If you need to connect a node back to the internet (e.g. fetch updates, sync
-the clock, etc), the easiest thing to do is to unplug the Heltec and
-plug in a USB ethernet adapter.
+covers updating a deployed node afterwards.
 
 ## Development
 
@@ -471,59 +310,31 @@ Run unit tests:
 uv run python -m unittest
 ```
 
-## Admin CLI (SSH only)
+## Operator CLI (SSH only)
 
-```bash
-uv run civicmesh --config config.toml pin 123
-uv run civicmesh --config config.toml unpin 123
-uv run civicmesh --config config.toml stats
-uv run civicmesh --config config.toml cleanup
-uv run civicmesh --config config.toml messages recent --channel "#fremont" --source wifi --limit 20
-```
-
-On a deployed Pi the binary is on `PATH` and the config flag is
-not needed (it defaults to `/usr/local/civicmesh/etc/config.toml`):
+`civicmesh` is the operator CLI: stats, message pinning, outbox
+inspection, session management, hub-docs install/rollback. On a
+deployed Pi:
 
 ```bash
 civicmesh stats                          # read-only; any user
 sudo -u civicmesh civicmesh pin 123      # writes the DB; run as the service user
 ```
 
+Full command reference is in
+[docs/civicmesh-tool.md](docs/civicmesh-tool.md).
+
 ## Configuration
 
-The full schema and defaults live in
-[`config.toml.example`](config.toml.example).
-
-- **Dev:** copy `config.toml.example` to `config.toml` at the repo
-  root and edit.
-- **Prod:** `civicmesh configure` walks the common knobs
-  interactively and writes `/usr/local/civicmesh/etc/config.toml`.
-  To change something afterwards, edit that file directly; if the
-  change touches a system-rendered setting (hostapd, dnsmasq,
-  nftables, etc.) follow with `sudo civicmesh apply`. The
-  [decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot)
-  spells out which changes also need a reboot.
-
-A few common knobs:
-
-```toml
-[channels]
-names = ["#fremont", "#puget-sound"]    # mesh channels to join
-
-[local]
-names = ["#local"]                      # WiFi-only, never relayed
-```
-
-## Security
-
-This system assumes a hostile environment:
-
-- HTTP only (captive portal). Do not enter secrets.
-- Posting and voting require a cookie + MAC validation (ARP lookup
-  via `/proc/net/arp`).
-- MAC/cookie mismatches are logged at high level to the security
-  log.
-- Rate limiting prevents abuse (configurable `posts_per_hour`).
+Config lives in `config.toml`. Schema and defaults are documented in
+[`config.toml.example`](config.toml.example) — copy it to
+`config.toml` for dev work. On a deployed node `civicmesh configure`
+walks the common knobs interactively and writes
+`/usr/local/civicmesh/etc/config.toml`; to change something later,
+edit that file directly. Changes touching system-rendered settings
+(hostapd, dnsmasq, nftables, etc.) need `sudo civicmesh apply`
+afterwards — see the
+[promote / apply / reboot decision tree](docs/civicmesh-tool.md#when-to-promote-apply-and-reboot).
 
 ## Recovery
 
@@ -561,6 +372,9 @@ reference tickets by their `CIV-NNN` identifier (e.g., `CIV-86`,
 
 ## Project docs
 
+<details>
+<summary>Specs, design notes, and deep-dive references</summary>
+
 Specs and planning:
 - [Spec skeleton](docs/spec_skeleton.md)
 - [Invariants](docs/invariants.md)
@@ -568,6 +382,7 @@ Specs and planning:
 - [Staged hardening plan](docs/staged_plan.md)
 
 Deployment and operations:
+- [Deploying CivicMesh](docs/deploy.md) — full step-by-step procedure
 - [Operator tool reference](docs/civicmesh-tool.md)
 - [Captive portal setup](docs/captive_portal_setup.md)
 - [iOS captive portal notes](docs/ios-captive-portal-notes.md)
@@ -583,6 +398,8 @@ Radio / hardware:
 - [Recovery implementation](docs/recovery.md) — state machine, ladder, observability
 - [Heltec V3 recovery hardware reference](docs/heltec-recovery.md)
 - [Radio-debugging deep dive](docs/radio-debugging/README.md) — failure modes, boot, reset domains, test plan
+
+</details>
 
 ## Diagnostics
 
