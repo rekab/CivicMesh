@@ -376,7 +376,7 @@ reference tickets by their `CIV-NNN` identifier (e.g., `CIV-86`,
 <summary>Specs, design notes, and deep-dive references</summary>
 
 Specs and planning:
-- [Spec skeleton](docs/spec_skeleton.md)
+- [Spec](docs/spec.md)
 - [Invariants](docs/invariants.md)
 - [Open questions](docs/open_questions.md)
 - [Staged hardening plan](docs/staged_plan.md)

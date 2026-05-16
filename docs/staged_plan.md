@@ -1,5 +1,12 @@
 # CivicMesh Staged Plan
 
+> **Status (May 2026):** Stages 1–3 are largely complete as built —
+> UI degrades on radio disconnect, rate limiting and backoff are in
+> place, recovery + pruning + systemd integration land in
+> `recovery.py` / `mesh_bot.py`. This doc is kept as a record of
+> design intent and acceptance criteria; the **Field-Test Worksheet**
+> at the bottom is still the working checklist for real-world tests.
+
 ## Stage 1: Verify and Stabilize Send/Receive
 Acceptance criteria:
 - Web UI loads with radio connected and disconnected.

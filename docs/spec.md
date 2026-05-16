@@ -1,4 +1,4 @@
-# CivicMesh v0 Spec Skeleton
+# CivicMesh v0 Spec
 
 ## Overview
 - Purpose: offline, walk-up captive portal to read and post to a curated list of public MeshCore channels during grid-down events.
