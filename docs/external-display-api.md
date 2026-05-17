@@ -2,13 +2,14 @@
 
 Server-side contract for the optional Inkplate 6 e-paper bulletin display
 that some CivicMesh hubs may have attached. Most hubs do not. The endpoint
-is always registered, but is gated by `external_display.enabled` in
+is always registered but is gated by `external_display.enabled` in
 `config.toml` so disabled hubs pay no cost beyond the routing check.
 
-This document describes **v0** (`api_version = 1`), the Phase 0 stub.
-Field contents are hardcoded placeholders this phase. Phase 1 will source
-`hub` from `[node]` config and `messages` from the database without
-changing the schema.
+This document describes **v2** (`api_version = 2`), the current schema.
+The Phase 0 placeholder v1 schema is preserved at the end of the document
+for historical reference; field units pinned to v1 will receive a payload
+that fails their `api_version` check (the server emits v2 regardless of
+what a client expects) and must be reflashed.
 
 ## Endpoint
 
@@ -42,6 +43,123 @@ HTTP/1.0 200 OK
 Content-Type: application/json; charset=utf-8
 
 {
+  "api_version": 2,
+  "server_time": 1747431138,
+  "hub": {
+    "site_name": "Greenwood Library",
+    "callsign": "gwd"
+  },
+  "channels": [
+    {
+      "name": "#hub-board",
+      "scope": "local",
+      "messages": [
+        {
+          "id": 1234,
+          "ts": 1747430800,
+          "sender": "alice",
+          "body": "Water in the parking lot"
+        }
+      ]
+    },
+    {
+      "name": "#fremont",
+      "scope": "mesh",
+      "messages": []
+    }
+  ]
+}
+```
+
+## v2 schema (api_version = 2)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `api_version` | int | `2` for this schema. See "Forward compatibility". |
+| `server_time` | int | Unix epoch seconds, server clock, captured once at the start of request handling. Not NTP-synced; treat as opaque. |
+| `hub` | object | Hub identity from `[node]` config. |
+| `hub.site_name` | string | Human-readable hub name (mirrors `cfg.node.site_name`). |
+| `hub.callsign` | string | On-wire callsign (mirrors `cfg.node.callsign`; lowercased on config load). |
+| `channels` | array | Stable order: all `[local].names` entries in config order (each with `scope: "local"`), then all `[channels].names` entries in config order (`scope: "mesh"`). Firmware tracks which channel is currently displayed via array index across refreshes; reordering or inserting on the server side will reshuffle the display. |
+| `channels[].name` | string | Channel name verbatim from config, including the leading `#`. |
+| `channels[].scope` | string | `"local"` or `"mesh"`. Derived from which config list the channel came from, not from message origin. |
+| `channels[].messages` | array | Up to 5 messages per channel: pinned rows first (in `pin_order ASC NULLS LAST`, ties by `ts DESC`), then newest unpinned rows by `ts DESC`, hard-capped at 5 total. Empty channels return `[]`, never omitted. |
+| `messages[].id` | int | `messages.id` PK from SQLite. Stable within a single hub. |
+| `messages[].ts` | int | Unix epoch seconds. |
+| `messages[].sender` | string | Author display name, normalized (see below), capped at 64 chars. |
+| `messages[].body` | string | Message body, normalized (see below), capped at 500 chars. |
+
+The schema is intentionally silent on per-message pinning state, votes,
+mesh-vs-portal origin, and outbox status. Pinning influences which messages
+the server selects but is not surfaced to the client.
+
+## Text normalization
+
+The Inkplate's built-in font is the Adafruit GFX 5×7 ASCII bitmap, and the
+bundled Free* GFX fonts don't include emoji or non-Latin scripts. The
+server normalizes `sender` and `body` before serializing so the firmware
+never has to render glyphs it doesn't carry:
+
+1. **NFKD normalize, then ASCII-fold.** `unicodedata.normalize("NFKD", s)`
+   followed by `.encode("ascii", errors="ignore").decode("ascii")`. Accented
+   Latin chars are folded to base (`café` → `cafe`); emoji and non-Latin
+   scripts are dropped entirely (`日本` → empty).
+2. **Collapse whitespace runs.** Any run of `\s` (tab, newline, CR, VT, FF,
+   space, multiple spaces) becomes a single space. Critical: this happens
+   *before* control-char stripping so an embedded newline becomes a word
+   boundary instead of being deleted. `"Greenwood\nLibrary"` →
+   `"Greenwood Library"`.
+3. **Strip remaining control chars.** Anything in `0x00-0x1F` plus `0x7F`
+   (DEL). After step 2 the only whitespace left is `0x20` (space), so this
+   strip cannot accidentally remove word boundaries.
+4. **Strip leading/trailing whitespace.**
+5. **Cap length** at 64 (sender) or 500 (body). Hard truncate — no
+   ellipsis; the firmware's text-layout code adds its own if needed.
+
+Raw text is preserved unchanged in the messages table; normalization is
+only applied at this API boundary. The English-Latin-script restriction
+is a known tradeoff for the current Seattle deployment.
+
+## Forward compatibility
+
+Two rules keep firmware pinned to a given `api_version` viable across
+non-breaking server upgrades:
+
+1. **New fields are additive.** The server may add fields to existing
+   objects without bumping `api_version`. Firmware MUST ignore unknown
+   fields rather than rejecting the response.
+2. **Breaking changes bump `api_version`.** Removing a field, renaming
+   one, changing a type, or reshuffling the top-level shape counts as
+   breaking. Firmware MUST compare the received `api_version` to its
+   pinned value and refuse to render (e.g. show an "unsupported hub
+   version" screen) if the server's version is higher than expected.
+
+The server emits exactly one `api_version` per response. There is no
+content negotiation — firmware does not request a specific version, and
+the server has no backward-compat path for older versions.
+
+### Schema history
+
+| Version | Shipped | Breaking change(s) from prior |
+|---|---|---|
+| 1 | Phase 0 — hardcoded placeholder | (initial) |
+| 2 | Phase 1 — real data | Flat `messages[]` → nested `channels[].messages[]`; added `scope`, `server_time`; messages now carry `ts` (epoch int) and drop the `channel` field (channel is on the parent); `hub` now sourced from `cfg.node` instead of placeholders. |
+
+---
+
+## Historical: Phase 0 (api_version 1)
+
+> v1 was a hardcoded placeholder shipped in Phase 0 to establish the contract
+> before real data was wired. Current servers emit only v2; field units
+> pinned to v1 must be reflashed.
+
+### v1 example payload
+
+```
+HTTP/1.0 200 OK
+Content-Type: application/json; charset=utf-8
+
+{
   "api_version": 1,
   "hub": {
     "site_name": "Placeholder Hub",
@@ -59,44 +177,19 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-## v0 schema
+### v1 schema
 
 | Field | Type | Meaning |
 |---|---|---|
-| `api_version` | int | Currently `1`. See "Forward compatibility" below. |
-| `hub` | object | Hub identity. |
-| `hub.site_name` | string | Human-readable hub name (mirrors `[node].site_name`). |
-| `hub.callsign` | string | On-wire callsign (mirrors `[node].callsign`). |
-| `messages` | array | Recent messages to display. Ordering is server-controlled — firmware renders in array order, top to bottom. |
-| `messages[].id` | int | Server-assigned message identifier. Stable within a single hub. |
+| `api_version` | int | Always `1` in this schema. |
+| `hub` | object | Hub identity (hardcoded placeholder in Phase 0). |
+| `hub.site_name` | string | Human-readable hub name. |
+| `hub.callsign` | string | On-wire callsign. |
+| `messages` | array | Flat list of recent messages across all channels. |
+| `messages[].id` | int | Server-assigned message identifier. |
 | `messages[].channel` | string | Channel name including the leading `#`. |
 | `messages[].sender` | string | Display name of the author. |
-| `messages[].body` | string | Message text. |
+| `messages[].body` | string | Message text (un-normalized). |
 
-## Forward compatibility
-
-The schema follows two rules so a firmware build pinned to `api_version: 1`
-can keep running across server upgrades:
-
-1. **New fields are additive.** The server may add fields to existing
-   objects without bumping `api_version`. Firmware MUST ignore unknown
-   fields rather than rejecting the response.
-2. **Breaking changes bump `api_version`.** Removing a field, renaming a
-   field, or changing a field's type counts as breaking. Firmware MUST
-   compare the received `api_version` to its pinned value and refuse to
-   render (e.g., display an "unsupported hub version" screen) if the
-   server version is higher than expected.
-
-The server emits exactly one `api_version` per response. There is no
-content negotiation — firmware does not request a specific version.
-
-## Phase 0 → Phase 1
-
-| Phase 0 (now) | Phase 1 (planned) |
-|---|---|
-| `hub` is hardcoded to `{site_name: "Placeholder Hub", callsign: "stub"}` | `hub` is read from `cfg.node` |
-| `messages` is a hardcoded two-entry list | `messages` is sourced from the message table, filtered to channels in `cfg.channels.names`, limited to the most recent N |
-| No timestamp field | A `server_time` (or equivalent) field may be added if firmware needs clock sync; additive, no `api_version` bump |
-
-The Phase 0 stub exists so firmware development can begin against a
-stable contract before server-side data plumbing is ready.
+The disabled-state 404 contract, the endpoint path, and the forward-compat
+rules carried forward unchanged into v2.

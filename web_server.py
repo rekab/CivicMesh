@@ -847,27 +847,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if not self.server.cfg.external_display.enabled:
                 _json(self, 404, {"error": "not found"})
                 return
-            _json(self, 200, {
-                "api_version": 1,
-                "hub": {
-                    "site_name": "Placeholder Hub",
-                    "callsign": "stub",
-                },
-                "messages": [
-                    {
-                        "id": 1,
-                        "channel": "#civicmesh",
-                        "sender": "alice",
-                        "body": "Hardcoded sample message — Phase 0 stub.",
-                    },
-                    {
-                        "id": 2,
-                        "channel": "#civicmesh",
-                        "sender": "bob",
-                        "body": "Real messages land in Phase 1.",
-                    },
-                ],
-            })
+            from external_display import build_state
+            _json(self, 200, build_state(
+                self.server.cfg,
+                self.server.db_cfg,
+                now=_now_ts(),
+            ))
             return
 
         if path == "/api/messages":

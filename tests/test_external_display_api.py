@@ -1,11 +1,12 @@
-"""Phase 0 stub tests for /api/external-display/state.
+"""HTTP integration tests for /api/external-display/state.
 
 The endpoint is always registered. Behavior is gated by
 external_display.enabled in config.toml:
   - disabled (or section absent): 404 with JSON {"error": "not found"}
-  - enabled: 200 with the v0 hardcoded payload (api_version=1)
+  - enabled: 200 with the v2 payload (api_version=2)
 
 See docs/external-display-api.md for the full contract.
+Pure normalization-helper unit tests live in test_external_display_normalize.py.
 """
 
 import http.client
@@ -14,12 +15,14 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 
 from config import load_config
-from database import DBConfig, init_db
+from database import DBConfig, init_db, insert_message
 from web_server import CivicMeshHandler
 
 
@@ -132,6 +135,22 @@ def _get(port: int, path: str):
         conn.close()
 
 
+def _get_json(port: int, path: str):
+    status, headers, body = _get(port, path)
+    return status, headers, json.loads(body) if body else None
+
+
+def _pin(db_path: str, msg_id: int, order: int) -> None:
+    """Set pinned=1 and pin_order on a message row. insert_message doesn't
+    expose these columns; tests need them directly to exercise the
+    pinned-first ordering in the v2 payload."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET pinned=1, pin_order=? WHERE id=?",
+            (order, msg_id),
+        )
+
+
 class TestExternalDisplayDisabled(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -155,38 +174,191 @@ class TestExternalDisplayDisabled(unittest.TestCase):
 
 
 class TestExternalDisplayEnabled(unittest.TestCase):
+    """v2 payload assertions. Sets up a config with two local channels,
+    two mesh channels, and a deliberate fixture mix per channel:
+      - #local        — 2 pinned + 4 unpinned (tests pinned-first + 5-cap)
+      - #hub-board    — 1 message (tests "channel has data")
+      - #civicmesh-test — 6 unpinned (tests 5-cap + ts DESC)
+      - #fremont      — empty (tests messages: [] not omitted)
+    """
+
     @classmethod
     def setUpClass(cls):
         sections = _base_sections(tempfile.gettempdir())
+        sections["node"] = {"site_name": "Greenwood Library", "callsign": "GWD"}
+        sections["channels"] = {"names": ["#civicmesh-test", "#fremont"]}
+        sections["local"] = {"names": ["#local", "#hub-board"]}
         sections["external_display"] = {"enabled": True}
         _bring_up(cls, sections, "test_extdisp_on")
+
+        # --- #hub-board: one recent local message ---
+        insert_message(
+            cls.db_cfg,
+            ts=1_700_000_500,
+            channel="#hub-board",
+            sender="alice",
+            content="bulletin notice",
+            source="local",
+        )
+
+        # --- #civicmesh-test: 6 mesh messages, varying ts ---
+        # Insert in ts-ascending order; expect newest-first in payload.
+        for i, ts in enumerate(
+            [1_700_000_001, 1_700_000_002, 1_700_000_003,
+             1_700_000_004, 1_700_000_005, 1_700_000_006]
+        ):
+            insert_message(
+                cls.db_cfg,
+                ts=ts,
+                channel="#civicmesh-test",
+                sender=f"mesh-peer-{i}",
+                content=f"mesh message {i}",
+                source="mesh",
+            )
+
+        # --- #fremont: empty (no inserts) ---
+
+        # --- #local: 4 unpinned, then 2 pinned (with pin_order 1, 2) ---
+        unpinned_ids = []
+        for i, ts in enumerate(
+            [1_700_001_001, 1_700_001_002, 1_700_001_003, 1_700_001_004]
+        ):
+            mid = insert_message(
+                cls.db_cfg,
+                ts=ts,
+                channel="#local",
+                sender=f"local-user-{i}",
+                content=f"local unpinned {i}",
+                source="local",
+            )
+            unpinned_ids.append(mid)
+
+        pin1 = insert_message(
+            cls.db_cfg,
+            ts=1_700_000_500,  # deliberately older than the unpinned ones
+            channel="#local",
+            sender="pinned-author-A",
+            content="pinned first",
+            source="local",
+        )
+        pin2 = insert_message(
+            cls.db_cfg,
+            ts=1_700_000_600,
+            channel="#local",
+            sender="pinned-author-B",
+            content="pinned second",
+            source="local",
+        )
+        _pin(cls.db_cfg.path, pin1, order=1)
+        _pin(cls.db_cfg.path, pin2, order=2)
+        cls.pin_ids = (pin1, pin2)
+        cls.unpinned_ids = unpinned_ids
+
+        # --- one message with text that exercises normalization ---
+        cls.norm_msg_id = insert_message(
+            cls.db_cfg,
+            ts=1_700_000_700,
+            channel="#hub-board",
+            sender="ali\x00ce",
+            content="Hello\n🚀\nworld",
+            source="local",
+        )
 
     @classmethod
     def tearDownClass(cls):
         _tear_down(cls)
 
-    def test_returns_200_with_valid_v0_payload(self):
-        status, headers, body = _get(self.server.port, "/api/external-display/state")
-        self.assertEqual(status, 200)
+    def _payload(self):
+        status, headers, payload = _get_json(self.server.port, "/api/external-display/state")
+        self.assertEqual(status, 200, f"unexpected status: {status}")
         self.assertIn("application/json", headers.get("Content-Type", ""))
-        payload = json.loads(body)
+        return payload
 
-        self.assertEqual(payload["api_version"], 1)
+    def _channel(self, payload, name):
+        for ch in payload["channels"]:
+            if ch["name"] == name:
+                return ch
+        self.fail(f"channel {name!r} not in payload (have: {[c['name'] for c in payload['channels']]})")
 
-        hub = payload["hub"]
-        self.assertIsInstance(hub["site_name"], str)
-        self.assertTrue(hub["site_name"])
-        self.assertIsInstance(hub["callsign"], str)
-        self.assertTrue(hub["callsign"])
+    # --- top-level shape -------------------------------------------------
 
-        messages = payload["messages"]
-        self.assertIsInstance(messages, list)
-        self.assertGreater(len(messages), 0)
-        for m in messages:
-            self.assertIsInstance(m["id"], int)
-            self.assertIsInstance(m["channel"], str)
-            self.assertIsInstance(m["sender"], str)
-            self.assertIsInstance(m["body"], str)
+    def test_api_version_is_2(self):
+        self.assertEqual(self._payload()["api_version"], 2)
+
+    def test_server_time_is_int_and_recent(self):
+        payload = self._payload()
+        self.assertIsInstance(payload["server_time"], int)
+        # Within a generous 60 s window of test-runner wall clock.
+        self.assertAlmostEqual(payload["server_time"], int(time.time()), delta=60)
+
+    def test_hub_mirrors_config(self):
+        # callsign gets lowercased on load (config._validate_callsign).
+        self.assertEqual(
+            self._payload()["hub"],
+            {"site_name": "Greenwood Library", "callsign": "gwd"},
+        )
+
+    # --- channels list ---------------------------------------------------
+
+    def test_channels_ordered_local_then_mesh(self):
+        names = [c["name"] for c in self._payload()["channels"]]
+        self.assertEqual(
+            names,
+            ["#local", "#hub-board", "#civicmesh-test", "#fremont"],
+        )
+
+    def test_scope_values(self):
+        channels = self._payload()["channels"]
+        scopes = {c["name"]: c["scope"] for c in channels}
+        self.assertEqual(scopes["#local"], "local")
+        self.assertEqual(scopes["#hub-board"], "local")
+        self.assertEqual(scopes["#civicmesh-test"], "mesh")
+        self.assertEqual(scopes["#fremont"], "mesh")
+
+    def test_empty_channel_has_messages_list(self):
+        ch = self._channel(self._payload(), "#fremont")
+        self.assertEqual(ch["messages"], [])
+
+    # --- per-channel selection ------------------------------------------
+
+    def test_per_channel_cap_at_5(self):
+        ch = self._channel(self._payload(), "#civicmesh-test")
+        self.assertEqual(len(ch["messages"]), 5)
+
+    def test_messages_newest_first_by_ts(self):
+        ch = self._channel(self._payload(), "#civicmesh-test")
+        timestamps = [m["ts"] for m in ch["messages"]]
+        self.assertEqual(timestamps, sorted(timestamps, reverse=True))
+        # The oldest of 6 (ts=1_700_000_001) should be dropped by the cap.
+        self.assertNotIn(1_700_000_001, timestamps)
+
+    def test_pinned_first_then_newest_unpinned(self):
+        ch = self._channel(self._payload(), "#local")
+        self.assertEqual(len(ch["messages"]), 5)
+        pin1, pin2 = self.pin_ids
+        # Pinned come first, in pin_order ASC (1, 2).
+        self.assertEqual(ch["messages"][0]["id"], pin1)
+        self.assertEqual(ch["messages"][1]["id"], pin2)
+        # Remaining 3 slots are the 3 newest unpinned, in ts DESC.
+        unpinned_in_payload = [m["id"] for m in ch["messages"][2:]]
+        # Unpinned were inserted with ascending ts; newest 3 are the last 3.
+        self.assertEqual(unpinned_in_payload, self.unpinned_ids[-1:-4:-1])
+
+    # --- message field projection ---------------------------------------
+
+    def test_message_keys_are_id_ts_sender_body_only(self):
+        ch = self._channel(self._payload(), "#hub-board")
+        self.assertTrue(ch["messages"], "expected at least one message in #hub-board")
+        for m in ch["messages"]:
+            self.assertEqual(set(m.keys()), {"id", "ts", "sender", "body"})
+
+    def test_normalization_applied_to_payload(self):
+        ch = self._channel(self._payload(), "#hub-board")
+        norm_row = next(m for m in ch["messages"] if m["id"] == self.norm_msg_id)
+        # NFKD+ASCII drops the rocket; the embedded newlines collapse to a
+        # single space; the control char in the sender gets stripped.
+        self.assertEqual(norm_row["body"], "Hello world")
+        self.assertEqual(norm_row["sender"], "alice")
 
 
 if __name__ == "__main__":
