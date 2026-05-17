@@ -1,10 +1,22 @@
 # Inkplate firmware
 
-Phase 0 hardware-validation Hello World for the Inkplate 6 e-paper display.
-No WiFi, HTTP, CivicMesh data, or deep sleep yet — just proving the
-arduino-cli toolchain compiles, the USB cable + auto-reset chain works, and
-the panel does one full refresh. Pairs eventually with the server-side
-contract at `docs/external-display-api.md`.
+Arduino sketches for the Inkplate 6 e-paper display. The CivicMesh
+production renderer (which will consume `/api/external-display/state`)
+is not yet here; what *is* here are two scaffolding sketches that
+exercise the toolchain end-to-end on real hardware.
+
+## Sketches
+
+| Directory | What it does | When to use |
+|---|---|---|
+| `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the future renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
+| `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
+
+The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` (see
+the Workflow section below).
+
+Pairs eventually with the server-side contract at
+`docs/external-display-api.md`.
 
 ## Prerequisites
 
@@ -89,12 +101,24 @@ All from `firmware/`:
 | `make flash` | Compile + upload (pre-flights `check-port` automatically) | Yes |
 | `make monitor` | Open serial monitor at 115200 (pre-flights `check-port`) | Yes |
 | `make flash-monitor` | Flash, then open serial monitor | Yes |
+| `make fortunes-regenerate` | Rebuild `fortunes/fortunes_data.h` from `/usr/share/games/fortunes/` (requires the `fortunes-min` Debian package installed) | No |
+
+To switch which sketch a target operates on, override `SKETCH_DIR`:
+
+```bash
+make flash SKETCH_DIR=fortunes
+make flash-monitor SKETCH_DIR=hello
+```
+
+The default is `SKETCH_DIR=hello`, which preserves the original Phase 0
+smoke-test workflow.
 
 **If `make flash` fails with `Failed to connect to ESP32: No serial
 data received`** (after a long row of `Connecting......` dots) the
 Inkplate's ESP32 is asleep and esptool's auto-reset isn't waking it.
 Press the **WAKE button** on the back of the panel and rerun `make
-flash`.
+flash`. The fortunes sketch enters deep sleep right after rendering,
+so this is the normal case for re-flashing it.
 
 ## The safety check, explained
 
@@ -125,6 +149,10 @@ is no fallback path; there is no `/dev/ttyUSB0` guess.
   to stderr) when `INKPLATE_PORT` points at the Inkplate's by-id path.
 - `make check-port INKPLATE_PORT=/dev/serial/by-id/usb-Silicon_Labs_CP2102_*`
   fails loudly with the "REFUSING to flash" message.
-- `make flash` compiles, uploads, and the panel does one full refresh
-  showing three text lines: `CivicMesh`, `Hello, Inkplate`,
+- `make flash` (hello sketch) compiles, uploads, and the panel does one
+  full refresh showing three text lines: `CivicMesh`, `Hello, Inkplate`,
   `hardware validation step 1`.
+- `make flash SKETCH_DIR=fortunes` compiles, uploads, and the panel
+  shows a single random fortune plus a footer of the form
+  `#412 / 646  -  next refresh in 3 min`. The footer index and "next
+  refresh in N min" value should change on every wake (every 1-5 min).

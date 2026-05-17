@@ -28,3 +28,15 @@ This product bundles or depends on the following third-party components:
   License: Public Domain
   Source: https://www.sqlite.org/
   Note: Explicitly dedicated to public domain
+
+- fortune-mod / fortunes-min (corpus only; embedded in
+  inkplate/firmware/fortunes/fortunes_data.h)
+  License: BSD-4-clause (advertising clause rescinded per the Berkeley
+    1999 letter — effectively BSD-3-clause)
+  Source: https://github.com/shlomif/fortune-mod (upstream),
+    Debian fortunes-min package (extracted from /usr/share/games/fortunes/)
+  Copyright: 1986-1993 The Regents of the University of California
+  Note: We embed a filtered subset of the fortune cookie data files into
+    the Inkplate fortunes sketch; the fortune-mod program itself is not
+    redistributed. Filter: single line, <=120 chars, ASCII-foldable;
+    see inkplate/firmware/tools/build_fortunes.py.
