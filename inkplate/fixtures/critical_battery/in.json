@@ -1,0 +1,15 @@
+{
+  "envelope": {
+    "status": "ok",
+    "radio_state": "ok",
+    "portal_state": "ok",
+    "battery_volts": 3.45,
+    "seconds_since_last_update": 60,
+    "active_channel_index": 0,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": null
+}

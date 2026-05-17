@@ -40,3 +40,23 @@ This product bundles or depends on the following third-party components:
     the Inkplate fortunes sketch; the fortune-mod program itself is not
     redistributed. Filter: single line, <=120 chars, ASCII-foldable;
     see inkplate/firmware/tools/build_fortunes.py.
+
+- Adafruit_GFX (vendored at inkplate/host/vendor/Adafruit_GFX/ for the
+  host PNG renderer; the ESP32 build uses the arduino-cli library cache)
+  License: BSD-2-Clause
+  Source: https://github.com/adafruit/Adafruit-GFX-Library
+  Copyright: Copyright (c) 2012 Adafruit Industries
+  See: inkplate/host/vendor/Adafruit_GFX/LICENSE
+
+- lodepng (vendored at inkplate/host/vendor/lodepng/)
+  License: zlib
+  Source: https://github.com/lvandeve/lodepng
+  Copyright: Copyright (c) 2005-2025 Lode Vandevenne
+  See: inkplate/host/vendor/lodepng/LICENSE
+
+- ArduinoJson (vendored at inkplate/host/vendor/ArduinoJson/ for the
+  host PNG renderer; the ESP32 build uses the arduino-cli library cache)
+  License: MIT
+  Source: https://github.com/bblanchon/ArduinoJson
+  Copyright: Copyright (c) 2014-2025 Benoit Blanchon
+  See: inkplate/host/vendor/ArduinoJson/LICENSE

@@ -29,3 +29,10 @@ diagnostics/mesh-sim/.injected_ids.json
 out/
 var/
 content/hub-docs/*.pdf
+
+# Inkplate host PNG renderer build artifacts. Vendor sources under
+# inkplate/host/vendor/ ARE committed; only the build outputs are not.
+# Fixtures' expected.png files are committed (they're golden test data).
+inkplate/host/host_render
+inkplate/host/*.o
+inkplate/host/main.dSYM/

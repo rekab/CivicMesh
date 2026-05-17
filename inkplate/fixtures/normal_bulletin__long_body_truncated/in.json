@@ -1,0 +1,29 @@
+{
+  "envelope": {
+    "status": "ok",
+    "radio_state": "ok",
+    "portal_state": "ok",
+    "battery_volts": 3.95,
+    "seconds_since_last_update": 90,
+    "active_channel_index": 0,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": {
+    "api_version": 2,
+    "server_time": 1747431138,
+    "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+    "channels": [
+      {
+        "name": "#hub-board",
+        "scope": "local",
+        "messages": [
+          {"id": 301, "ts": 1747430100, "sender": "stargazer", "body": "Long explainer about the wildfire smoke pattern this week and what the AQI forecast looks like across the south valley with notes on where the safer pockets of clean air are likely to be tomorrow afternoon based on the wind shift."},
+          {"id": 302, "ts": 1747430900, "sender": "marge", "body": "Short reply."}
+        ]
+      }
+    ]
+  }
+}

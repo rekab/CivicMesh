@@ -1,0 +1,32 @@
+{
+  "envelope": {
+    "status": "ok",
+    "radio_state": "ok",
+    "portal_state": "ok",
+    "battery_volts": 3.92,
+    "seconds_since_last_update": 45,
+    "active_channel_index": 0,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": {
+    "api_version": 2,
+    "server_time": 1747431138,
+    "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+    "channels": [
+      {
+        "name": "#hub-board",
+        "scope": "local",
+        "messages": [
+          {"id": 201, "ts": 1747428000, "sender": "marge", "body": "Free tomato starts at the porch on 5th."},
+          {"id": 202, "ts": 1747429000, "sender": "tinker", "body": "Anyone got a 14mm socket I can borrow?"},
+          {"id": 203, "ts": 1747430000, "sender": "doc", "body": "Clinic open till 6 today. Walk-ins welcome."},
+          {"id": 204, "ts": 1747430800, "sender": "alice", "body": "Lost dog near the playground. Brown, no collar."},
+          {"id": 205, "ts": 1747431100, "sender": "kiddo", "body": "Found him! He is sleeping under my porch."}
+        ]
+      }
+    ]
+  }
+}

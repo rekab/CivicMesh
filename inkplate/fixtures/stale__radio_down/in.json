@@ -1,0 +1,30 @@
+{
+  "envelope": {
+    "status": "stale",
+    "radio_state": "down",
+    "portal_state": "ok",
+    "battery_volts": 3.93,
+    "seconds_since_last_update": 7200,
+    "active_channel_index": 0,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": {
+    "api_version": 2,
+    "server_time": 1747431138,
+    "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+    "channels": [
+      {
+        "name": "#hub-board",
+        "scope": "local",
+        "messages": [
+          {"id": 501, "ts": 1747400000, "sender": "alice", "body": "Heads up: radio went quiet at 2pm."},
+          {"id": 502, "ts": 1747410000, "sender": "tinker", "body": "Restarted the Heltec. No joy yet."},
+          {"id": 503, "ts": 1747420000, "sender": "doc", "body": "Will swing by the hub at 5."}
+        ]
+      }
+    ]
+  }
+}

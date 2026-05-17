@@ -1,0 +1,35 @@
+{
+  "envelope": {
+    "status": "ok",
+    "radio_state": "ok",
+    "portal_state": "ok",
+    "battery_volts": 3.94,
+    "seconds_since_last_update": 60,
+    "active_channel_index": 2,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": {
+    "api_version": 2,
+    "server_time": 1747431138,
+    "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+    "channels": [
+      {"name": "#hub-board", "scope": "local", "messages": [
+        {"id": 401, "ts": 1747431100, "sender": "alice", "body": "Hub board ok."}
+      ]},
+      {"name": "#local", "scope": "local", "messages": [
+        {"id": 402, "ts": 1747431100, "sender": "bob", "body": "Local ping."}
+      ]},
+      {"name": "#civicmesh", "scope": "mesh", "messages": [
+        {"id": 403, "ts": 1747430000, "sender": "doc", "body": "Anyone hearing the south relay?"},
+        {"id": 404, "ts": 1747430800, "sender": "marge", "body": "Yep, 5/5 from the schoolhouse."}
+      ]},
+      {"name": "#fremont", "scope": "mesh", "messages": [
+        {"id": 405, "ts": 1747431100, "sender": "tinker", "body": "Fremont relay holding."}
+      ]},
+      {"name": "#testing", "scope": "mesh", "messages": []}
+    ]
+  }
+}
