@@ -70,10 +70,29 @@ make flash INKPLATE_PORT=/dev/serial/by-id/usb-1a86_...
 The Inkplate 6 ships in two PCB revisions and they use different
 Arduino board macros:
 
-| Revision | PCB | Board macro | Notable |
-|---|---|---|---|
-| V1 | e-Radionica (older, blue) | `ARDUINO_INKPLATE6` | 3 capacitive touchpads, MCP23017 I/O expander |
-| V2 | Soldered (newer, purple) | `ARDUINO_INKPLATE6V2` | No touchpads, PCAL6416A I/O expander |
+| Revision | PCB | Board macro | I/O expander | Touchpads |
+|---|---|---|---|---|
+| V1 | e-Radionica (older, blue) | `ARDUINO_INKPLATE6` | MCP23017 | 3 capacitive |
+| V2 | Soldered (newer, purple) | `ARDUINO_INKPLATE6V2` | PCAL6416A | none |
+
+Both revisions carry an ESP32-WROVER-family RF module with 8MB PSRAM
++ 4MB flash. The big PSRAM is why the Inkplate library can keep a
+full 800×600 panel framebuffer in RAM without compressing it — every
+sketch using `Inkplate(INKPLATE_1BIT)` (or 3BIT) implicitly relies on
+PSRAM being present and enabled.
+
+| Revision | Module (shielded RF can on PCB) | Silicon (what esptool reports) |
+|---|---|---|
+| V1 | ESP32-WROVER | typically `ESP32-D0WDQ6` (pre-V3 silicon) — verify per board |
+| V2 | ESP32-WROVER-E | `ESP32-D0WD-V3` (revision v3.0) — confirmed via `make flash` against a current Soldered unit |
+
+The "module" name is silkscreened on the RF can; the "silicon" name
+is the underlying die that esptool reads out of the chip itself. They
+are not the same identifier — a WROVER-E module contains a D0WD-V3
+die. Most flashing / IDF / Arduino-ESP32 documentation keys off the
+module name (and the FQBN above), so that's the more useful one for
+sketch decisions. The silicon ID matters only for revision-specific
+errata fixes.
 
 The Makefile's `FQBN` default (`Inkplate_Boards:esp32:Inkplate6V2`)
 targets V2 — the current shipping revision. If you have a V1 unit,
