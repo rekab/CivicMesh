@@ -194,13 +194,62 @@ If you write the prompt and the result is flat ("everyone posts once,
 all evenly spaced"), the cast/distribution rules got dropped. Reissue
 the prompt with those rules quoted explicitly.
 
-## What's next
+## `/api/_test/state` — in-memory server-state overrides
 
-A follow-up PR adds `/api/_test/state` for overriding server health
-fields (radio status, time skew, captive-portal state) so the UI's
-status indicators can be exercised without running mesh_bot. That
-endpoint will be gated by the same `[diagnostics] enabled = true` flag
-this tool uses. Not yet implemented.
+Companion to the injector. The injector covers UI state derivable
+from message *content*; this endpoint covers UI state derivable from
+server *health*: radio status, recovery state, last-heard timestamp,
+server clock. Override the fields and exercise the captive portal's
+status indicators (and the external-display payload's `server_time`)
+without running mesh_bot or unplugging the radio.
+
+Gated by the same `[diagnostics] enabled = true` flag this tool
+uses. Override store is in-memory on the running web server; gone
+on restart, never persisted.
+
+| Method | Behavior |
+|---|---|
+| `GET /api/_test/state` | Returns the current override dict (`{}` if empty). |
+| `POST /api/_test/state` | JSON body: a dict of `{field: value}`. Merges into the store. A `null` value clears that one field. Unknown fields → 400 naming the field, no partial application. Type mismatch → 400. |
+| `DELETE /api/_test/state` | Clears all overrides, returns 204. |
+
+All three return 404 with `{"error": "not found"}` when
+`[diagnostics]` is disabled.
+
+### Allowlist
+
+| Field | Type | Effect |
+|---|---|---|
+| `radio_status` | str — one of `"online"`, `"offline"`, `"recovering"`, `"needs_human"` | Replaces `radio_status` in the `/api/status` response. Wins over any value the derivation block would compute, including overrides flowing through `last_seen_ts` and `recovery_state` below. |
+| `recovery_state` | str or `null` | Replaces `recovery_state` in `/api/status`. Also flows into the derivation block, so e.g. setting it to `"recovering"` (without overriding `radio_status` directly) flips `radio_status` to `"recovering"`. No enum constraint — the operator picks the value they want to test. |
+| `last_seen_ts` | int (epoch seconds) or `null` | Replaces `last_seen_ts` in `/api/status` normal branch; `age_sec` re-derives from it. **No-op when the status row is missing** — the empty-branch response shape doesn't expose `last_seen_ts`, so the override has nowhere to land. To test "mesh_bot is stale," ensure a status row exists (mesh_bot wrote one once) and override `last_seen_ts` to something old. |
+| `server_time_skew_seconds` | int (any sign) | Additive on wall-clock at the two response entry points: `/api/status` (where it shifts both `age_sec` and `outbox_queue_depth`'s window) and `/api/external-display/state` (where it shifts `server_time`). Internal time use — telemetry inserts, rate-limit windows, DB row timestamps — is unaffected. |
+
+### Examples
+
+```bash
+# Flip the radio indicator to "offline" without unplugging anything:
+curl -X POST http://civicmesh/api/_test/state \
+     -d '{"radio_status":"offline"}'
+
+# Shift server_time forward by an hour for the external-display payload:
+curl -X POST http://civicmesh/api/_test/state \
+     -d '{"server_time_skew_seconds":3600}'
+
+# Inspect the current overrides:
+curl http://civicmesh/api/_test/state
+
+# Clear one field (others remain):
+curl -X POST http://civicmesh/api/_test/state \
+     -d '{"radio_status":null}'
+
+# Clear every override at once:
+curl -X DELETE http://civicmesh/api/_test/state
+```
+
+The override store is on the running web server process. Restart
+`civicmesh-web` and every override resets to absent — same lifetime
+as any other in-memory state.
 
 ## Pointer
 

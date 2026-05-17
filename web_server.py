@@ -67,6 +67,91 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+# Replacement override for /api/_test/state. Returns the override if one is
+# set on this server, else real_value. Kept tiny on purpose — the override
+# semantics live in this one function. A reader at the call site sees a
+# call to _state_value and knows the field is hookable; that's the whole
+# convention.
+#
+# getattr fallback to None means test fixtures (or any future _Server
+# subclass) that haven't initialized the override store still get the
+# real value rather than an AttributeError. Production _Server.__init__
+# always sets the dict.
+def _state_value(server, name: str, real_value):
+    overrides = getattr(server, "_test_state_overrides", None)
+    if overrides and name in overrides:
+        return overrides[name]
+    return real_value
+
+
+# Additive override on wall-clock for response payloads.
+#
+# RULE FOR CONTRIBUTORS: if you add a new endpoint that returns a
+# wall-clock timestamp in the response body (e.g. a "now" or "as_of"
+# field), route it through _now_ts_with_skew(self.server) so the
+# diagnostics skew override applies consistently. Internal time use —
+# telemetry inserts, rate-limit windows, DB row timestamps, anything
+# operators won't see in an API payload — stays on plain _now_ts() so
+# real wall-clock semantics are preserved where they matter. There is
+# no type-system signal pointing you here; this comment is the signal.
+def _now_ts_with_skew(server) -> int:
+    overrides = getattr(server, "_test_state_overrides", None) or {}
+    skew = overrides.get("server_time_skew_seconds", 0)
+    return _now_ts() + int(skew)
+
+
+# /api/_test/state allowlist. Anything outside this set is a 400 with the
+# offending field name; type checks below are per-field.
+_RADIO_STATUS_VALUES = {"online", "offline", "recovering", "needs_human"}
+_TEST_STATE_ALLOWLIST = frozenset({
+    "radio_status",
+    "recovery_state",
+    "last_seen_ts",
+    "server_time_skew_seconds",
+})
+
+
+def _validate_override(name: str, value):
+    """Return None if (name, value) is a valid override, else an error string
+    suitable for the {"error": ...} response body. Caller validates ALL
+    entries before applying any, so a 400 never leaves a partial apply."""
+    if name not in _TEST_STATE_ALLOWLIST:
+        return (
+            f"unknown override field: {name!r}. "
+            f"Allowed: {sorted(_TEST_STATE_ALLOWLIST)}"
+        )
+    if value is None:
+        # null is always valid; the POST handler treats it as "clear this field".
+        return None
+    if name == "radio_status":
+        if not isinstance(value, str) or value not in _RADIO_STATUS_VALUES:
+            return (
+                f"radio_status: must be one of {sorted(_RADIO_STATUS_VALUES)}, "
+                f"got {value!r}"
+            )
+    elif name == "recovery_state":
+        if not isinstance(value, str):
+            return (
+                f"recovery_state: must be a string or null, "
+                f"got {type(value).__name__}"
+            )
+    elif name == "last_seen_ts":
+        # bool is a subclass of int — reject explicitly so {"last_seen_ts": true}
+        # doesn't silently get accepted as 1.
+        if not isinstance(value, int) or isinstance(value, bool):
+            return (
+                f"last_seen_ts: must be an integer or null, "
+                f"got {type(value).__name__}"
+            )
+    elif name == "server_time_skew_seconds":
+        if not isinstance(value, int) or isinstance(value, bool):
+            return (
+                f"server_time_skew_seconds: must be an integer, "
+                f"got {type(value).__name__}"
+            )
+    return None
+
+
 def _record_telemetry_event(db_cfg, kind, detail=None):
     """Fire-and-forget telemetry event insert."""
     try:
@@ -851,8 +936,17 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             _json(self, 200, build_state(
                 self.server.cfg,
                 self.server.db_cfg,
-                now=_now_ts(),
+                now=_now_ts_with_skew(self.server),
             ))
+            return
+
+        if path == "/api/_test/state":
+            if not self.server.cfg.diagnostics.enabled:
+                _json(self, 404, {"error": "not found"})
+                return
+            # Fresh copy so the caller cannot mutate the live store through
+            # the returned object. Empty store -> {}.
+            _json(self, 200, dict(self.server._test_state_overrides))
             return
 
         if path == "/api/messages":
@@ -899,13 +993,16 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/status":
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
             node_name = self.server.cfg.node.site_name
-            now = _now_ts()
+            # Skewed for the age computation below so age_sec stays consistent
+            # with whatever clock the rest of the response is built against.
+            # queue_depth uses the same now to avoid two clocks in one payload.
+            now = _now_ts_with_skew(self.server)
             queue_depth, _ = get_outbox_snapshot(self.server.db_cfg, now_ts=now, log=log)
 
             if not row or not row.get("last_seen_ts"):
                 _json(self, 200, {
-                    "radio_status": "needs_human",
-                    "recovery_state": None,
+                    "radio_status": _state_value(self.server, "radio_status", "needs_human"),
+                    "recovery_state": _state_value(self.server, "recovery_state", None),
                     "radio": "offline",  # deprecated — use radio_status
                     "mesh_bot_seen": False,
                     "node_name": node_name,
@@ -914,8 +1011,13 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 return
 
-            age = now - int(row["last_seen_ts"])
-            state = row.get("state")
+            # Override last_seen_ts FIRST so age re-derives from it; the
+            # status-derivation block below then sees the override-consistent
+            # age. recovery_state is also override-able at this point so the
+            # derivation runs against the override, not the real row value.
+            last_seen_ts = _state_value(self.server, "last_seen_ts", int(row["last_seen_ts"]))
+            age = now - last_seen_ts
+            state = _state_value(self.server, "recovery_state", row.get("state"))
             connected = bool(row.get("radio_connected"))
 
             if age > 30:
@@ -929,6 +1031,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 radio_status = "offline"
 
+            # Final hook: an explicit radio_status override wins over whatever
+            # the derivation produced (including overrides flowing through age
+            # and state above). Lets a test fix the response field directly
+            # without having to also stage every upstream input.
+            radio_status = _state_value(self.server, "radio_status", radio_status)
+
             _json(
                 self,
                 200,
@@ -937,7 +1045,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "recovery_state": state,
                     "radio": "online" if radio_status == "online" else "offline",  # deprecated — use radio_status
                     "mesh_bot_seen": True,
-                    "last_seen_ts": int(row["last_seen_ts"]),
+                    "last_seen_ts": last_seen_ts,
                     "age_sec": int(age),
                     "node_name": node_name,
                     "hub_name": node_name,  # deprecated — use node_name
@@ -1022,11 +1130,66 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             )
             _json(self, 500, {"error": "internal error"})
 
+    def do_DELETE(self):
+        # Only used by /api/_test/state. Wrapped identically to do_POST so an
+        # unhandled exception returns JSON rather than the BaseHTTPRequestHandler
+        # default HTML.
+        try:
+            self._do_DELETE_inner()
+        except _HTTPError as e:
+            _json(self, e.status, {"error": e.message})
+        except Exception:
+            self.server.log.error(
+                "handler:unhandled path=%s method=DELETE",
+                self.path, exc_info=True,
+            )
+            _json(self, 500, {"error": "internal error"})
+
+    def _do_DELETE_inner(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/_test/state":
+            if not self.server.cfg.diagnostics.enabled:
+                _json(self, 404, {"error": "not found"})
+                return
+            self.server._test_state_overrides.clear()
+            self.send_response(204)
+            self.end_headers()
+            return
+        # The only DELETE-able route is /api/_test/state; anything else is
+        # 405 to keep the method surface tight.
+        self.send_response(405)
+        self.end_headers()
+
     def _do_POST_inner(self):
         log = self.server.log
         sec = getattr(self.server, "sec", None)
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/_test/state":
+            if not self.server.cfg.diagnostics.enabled:
+                _json(self, 404, {"error": "not found"})
+                return
+            body = _read_json(self)
+            if not isinstance(body, dict):
+                _json(self, 400, {"error": "body must be a JSON object"})
+                return
+            # Validate every key BEFORE applying any so a bad field can't leave
+            # a half-applied store. Order matters: dict iteration in 3.7+ is
+            # insertion-ordered, which means error messages name the first
+            # offending field rather than a random one.
+            for name, value in body.items():
+                err = _validate_override(name, value)
+                if err is not None:
+                    _json(self, 400, {"error": err})
+                    return
+            for name, value in body.items():
+                if value is None:
+                    self.server._test_state_overrides.pop(name, None)
+                else:
+                    self.server._test_state_overrides[name] = value
+            _json(self, 200, dict(self.server._test_state_overrides))
+            return
 
         if path == "/api/post":
             sess, ip, mac = self._require_session()
@@ -1301,6 +1464,9 @@ def run():
             # Feedback file lives alongside the database
             db_dir = os.path.dirname(os.path.abspath(cfg.db_path)) or "."
             self.feedback_path = os.path.join(db_dir, "feedback.jsonl")
+            # In-memory overrides for /api/_test/state. Process-local; never
+            # persisted. Gated by cfg.diagnostics.enabled at every read/write.
+            self._test_state_overrides: dict[str, Any] = {}
 
     def _handler(*a, **kw):
         return CivicMeshHandler(*a, directory=static_dir, **kw)
