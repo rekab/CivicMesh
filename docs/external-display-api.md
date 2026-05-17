@@ -76,7 +76,7 @@ Content-Type: application/json; charset=utf-8
 | Field | Type | Meaning |
 |---|---|---|
 | `api_version` | int | `2` for this schema. See "Forward compatibility". |
-| `server_time` | int | Unix epoch seconds, server clock, captured once at the start of request handling. Not NTP-synced; treat as opaque. |
+| `server_time` | int | Unix epoch seconds, server clock, captured once at the start of request handling. Not NTP-synced; treat as opaque. On a hub with `[diagnostics] enabled = true`, this field can be deliberately skewed via `POST /api/_test/state` (`server_time_skew_seconds`) for UI testing — see `diagnostics/mesh-sim/README.md`. A "wildly wrong" `server_time` in a dev/staging environment is usually a forgotten skew override, not a clock drift. |
 | `hub` | object | Hub identity from `[node]` config. |
 | `hub.site_name` | string | Human-readable hub name (mirrors `cfg.node.site_name`). |
 | `hub.callsign` | string | On-wire callsign (mirrors `cfg.node.callsign`; lowercased on config load). |

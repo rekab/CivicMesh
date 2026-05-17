@@ -416,6 +416,15 @@ the Python package.
   bypassing `mesh_bot`. Used to isolate library/radio bugs from
   app-layer behavior. See `diagnostics/radio/README.md` and
   `diagnostics/radio/FINDINGS.md`.
+- `diagnostics/mesh-sim/` — UI-iteration tool that bypasses the
+  radio entirely. Writes synthetic mesh activity straight into the
+  `messages` table from JSON scenarios, and exposes
+  `/api/_test/state` for overriding server-health fields (radio
+  status, recovery state, server clock skew) so the captive portal
+  and external-display indicators can be exercised without
+  `mesh_bot`. Gated by `[diagnostics] enabled = true` in
+  `config.toml`; refuses to run otherwise. See
+  `diagnostics/mesh-sim/README.md`.
 - `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` —
   load-test helpers used during power-budget work. See
   [docs/power-budget.md](docs/power-budget.md) for context.
