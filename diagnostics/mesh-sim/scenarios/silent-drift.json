@@ -1,0 +1,176 @@
+{
+  "name": "silent-drift",
+  "description": "Week three of the blackout. For the last few nights, silent dirigible drones have been drifting overhead at dusk. Nobody knows what they are. The channel mixes drone spotting, technical theories, medical observations, mundane survival stuff (people still need flour), and a kid telling everyone to stop looking up. One pinned dispatch from the hub at the top.",
+  "tags": ["fiction", "post-grid", "drones", "mixed-info", "pinned-message"],
+  "messages": [
+    {
+      "channel": "#civicmesh",
+      "sender": "dispatch",
+      "body": "WEEK 3 LIGHTS OUT: hub open dusk-dawn, water rationed, drone sightings ongoing.",
+      "ts_offset": "-3h5m",
+      "source": "mesh",
+      "pinned": true
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "stargazer",
+      "body": "Three more overhead. No sound at all. Heading southeast over the bay.",
+      "ts_offset": "-3h",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Anyone got flour, mine went bad.",
+      "ts_offset": "-2h50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "tinker",
+      "body": "Still no thermal sig on the IR scope. Either cold-running or shielded.",
+      "ts_offset": "-2h45m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "ham_radio",
+      "body": "Picking up nothing on 7.2 MHz. Nothing at all. That is not normal.",
+      "ts_offset": "-2h40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "kiddo",
+      "body": "mom says dont look up",
+      "ts_offset": "-2h35m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "stargazer",
+      "body": "Count is up to eleven since dusk. Drifting, not powered flight.",
+      "ts_offset": "-2h25m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "doc",
+      "body": "Two more cases of the headaches today. Cluster, west side only.",
+      "ts_offset": "-2h15m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "jorge",
+      "body": "Could be weather balloons. Could be nothing.",
+      "ts_offset": "-2h",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "stargazer",
+      "body": "Jorge, weather balloons do not formation-fly.",
+      "ts_offset": "-1h50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "owl",
+      "body": "Whatever they are, they are tracking the river.",
+      "ts_offset": "-1h40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Trade two cans tomato for any wheat flour. Hub board, 9am.",
+      "ts_offset": "-1h30m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "tinker",
+      "body": "Wind from SW at 8kt and they are holding station. That is powered.",
+      "ts_offset": "-1h20m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "ham_radio",
+      "body": "Got a burst of carrier on 14.2 at 2107 local. Three seconds. Gone.",
+      "ts_offset": "-1h10m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "stargazer",
+      "body": "New formation. V-shape now, drifting north.",
+      "ts_offset": "-1h",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "doc",
+      "body": "Headache cases all report a metallic taste. Worth tracking.",
+      "ts_offset": "-50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#testing",
+      "sender": "ham_radio",
+      "body": "Test relay from the church basement, anyone on testing?",
+      "ts_offset": "-40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#testing",
+      "sender": "stargazer",
+      "body": "Copy, ham. Loud and clear.",
+      "ts_offset": "-30m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "kiddo",
+      "body": "theyre closer now",
+      "ts_offset": "-25m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "owl",
+      "body": "Three of them landed in the field by the old depot. Just sitting.",
+      "ts_offset": "-20m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "tinker",
+      "body": "Anyone with a camera and zoom, head to the depot. Carefully.",
+      "ts_offset": "-15m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "doc",
+      "body": "I am bringing the geiger counter. Meet at the hub first.",
+      "ts_offset": "-10m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Still need flour. Just saying.",
+      "ts_offset": "-5m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "stargazer",
+      "body": "They lifted again. All three. Slow, silent, heading north.",
+      "ts_offset": "-2m",
+      "source": "mesh"
+    }
+  ]
+}

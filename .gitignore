@@ -21,6 +21,10 @@ diagnostics/radio/runs/*
 !diagnostics/radio/runs/.gitkeep
 # Per-operator node settings; copy nodes.toml.example to start.
 diagnostics/radio/nodes.toml
+# mesh-sim injector sidecar — per-checkout state listing the messages.id
+# values of the rows the injector inserted, so --replace-injected knows
+# which rows it owns. Per-run, not source.
+diagnostics/mesh-sim/.injected_ids.json
 # Hub Reference Library (CIV-90)
 out/
 var/

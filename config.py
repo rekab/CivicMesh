@@ -136,6 +136,21 @@ class ExternalDisplayConfig:
 
 
 @dataclass(frozen=True)
+class DiagnosticsConfig:
+    # Default false so prod hubs cannot accidentally have the mesh-sim
+    # injector or future /api/_test/* endpoints active. The flag is
+    # checked both by the injector script (refuses to run unless true)
+    # and will gate the planned _test/state endpoint in a follow-up PR.
+    # Diagnostics is a dev/staging concern; flipping this on in prod
+    # would let any operator with shell access scribble fake messages
+    # into the messages table that the captive portal would then serve.
+    enabled: bool = False
+
+
+_DIAGNOSTICS_KNOWN_KEYS = frozenset({"enabled"})
+
+
+@dataclass(frozen=True)
 class AppConfig:
     node: NodeConfig
     network: NetworkConfig
@@ -149,6 +164,7 @@ class AppConfig:
     debug: DebugConfig
     recovery: RecoveryConfig
     external_display: ExternalDisplayConfig
+    diagnostics: DiagnosticsConfig
     # Required, no default. The previous "civic_mesh.db" fallback resolved
     # against cwd and silently landed on whatever sat in the working
     # directory — exactly the trapdoor that let a misconfigured test
@@ -344,6 +360,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
         },
         "debug": {"allow_eth0": cfg.debug.allow_eth0},
         "external_display": {"enabled": cfg.external_display.enabled},
+        "diagnostics": {"enabled": cfg.diagnostics.enabled},
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
             "liveness_timeout_sec": cfg.recovery.liveness_timeout_sec,
@@ -410,6 +427,22 @@ def load_config(path: str) -> AppConfig:
     debug_raw = raw.get("debug", {})
     recovery_raw = raw.get("recovery", {})
     external_display_raw = raw.get("external_display", {})
+    diagnostics_raw = raw.get("diagnostics", {})
+
+    # Strict: unknown keys in [diagnostics] are rejected loudly. This is
+    # tighter than the rest of the loader (which silently ignores unknown
+    # keys); the asymmetry is deliberate. [diagnostics] gates dev-only
+    # behavior that bypasses the radio + outbox path, so a typo like
+    # `enable = true` (missing the `d`) silently defaulting to false would
+    # mask a misconfiguration the operator was actively trying to make.
+    if isinstance(diagnostics_raw, dict):
+        unknown_diag = set(diagnostics_raw) - _DIAGNOSTICS_KNOWN_KEYS
+        if unknown_diag:
+            bad = ", ".join(sorted(unknown_diag))
+            raise ValueError(
+                f"config: [diagnostics] has unknown key(s): {bad}. "
+                f"Known keys: {sorted(_DIAGNOSTICS_KNOWN_KEYS)}."
+            )
 
     db_path = raw.get("db_path") or raw.get("db", {}).get("path")
     if not db_path:
@@ -538,6 +571,9 @@ def load_config(path: str) -> AppConfig:
         ),
         external_display=ExternalDisplayConfig(
             enabled=bool(external_display_raw.get("enabled", False)),
+        ),
+        diagnostics=DiagnosticsConfig(
+            enabled=bool(diagnostics_raw.get("enabled", False)),
         ),
         db_path=db_path,
     )

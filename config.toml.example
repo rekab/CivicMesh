@@ -130,3 +130,15 @@ allow_eth0 = false
 # only). See docs/external-display-api.md.
 [external_display]
 enabled = false
+
+# Dev/staging-only diagnostics gate. When true, the mesh-sim injector
+# (diagnostics/mesh-sim/inject.py) is allowed to write synthetic mesh
+# activity directly to the messages table for UI iteration; a planned
+# follow-up adds /api/_test/state for overriding server health fields.
+# MUST remain false in production — injection bypasses the radio +
+# outbox path and would let any operator scribble fake messages that
+# the captive portal then serves. Unknown keys in this section are
+# rejected loudly so `enable = true` (typo) doesn't silently default
+# off. [runtime] (consumed by diagnostics tooling only).
+[diagnostics]
+enabled = false

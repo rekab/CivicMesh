@@ -1,0 +1,176 @@
+{
+  "name": "phantom-jam",
+  "description": "Someone (or several someones) has been leaving jars of homemade jam on porches across the neighborhood, with cryptic handwritten labels. The hub is trying to track who, what, and how many. Theories, taste reviews, handwriting analysis, one anti-jam holdout in denial, one kid reporting the cat ate the grape. Pinned dispatch at the top asks for jar counts and label colors.",
+  "tags": ["fiction", "mystery", "whimsy", "pinned-message"],
+  "messages": [
+    {
+      "channel": "#civicmesh",
+      "sender": "dispatch",
+      "body": "PORCH FINDS: please post jar count and label color, hub trying to map this.",
+      "ts_offset": "-3h",
+      "source": "mesh",
+      "pinned": true
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "luz",
+      "body": "First one showed up Tuesday. Strawberry. Label said 'for the brave'.",
+      "ts_offset": "-2h50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Got three on my porch yesterday. Apricot, plum, mystery green.",
+      "ts_offset": "-2h45m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "henry",
+      "body": "Same handwriting on all of them?",
+      "ts_offset": "-2h40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Different. The apricot is loopy, the plum is blocky.",
+      "ts_offset": "-2h35m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "ben",
+      "body": "I know that handwriting. It is old Mrs. Aldine. She moved years ago.",
+      "ts_offset": "-2h25m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "doc",
+      "body": "Before anyone eats, check the seals. Botulism is not a joke.",
+      "ts_offset": "-2h20m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "kiddo",
+      "body": "i got grape",
+      "ts_offset": "-2h10m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Mystery green tastes like jalapeno strawberry. Surprisingly good.",
+      "ts_offset": "-2h5m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "old_pat",
+      "body": "My pectin recipe makes a clearer set, if anyone wants it.",
+      "ts_offset": "-2h",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "luz",
+      "body": "Count from the porches tracker: 22 jars across 14 houses. Growing.",
+      "ts_offset": "-1h50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "jorge",
+      "body": "I do not want jam. I have not put out a jar.",
+      "ts_offset": "-1h45m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Jorge, that is exactly what someone wanting all the jam would say.",
+      "ts_offset": "-1h40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#testing",
+      "sender": "ben",
+      "body": "Henry, testing relay from your block. You copy?",
+      "ts_offset": "-1h32m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#testing",
+      "sender": "henry",
+      "body": "Loud and clear, ben.",
+      "ts_offset": "-1h28m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "henry",
+      "body": "Aldine theory holds. Looped 'a' on apricot, blocky 's' on plum.",
+      "ts_offset": "-1h20m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "ben",
+      "body": "Aldine grandkids live on 78th now. Maybe them?",
+      "ts_offset": "-1h15m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "doc",
+      "body": "All seals checked. Nothing concerning. Eat responsibly.",
+      "ts_offset": "-1h",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "New jar this morning. Rhubarb. Label says 'no questions'.",
+      "ts_offset": "-50m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "old_pat",
+      "body": "Rhubarb wants more sugar than people think.",
+      "ts_offset": "-40m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "luz",
+      "body": "Update: 31 jars. The trackers are losing it.",
+      "ts_offset": "-30m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "kiddo",
+      "body": "the cat ate the grape",
+      "ts_offset": "-20m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "marge",
+      "body": "Cat is fine. Grape is not.",
+      "ts_offset": "-10m",
+      "source": "mesh"
+    },
+    {
+      "channel": "#civicmesh",
+      "sender": "jorge",
+      "body": "Found two jars. They are for someone else, surely.",
+      "ts_offset": "-2m",
+      "source": "mesh"
+    }
+  ]
+}
