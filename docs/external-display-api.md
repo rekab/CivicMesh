@@ -138,6 +138,27 @@ The server emits exactly one `api_version` per response. There is no
 content negotiation — firmware does not request a specific version, and
 the server has no backward-compat path for older versions.
 
+## Renderer
+
+The reference consumer of this payload is the C++ render library at
+`inkplate/render/`. It compiles against Adafruit_GFX for both the
+ESP32 (Inkplate library) and a host PNG driver at `inkplate/host/`
+that's used for layout iteration without flashing. See
+`inkplate/README.md` for the iteration loop and
+`inkplate/render/NOTES.md` for the dep-rule the renderer holds itself
+to (Adafruit_GFX + ArduinoJson only — no Arduino runtime).
+
+The 15 fixtures under `inkplate/fixtures/` exercise every documented
+field of this payload at every documented edge case (empty channels,
+five-message limit, long-body truncation, position indicator across
+multiple channels, plus an envelope-side `cached_payload` carrying a
+nested v2 payload). They protect renderer stability — the wire-format
+contract itself is tested by `tests/test_external_display_api.py`,
+which exercises `build_state()` directly. If a future server change
+adds a new payload field, the fixtures stay valid (the renderer
+ignores unknown fields per the additive-fields rule above); only a
+breaking schema bump would require fixture updates.
+
 ### Schema history
 
 | Version | Shipped | Breaking change(s) from prior |

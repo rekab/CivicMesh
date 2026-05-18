@@ -1,22 +1,94 @@
-# Inkplate firmware
+# Inkplate display
 
-Arduino sketches for the Inkplate 6 e-paper display. The CivicMesh
-production renderer (which will consume `/api/external-display/state`)
-is not yet here; what *is* here are two scaffolding sketches that
-exercise the toolchain end-to-end on real hardware.
+Renderer + Arduino sketches for the Inkplate 6 e-paper display. Two
+pieces live here:
 
-## Sketches
+1. **Renderer** (`render/` + `host/` + `tools/` + `fixtures/`) — an
+   Adafruit_GFX-only C++ library that turns the
+   `/api/external-display/state` payload (plus a local "envelope" of
+   device state) into a 1-bit 800×600 frame. The same source
+   eventually compiles for ESP32 (Inkplate library, queued as PR 2)
+   and ships today as a host PNG renderer for layout iteration.
+2. **Firmware sketches** (`firmware/hello/`, `firmware/fortunes/`) —
+   scaffolding that exercises the arduino-cli toolchain end-to-end on
+   real hardware, used to validate wiring, board revisions, and the
+   wake/render/sleep cycle. Does *not* call the renderer yet — the
+   production sketch that does is PR 2.
+
+The full roadmap (polling/sleep loop, WiFi join, NVS last-good cache,
+OTA) is in `docs/inkplate-research.md`. Server-side contract that
+feeds the renderer is at `docs/external-display-api.md`.
+
+## Renderer
+
+### Directory layout
+
+| Directory | What's there | Where to look first |
+|---|---|---|
+| `render/` | C++ render library + screens + layout constants + generated `LessPerfectDOSVGA.h` font header. Adafruit_GFX-only — no Arduino-runtime dependency. | `render/NOTES.md` for the dep rule + Inkplate-library footguns |
+| `host/` | g++ build of the renderer with vendored Adafruit_GFX (+ host-compat shims), lodepng, ArduinoJson. Produces `host_render`, a stdin-to-stdout PNG driver. | `host/Makefile`, `host/vendor/README.md` for upstream pins |
+| `fixtures/` | 15 golden test cases. Each directory has a combined envelope+payload `in.json` and a committed 800×600 `expected.png`. | `fixtures/normal_bulletin__pinned_first/` |
+| `tools/` | Font + fixture regen scripts plus a live-server fetch helper (see table below). | `tools/regen_fixtures.sh` |
+
+### Iteration loop
+
+The renderer is built once, then driven from JSON fixtures or live
+server output. Layout changes don't require flashing — edit a screen,
+`make`, render a PNG, eyeball, repeat.
+
+```bash
+cd inkplate/host && make             # builds host_render
+
+# Render one fixture
+./host_render < ../fixtures/normal_bulletin__pinned_first/in.json > /tmp/f.png
+
+# Re-render every fixture and diff against committed goldens
+../tools/regen_fixtures.sh --check
+
+# Regenerate goldens after an intentional layout change
+../tools/regen_fixtures.sh --write
+git diff inkplate/fixtures/          # inspect visual delta before committing
+```
+
+If the dev hub is on a separate machine (per the CivicMesh dev-Pi
+setup), view PNGs from a desktop with
+`scp civicmesh:/tmp/f.png ~/Downloads/`.
+
+### Tools
+
+All scripts live in `inkplate/tools/`. None of them touch a serial
+port; they're host-side only.
+
+| Script | Purpose |
+|---|---|
+| `regen_fixtures.sh --check` | Re-render every fixture, fail on any drift vs the committed `expected.png`. Builds `host_render` if missing. |
+| `regen_fixtures.sh --write` | Re-render and overwrite goldens. Use after an intentional layout change; inspect via `git diff` before committing. |
+| `render-live.sh [path]` | Fetch `/api/external-display/state` from the dev hub, wrap with a stock envelope, render to PNG. Set `HUB=http://...` to override. Useful for sanity-checking the renderer against real server output. |
+| `regen_font.sh` (`regen_font.py`) | Regenerate `render/src/fonts/LessPerfectDOSVGA.h` from the vendored TTF. Uses Python+freetype rather than Adafruit's C `fontconvert` because the dev Pi has `python3-freetype` but not `libfreetype-dev`. Set `PX=N` to change native glyph height (default 16). |
+
+The vendored TTF (`tools/LessPerfectDOSVGA.ttf`) and the generated
+`render/src/fonts/LessPerfectDOSVGA.h` are both committed; the regen
+script is for when the font changes.
+
+### Hardware-free verification
+
+```bash
+(cd inkplate/host && make clean && make)        # clean build, no warnings
+inkplate/tools/regen_fixtures.sh --check         # 15/15 fixtures pass
+grep -rE 'Inkplate\.h|esp_|Arduino\.h|WiFi\.h' inkplate/render/src/
+                                                 # returns nothing
+```
+
+## Firmware sketches
 
 | Directory | What it does | When to use |
 |---|---|---|
-| `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the future renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
-| `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
+| `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
+| `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `firmware/tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
 
 The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` (see
-the Workflow section below).
-
-Pairs eventually with the server-side contract at
-`docs/external-display-api.md`.
+the Workflow section below). Neither sketch calls the renderer in
+`render/` — that wiring lands in PR 2.
 
 ## Prerequisites
 
