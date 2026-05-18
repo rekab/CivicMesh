@@ -1,7 +1,6 @@
 #include "render.h"
 
 #include <ArduinoJson.h>
-#include <cstdio>
 #include <string>
 
 #include "envelope.h"
@@ -42,9 +41,7 @@ ScreenChoice choose_screen(const Envelope& env,
   return ScreenChoice::kBulletin;
 }
 
-// Unused in PR 1A (no api_mismatch arm); PR 1B restores the caller
-// and removes [[maybe_unused]].
-[[maybe_unused]] std::string extract_payload_json(const char* combined_json) {
+std::string extract_payload_json(const char* combined_json) {
   // Cheap brace-walk to extract the raw "payload" sub-object as a
   // string, for the api_mismatch screen's diagnostic dump. We do not
   // need perfect correctness — only a representative snippet.
@@ -95,17 +92,12 @@ bool render_frame(Adafruit_GFX& gfx, const char* combined_json) {
       screens::draw_critical_battery(gfx, env);
       return true;
     case ScreenChoice::kFailureShell:
-      std::fprintf(stderr,
-          "render error: screen state 'failure_shell' not implemented "
-          "in PR 1A\n              (failure_shell / api_mismatch land "
-          "in PR 1B)\n");
-      return false;
+      screens::draw_failure_shell(gfx, env);
+      return true;
     case ScreenChoice::kApiMismatch:
-      std::fprintf(stderr,
-          "render error: screen state 'api_mismatch' not implemented "
-          "in PR 1A\n              (failure_shell / api_mismatch land "
-          "in PR 1B)\n");
-      return false;
+      screens::draw_api_mismatch(gfx, env, payload,
+                                 extract_payload_json(combined_json));
+      return true;
     case ScreenChoice::kBulletin:
       screens::draw_bulletin(gfx, env, payload);
       return true;

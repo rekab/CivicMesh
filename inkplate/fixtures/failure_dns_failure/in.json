@@ -1,0 +1,15 @@
+{
+  "envelope": {
+    "status": "error",
+    "radio_state": "unknown",
+    "portal_state": "unknown",
+    "battery_volts": 3.92,
+    "seconds_since_last_update": 300,
+    "active_channel_index": 0,
+    "failure_reason": "dns_failure",
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": null
+}

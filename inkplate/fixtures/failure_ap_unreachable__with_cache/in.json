@@ -1,0 +1,30 @@
+{
+  "envelope": {
+    "status": "error",
+    "radio_state": "unknown",
+    "portal_state": "unknown",
+    "battery_volts": 3.94,
+    "seconds_since_last_update": 1800,
+    "active_channel_index": 0,
+    "failure_reason": "ap_unreachable",
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": {
+      "api_version": 2,
+      "server_time": 1747429338,
+      "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+      "channels": [
+        {
+          "name": "#hub-board",
+          "scope": "local",
+          "messages": [
+            {"id": 701, "ts": 1747428000, "sender": "alice", "body": "Last good message before the hub went away."},
+            {"id": 702, "ts": 1747428500, "sender": "bob", "body": "Will try to reach Jordan over the relay."},
+            {"id": 703, "ts": 1747429000, "sender": "marge", "body": "Standing by at the schoolhouse."}
+          ]
+        }
+      ]
+    }
+  },
+  "payload": null
+}

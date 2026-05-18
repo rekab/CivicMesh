@@ -1,0 +1,24 @@
+{
+  "envelope": {
+    "status": "ok",
+    "radio_state": "ok",
+    "portal_state": "ok",
+    "battery_volts": 3.94,
+    "seconds_since_last_update": 60,
+    "active_channel_index": 0,
+    "failure_reason": null,
+    "firmware_version": "0.1.0",
+    "expected_api_version": 2,
+    "cached_payload": null
+  },
+  "payload": {
+    "api_version": 3,
+    "server_time": 1747431138,
+    "hub": {"site_name": "Greenwood Library", "callsign": "gwd"},
+    "channels": [
+      {"name": "#hub-board", "scope": "local", "messages": [
+        {"id": 901, "ts": 1747431100, "sender": "alice", "body": "Hub board ok."}
+      ]}
+    ]
+  }
+}

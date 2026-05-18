@@ -14,13 +14,16 @@ void draw_bulletin(Adafruit_GFX& gfx,
                    const Envelope& env,
                    const Payload& payload);
 
+void draw_failure_shell(Adafruit_GFX& gfx,
+                        const Envelope& env);
+
+void draw_api_mismatch(Adafruit_GFX& gfx,
+                       const Envelope& env,
+                       const Payload& payload,
+                       const std::string& raw_payload_json);
+
 void draw_critical_battery(Adafruit_GFX& gfx,
                            const Envelope& env);
-
-// draw_failure_shell and draw_api_mismatch declarations land in PR 1B,
-// alongside the corresponding screens/failure_shell.cpp and
-// screens/api_mismatch.cpp source files. The render.cpp dispatch
-// returns false for those states in PR 1A.
 
 }  // namespace screens
 }  // namespace render
