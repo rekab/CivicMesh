@@ -65,6 +65,7 @@ port; they're host-side only.
 | `regen_fixtures.sh --write` | Re-render and overwrite goldens. Use after an intentional layout change; inspect via `git diff` before committing. |
 | `render-live.sh [path]` | Fetch `/api/external-display/state` from the dev hub, wrap with a stock envelope, render to PNG. Set `HUB=http://...` to override. Useful for sanity-checking the renderer against real server output. |
 | `regen_font.sh` (`regen_font.py`) | Regenerate `render/src/fonts/LessPerfectDOSVGA.h` from the vendored TTF. Uses Python+freetype rather than Adafruit's C `fontconvert` because the dev Pi has `python3-freetype` but not `libfreetype-dev`. Set `PX=N` to change native glyph height (default 16). |
+| `fixture-to-smoke-header.sh <path>` | Convert a fixture `in.json` into `firmware/bulletin/smoke_fixture.h` (overwrites). Use to point the bulletin smoke sketch at a different fixture, then `cd firmware && make flash SKETCH_DIR=bulletin`. The output is a plain `static const char[]` — NOT `PROGMEM` — because ESP32's XIP flash mapping lets ArduinoJson read `.rodata` via a normal `const char*`. |
 
 The vendored TTF (`tools/LessPerfectDOSVGA.ttf`) and the generated
 `render/src/fonts/LessPerfectDOSVGA.h` are both committed; the regen
@@ -85,10 +86,12 @@ grep -rE 'Inkplate\.h|esp_|Arduino\.h|WiFi\.h' inkplate/render/src/
 |---|---|---|
 | `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
 | `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `firmware/tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
+| `firmware/bulletin/` | Phase 2 smoke target. Renders one hard-coded fixture's JSON through the renderer in `render/`, then halts. Validates that the same renderer source compiles for ESP32 and the Inkplate panel accepts the framebuffer. The committed `smoke_fixture.h` defaults to `fixtures/normal_bulletin__pinned_first/in.json`; swap with `tools/fixture-to-smoke-header.sh fixtures/<name>/in.json`. Empty `loop()` — not production firmware. | First flash after PR 2 to confirm the renderer works on-device. Re-run after editing screens to eyeball the on-panel result against the host PNG. |
 
-The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` (see
-the Workflow section below). Neither sketch calls the renderer in
-`render/` — that wiring lands in PR 2.
+The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` or
+`SKETCH_DIR=bulletin` (see the Workflow section below). The bulletin
+sketch is the only one that calls the renderer; hello and fortunes
+are stand-alone hardware-validation sketches.
 
 ## Prerequisites
 
@@ -100,7 +103,8 @@ sudo usermod -aG dialout "$USER"   # then log out and back in
 
 `arduino-cli` + the Soldered (Dasduino) board manager URL + the
 `Inkplate_Boards:esp32` core + the `InkplateLibrary` Arduino library.
-One-shot install (intentionally not automated — audit each line before
+The bulletin sketch additionally needs `ArduinoJson`. One-shot
+install (intentionally not automated — audit each line before
 running):
 
 ```bash
@@ -111,11 +115,41 @@ arduino-cli config add board_manager.additional_urls \
 arduino-cli core update-index
 arduino-cli core install Inkplate_Boards:esp32
 arduino-cli lib install InkplateLibrary
+arduino-cli lib install ArduinoJson
 ```
+
+**Do NOT install the standalone `Adafruit GFX Library`.** InkplateLibrary
+v11 vendors its own copy at `InkplateLibrary/src/graphics/Adafruit_GFX/`,
+and installing the standalone alongside it produces a link-time
+duplicate-symbol error (both copies define `GFXcanvas16`, etc.). The
+renderer's `#include <Adafruit_GFX.h>` resolves to the bundled copy via
+a `--build-property compiler.cpp.extra_flags=-I<bundled-path>` injected
+by `firmware/Makefile`. If you previously installed the standalone, run
+`arduino-cli lib uninstall "Adafruit GFX Library"`.
 
 Verify the install with `arduino-cli board listall | grep -i inkplate` —
 that lists the exact FQBN strings the installed core exposes (one per
 board variant; pick the one matching your hardware revision).
+
+### Library discovery for the bulletin sketch — fallback ladder
+
+`firmware/Makefile` passes `--libraries ..` so arduino-cli scans
+`inkplate/` for sibling libraries and finds `render/` (which has
+`library.properties`). If `make compile SKETCH_DIR=bulletin` fails
+with `cannot find render.h` or `no such library 'CivicMeshRender'`,
+walk these alternatives in order — no re-research needed:
+
+1. **Plan A (Makefile default):** `arduino-cli compile ... --libraries .. <sketch>` — container scan. Verified working on the dev Pi.
+2. **Plan B:** `arduino-cli compile ... --library ../render <sketch>` — singular flag, exact library path. Edit both occurrences of `--libraries ..` in `firmware/Makefile` to `--library ../render`.
+3. **Plan C (most portable; works for the Arduino IDE too):** symlink the renderer library into the user's sketchbook and drop the flag entirely:
+   ```bash
+   mkdir -p ~/Arduino/libraries
+   ln -s "$(realpath inkplate/render)" ~/Arduino/libraries/CivicMeshRender
+   ```
+   Then remove `--libraries ..` from both targets in `firmware/Makefile`.
+
+The same ladder is duplicated in the comment block above `compile:` in
+`firmware/Makefile` for operators who go straight to the Makefile.
 
 ## Find your Inkplate's serial port
 

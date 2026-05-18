@@ -73,10 +73,16 @@ list") for the full taxonomy.
 
 `layout.h` defines `COLOR_BLACK = 1` and `COLOR_WHITE = 0`. This
 matches GFXcanvas1's "set bit = drawn" convention, which the host PNG
-writer renders as black ink on white paper. If the Inkplate library's
-1-bit mode uses the opposite polarity for its panel framebuffer, PR
-2's `bulletin.ino` is the right place to flip — *not* this library.
-The renderer should remain panel-agnostic.
+writer renders as black ink on white paper.
+
+Verified during PR 2 planning: the Inkplate library's `INKPLATE_1BIT`
+mode uses the same `BLACK=1, WHITE=0` convention (upstream
+`src/system/defines.h:33-35`), so the renderer's framebuffer pushes
+to the panel without any per-pixel flip. If a future Inkplate
+library version changes that, the right place to flip is in
+`firmware/bulletin/bulletin.ino` between `render_frame()` and
+`display.display()` — *not* this library. The renderer stays
+panel-agnostic.
 
 ## Memory posture
 
