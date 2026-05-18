@@ -363,9 +363,10 @@ context.
 - Offline-first: UI loads without radio; cached messages remain
   readable.
 - External e-paper display (Inkplate 6) supported via the
-  `/api/external-display/state` endpoint; renderer library and
-  host-side PNG iteration loop ship in `inkplate/` (an ESP32 sketch
-  that drives the panel from the renderer is queued separately).
+  `/api/external-display/state` endpoint; renderer library, host-side
+  PNG iteration loop, and an ESP32 smoke sketch all ship in
+  `inkplate/`. Production firmware (WiFi join, polling, sleep, NVS
+  cache) is Phase 3.
 
 ## Issue tracking
 

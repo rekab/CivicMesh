@@ -7,17 +7,20 @@ pieces live here:
    Adafruit_GFX-only C++ library that turns the
    `/api/external-display/state` payload (plus a local "envelope" of
    device state) into a 1-bit 800×600 frame. The same source
-   eventually compiles for ESP32 (Inkplate library, queued as PR 2)
-   and ships today as a host PNG renderer for layout iteration.
-2. **Firmware sketches** (`firmware/hello/`, `firmware/fortunes/`) —
-   scaffolding that exercises the arduino-cli toolchain end-to-end on
-   real hardware, used to validate wiring, board revisions, and the
-   wake/render/sleep cycle. Does *not* call the renderer yet — the
-   production sketch that does is PR 2.
+   compiles for ESP32 (Inkplate library) and for the host PNG
+   renderer (g++).
+2. **Firmware sketches** (`firmware/hello/`, `firmware/fortunes/`,
+   `firmware/bulletin/`) — Arduino sketches for the panel. `hello`
+   and `fortunes` are standalone scaffolding that validates wiring,
+   board revisions, and the wake/render/sleep cycle. `bulletin` is
+   the Phase 2 smoke target that calls the renderer with a
+   hard-coded fixture and renders one frame on real hardware — not
+   production firmware (no WiFi, no polling, no sleep).
 
-The full roadmap (polling/sleep loop, WiFi join, NVS last-good cache,
-OTA) is in `docs/inkplate-research.md`. Server-side contract that
-feeds the renderer is at `docs/external-display-api.md`.
+Phase 3 work (polling/sleep loop, WiFi join, NVS last-good cache,
+real envelope sourcing, OTA) is the next chunk; the roadmap lives
+in `docs/inkplate-research.md`. Server-side contract that feeds the
+renderer is at `docs/external-display-api.md`.
 
 ## Renderer
 
@@ -67,6 +70,16 @@ port; they're host-side only.
 | `regen_font.sh` (`regen_font.py`) | Regenerate `render/src/fonts/LessPerfectDOSVGA.h` from the vendored TTF. Uses Python+freetype rather than Adafruit's C `fontconvert` because the dev Pi has `python3-freetype` but not `libfreetype-dev`. Set `PX=N` to change native glyph height (default 16). |
 | `fixture-to-smoke-header.sh <path>` | Convert a fixture `in.json` into `firmware/bulletin/smoke_fixture.h` (overwrites). Use to point the bulletin smoke sketch at a different fixture, then `cd firmware && make flash SKETCH_DIR=bulletin`. The output is a plain `static const char[]` — NOT `PROGMEM` — because ESP32's XIP flash mapping lets ArduinoJson read `.rodata` via a normal `const char*`. |
 
+Example — render the live server's current payload to a PNG:
+
+```bash
+# Default: HUB=http://civicmesh (matches the dev Pi's hostname)
+inkplate/tools/render-live.sh /tmp/live.png
+
+# Against a hub on a different host or port:
+HUB=http://localhost:8080 inkplate/tools/render-live.sh /tmp/live.png
+```
+
 The vendored TTF (`tools/LessPerfectDOSVGA.ttf`) and the generated
 `render/src/fonts/LessPerfectDOSVGA.h` are both committed; the regen
 script is for when the font changes.
@@ -86,12 +99,30 @@ grep -rE 'Inkplate\.h|esp_|Arduino\.h|WiFi\.h' inkplate/render/src/
 |---|---|---|
 | `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
 | `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `firmware/tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
-| `firmware/bulletin/` | Phase 2 smoke target. Renders one hard-coded fixture's JSON through the renderer in `render/`, then halts. Validates that the same renderer source compiles for ESP32 and the Inkplate panel accepts the framebuffer. The committed `smoke_fixture.h` defaults to `fixtures/normal_bulletin__pinned_first/in.json`; swap with `tools/fixture-to-smoke-header.sh fixtures/<name>/in.json`. Empty `loop()` — not production firmware. | First flash after PR 2 to confirm the renderer works on-device. Re-run after editing screens to eyeball the on-panel result against the host PNG. |
+| `firmware/bulletin/` | Phase 2 smoke target. Renders one hard-coded fixture's JSON through the renderer in `render/`, then halts. Validates that the same renderer source compiles for ESP32 and the Inkplate panel accepts the framebuffer. The committed `smoke_fixture.h` defaults to `fixtures/normal_bulletin__pinned_first/in.json`; swap with `tools/fixture-to-smoke-header.sh fixtures/<name>/in.json`. Empty `loop()` — not production firmware. | First flash on a fresh dev Pi to confirm the renderer works on-device. Re-run after editing screens to eyeball the on-panel result against the host PNG. |
 
 The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` or
 `SKETCH_DIR=bulletin` (see the Workflow section below). The bulletin
 sketch is the only one that calls the renderer; hello and fortunes
 are stand-alone hardware-validation sketches.
+
+Flash the bulletin smoke target (after the Prerequisites and the
+Inkplate is plugged in on a CH340 port):
+
+```bash
+cd inkplate/firmware
+make compile SKETCH_DIR=bulletin         # build only, no port access
+make flash SKETCH_DIR=bulletin           # check-port + upload
+make monitor SKETCH_DIR=bulletin         # watch serial: [bulletin] begin / ...
+```
+
+To swap which fixture is the smoke target before flashing:
+
+```bash
+inkplate/tools/fixture-to-smoke-header.sh \
+    inkplate/fixtures/critical_battery/in.json
+cd inkplate/firmware && make flash SKETCH_DIR=bulletin
+```
 
 ## Prerequisites
 

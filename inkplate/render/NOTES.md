@@ -2,17 +2,19 @@
 
 Library shape: `inkplate/render/` is an Arduino library (it has a
 `library.properties`). The host build at `inkplate/host/` includes its
-sources directly via `-I../render/src`; the ESP32 build (PR 2) will
-let arduino-cli discover it via `--libraries ..` from
-`inkplate/firmware/`.
+sources directly via `-I../render/src`. The ESP32 build at
+`inkplate/firmware/bulletin/` uses arduino-cli's `--libraries ..`
+discovery from `inkplate/firmware/` (see `firmware/Makefile`).
 
 ## Adafruit_GFX-only dependency rule
 
 `render/src/` must include only `Adafruit_GFX.h` and the ArduinoJson
 headers (`ArduinoJson.h`). No `Inkplate.h`, no `Arduino.h`, no
-`WiFi.h`, no `esp_*`. The ESP32 sketch in `firmware/bulletin/` (PR 2)
-owns everything from those headers and hands a configured `Inkplate`
-instance to `render_frame()`.
+`WiFi.h`, no `esp_*`. The ESP32 sketch in `firmware/bulletin/` owns
+everything from those headers and hands a configured `Inkplate`
+instance to `render_frame()` (since `Inkplate` inherits from
+`Graphics` which inherits from `Adafruit_GFX`, the polymorphism is
+free).
 
 Enforce with:
 
@@ -36,23 +38,24 @@ top-left convention is uniform regardless of font. If you add a screen
 that calls `gfx.setCursor()` directly with a custom font active, the
 text will land in the wrong place.
 
-## Phase 2 library footguns (the three that bite during PR 1)
+## Phase 2 library footguns
 
 Cross-reference `docs/inkplate-research.md` §C ("Gotchas and risks
 list") for the full taxonomy.
 
 1. **`clearDisplay()` is framebuffer-only.** A subsequent `display()`
    call is required to push to the panel. The host PNG writer doesn't
-   care; PR 2's `bulletin.ino` must call `display.display()` after
-   `render_frame()` returns.
+   care; `firmware/bulletin/bulletin.ino` calls `display.display()`
+   after `render_frame()` returns — any future renderer consumer
+   must do the same.
 2. **`setRotation` swaps W/H for subsequent draws.** Don't call. If
    you do, call exactly once before any draws — never mid-frame.
 3. **`drawTextBox` is an Inkplate library extension** (not in
    upstream Adafruit_GFX), and its `...` truncation behavior with a
-   custom GFX font is unverified. PR 1 sidesteps this entirely by
-   shipping `text_wrap.cpp` — a greedy word-wrap that calls
-   `getTextBounds` to measure. PR 2 should NOT swap back to
-   `drawTextBox`; the wrap helper keeps host and ESP32 byte-identical.
+   custom GFX font is unverified. The renderer ships `text_wrap.cpp`
+   — a greedy word-wrap that calls `getTextBounds` to measure —
+   instead. Don't swap back to `drawTextBox`; the wrap helper keeps
+   host PNG and ESP32 panel output byte-identical.
 
 ## Phase 3 footguns (out of scope here; flagged for the next person)
 
@@ -75,11 +78,13 @@ list") for the full taxonomy.
 matches GFXcanvas1's "set bit = drawn" convention, which the host PNG
 writer renders as black ink on white paper.
 
-Verified during PR 2 planning: the Inkplate library's `INKPLATE_1BIT`
-mode uses the same `BLACK=1, WHITE=0` convention (upstream
-`src/system/defines.h:33-35`), so the renderer's framebuffer pushes
-to the panel without any per-pixel flip. If a future Inkplate
-library version changes that, the right place to flip is in
+Verified on hardware during PR 2: the Inkplate library's
+`INKPLATE_1BIT` mode uses the same `BLACK=1, WHITE=0` convention
+(upstream `src/system/defines.h:33-35`), so the renderer's
+framebuffer pushes to the panel without any per-pixel flip. The
+on-panel image matches `fixtures/normal_bulletin__pinned_first/
+expected.png` directly. If a future Inkplate library version changes
+that, the right place to flip is in
 `firmware/bulletin/bulletin.ino` between `render_frame()` and
 `display.display()` — *not* this library. The renderer stays
 panel-agnostic.
