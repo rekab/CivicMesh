@@ -41,8 +41,8 @@ python diagnostics/mesh-sim/inject.py --wipe-all --yes
 
 Authoring new scenarios: the README has a Claude-Code-ready prompt
 that produces recurring-cast / realistic-distribution channel content
-on demand. See `diagnostics/mesh-sim/README.md` § "Authoring new
-scenarios with Claude Code".
+on demand. See [`diagnostics/mesh-sim/README.md`](../diagnostics/mesh-sim/README.md)
+§ "Authoring new scenarios with Claude Code".
 
 **Companion endpoint** `/api/_test/state` overrides server-health
 fields (`radio_status`, `recovery_state`, `last_seen_ts`,
@@ -126,15 +126,18 @@ simulators driving it.
 
 ## Where to dig deeper
 
-- `inkplate/README.md` — full renderer / host / tools / fixtures
-  guide; Prerequisites; fallback ladder for arduino-cli library
-  discovery (only relevant if you do want to flash the smoke target).
-- `inkplate/render/NOTES.md` — Adafruit_GFX-only dep rule, the
-  baseline-anchor convention for custom GFX fonts, the three
-  library footguns the renderer sidesteps.
-- `diagnostics/mesh-sim/README.md` — scenario JSON schema, the
-  scenario-authoring prompt, sidecar file (`.injected_ids.json`)
-  semantics, full `/api/_test/state` allowlist and examples.
-- `docs/external-display-api.md` — wire-format contract that the
-  renderer consumes (v2 schema, text-normalization rules, forward-
-  compatibility rules).
+- [`inkplate/README.md`](../inkplate/README.md) — full renderer /
+  host / tools / fixtures guide; Prerequisites; fallback ladder for
+  arduino-cli library discovery (only relevant if you do want to
+  flash the smoke target).
+- [`inkplate/render/NOTES.md`](../inkplate/render/NOTES.md) —
+  Adafruit_GFX-only dep rule, the baseline-anchor convention for
+  custom GFX fonts, the three library footguns the renderer
+  sidesteps.
+- [`diagnostics/mesh-sim/README.md`](../diagnostics/mesh-sim/README.md)
+  — scenario JSON schema, the scenario-authoring prompt, sidecar
+  file (`.injected_ids.json`) semantics, full `/api/_test/state`
+  allowlist and examples.
+- [`docs/external-display-api.md`](external-display-api.md) —
+  wire-format contract that the renderer consumes (v2 schema,
+  text-normalization rules, forward-compatibility rules).
