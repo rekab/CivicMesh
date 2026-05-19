@@ -4,16 +4,18 @@
 # which refuses anything that isn't a CH340 (VID 1a86). See README.md.
 #
 # Three sketches live here:
-#   hello/     — Phase 0 hardware-validation Hello World (default).
+#   bulletin/  — Phase 3A external-display firmware (default). Polls
+#                /api/external-display/state, renders via ../render/.
+#                REQUIRES SSID=<wifi-ssid>; ENDPOINT_URL and FW_VERSION
+#                have defaults. Example:
+#                    make flash SSID=civicmesh-dev
+#                    make flash SSID=civicmesh-dev ENDPOINT_URL=http://civicmesh:8080/api/external-display/state
+#   hello/     — Phase 0 hardware-validation Hello World.
 #   fortunes/  — Random-fortune demo: pick from a ~650-entry BSD corpus,
 #                render full-panel, deep-sleep 1-5 minutes, repeat.
-#   bulletin/  — Phase 2 smoke target. Renders one hard-coded fixture
-#                JSON through ../render/, halts. Requires arduino-cli
-#                discovery of the renderer library via --libraries ..
-#                (see "Library discovery" comment below).
 # Switch sketches per-invocation:
+#     make flash SKETCH_DIR=hello
 #     make flash SKETCH_DIR=fortunes
-#     make flash SKETCH_DIR=bulletin
 
 # The Inkplate's stable by-id path. This default is the real path on the
 # CivicMesh dev Pi. On other hardware, find your unit's path with:
@@ -33,9 +35,17 @@ INKPLATE_PORT ?= /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
 FQBN ?= Inkplate_Boards:esp32:Inkplate6V2
 
 # Which sketch directory to build/flash. Override on the command line
-# rather than editing this default; the hello/ default keeps the
-# Phase 0 smoke-test workflow stable.
-SKETCH_DIR ?= hello
+# rather than editing this default. `bulletin` is the Phase 3A production
+# target; hello/fortunes remain reachable via SKETCH_DIR=hello.
+SKETCH_DIR ?= bulletin
+
+# Bulletin-only build inputs. SSID is required (the require-bulletin-config
+# guard below hard-errors at make-time if missing). ENDPOINT_URL defaults
+# to the lab AP's gateway IP per docs/external-display-api.md; override
+# for dev (e.g. http://civicmesh:8080/api/external-display/state).
+SSID ?=
+ENDPOINT_URL ?= http://10.0.0.1/api/external-display/state
+FW_VERSION ?= 0.1.0
 
 CHECK_PORT := scripts/check-port.sh
 FORTUNES_BUILDER := tools/build_fortunes.py
@@ -50,9 +60,39 @@ FORTUNES_BUILDER := tools/build_fortunes.py
 # resolves to the bundled copy. See inkplate/README.md Prerequisites.
 ARDUINO_USER_DIR ?= $(shell arduino-cli config get directories.user 2>/dev/null)
 INKPLATE_GFX_DIR := $(ARDUINO_USER_DIR)/libraries/InkplateLibrary/src/graphics/Adafruit_GFX
-BUNDLED_GFX_BUILD_PROP := --build-property compiler.cpp.extra_flags=-I$(INKPLATE_GFX_DIR)
 
-.PHONY: help check-port compile flash monitor flash-monitor fortunes-regenerate
+# arduino-cli takes only the LAST --build-property of the same key, so
+# the bulletin's -D flags must ride on the same compiler.cpp.extra_flags
+# as the bundled-GFX -I. Quoting: arduino-cli passes the property value
+# straight to the compiler (no intermediate shell), so we only need to
+# satisfy make + bash; the backslash-escaped \" survives bash's outer
+# double-quote and arrives at the compiler as a literal ", which is
+# what's needed to form a valid C string literal in the macro value.
+# (Single-quoting the \" would survive bash but become a LITERAL ' in
+# the compiler arg — Plan A in the prior session — which then breaks
+# C parsing. That's why we don't single-quote.)
+# If a future SSID contains spaces, this breaks (split on space by
+# arduino-cli's property tokenizer) — fall back to a generated header
+# (Plan C: write bulletin/build_config.h from a make rule, drop the
+# -D flags, sketch #includes it).
+COMPILE_EXTRA_FLAGS := -I$(INKPLATE_GFX_DIR) \
+    -DCIVICMESH_SSID=\"$(SSID)\" \
+    -DCIVICMESH_ENDPOINT=\"$(ENDPOINT_URL)\" \
+    -DCIVICMESH_FW_VERSION=\"$(FW_VERSION)\"
+BUNDLED_GFX_BUILD_PROP := --build-property "compiler.cpp.extra_flags=$(COMPILE_EXTRA_FLAGS)"
+
+.PHONY: help check-port require-bulletin-config compile flash monitor flash-monitor fortunes-regenerate
+
+# Hard-fail at make-time if a bulletin build was requested without SSID.
+# (Compile-time fail per Phase 3A PR 1 spec — no silent default; flashing
+# with empty SSID would associate with nothing and render failure_shell
+# forever.) Other sketches don't need SSID, so the guard is a no-op there.
+require-bulletin-config:
+ifeq ($(SKETCH_DIR),bulletin)
+ifeq ($(strip $(SSID)),)
+	$(error SSID is required for bulletin builds. e.g. make flash SSID=civicmesh-dev)
+endif
+endif
 
 help:
 	@echo "Targets:"
@@ -66,7 +106,12 @@ help:
 	@echo "Overrides:"
 	@echo "  INKPLATE_PORT=$(INKPLATE_PORT)"
 	@echo "  FQBN=$(FQBN)"
-	@echo "  SKETCH_DIR=$(SKETCH_DIR)    (e.g. SKETCH_DIR=fortunes, SKETCH_DIR=bulletin)"
+	@echo "  SKETCH_DIR=$(SKETCH_DIR)    (e.g. SKETCH_DIR=hello, SKETCH_DIR=fortunes)"
+	@echo ""
+	@echo "Bulletin-only (required when SKETCH_DIR=bulletin, the default):"
+	@echo "  SSID=<wifi-ssid>            REQUIRED. Open network, no password."
+	@echo "  ENDPOINT_URL=$(ENDPOINT_URL)"
+	@echo "  FW_VERSION=$(FW_VERSION)"
 
 check-port:
 	@$(CHECK_PORT) $(INKPLATE_PORT)
@@ -89,11 +134,11 @@ check-port:
 #                      Then drop `--libraries ..` from both targets below.
 #                      Document the symlink step in inkplate/README.md.
 
-compile:
+compile: require-bulletin-config
 	arduino-cli compile --fqbn $(FQBN) --libraries .. \
 		$(BUNDLED_GFX_BUILD_PROP) $(SKETCH_DIR)
 
-flash: check-port
+flash: require-bulletin-config check-port
 	arduino-cli compile --fqbn $(FQBN) --libraries .. \
 		$(BUNDLED_GFX_BUILD_PROP) \
 		--upload -p $(INKPLATE_PORT) $(SKETCH_DIR)
