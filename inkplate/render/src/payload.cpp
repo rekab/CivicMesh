@@ -29,6 +29,7 @@ bool parse_payload(JsonObjectConst obj, Payload& out, std::string& err) {
       PayloadMessage pm;
       pm.id = m["id"].as<long>();
       pm.ts = m["ts"].as<long>();
+      pm.ts_str = str_or_empty(m["ts_str"]);
       pm.sender = str_or_empty(m["sender"]);
       pm.body = str_or_empty(m["body"]);
       pc.messages.push_back(std::move(pm));

@@ -57,6 +57,7 @@ Content-Type: application/json; charset=utf-8
         {
           "id": 1234,
           "ts": 1747430800,
+          "ts_str": "14:46",
           "sender": "alice",
           "body": "Water in the parking lot"
         }
@@ -83,9 +84,10 @@ Content-Type: application/json; charset=utf-8
 | `channels` | array | Stable order: all `[local].names` entries in config order (each with `scope: "local"`), then all `[channels].names` entries in config order (`scope: "mesh"`). Firmware tracks which channel is currently displayed via array index across refreshes; reordering or inserting on the server side will reshuffle the display. |
 | `channels[].name` | string | Channel name verbatim from config, including the leading `#`. |
 | `channels[].scope` | string | `"local"` or `"mesh"`. Derived from which config list the channel came from, not from message origin. |
-| `channels[].messages` | array | Up to 5 messages per channel: pinned rows first (in `pin_order ASC NULLS LAST`, ties by `ts DESC`), then newest unpinned rows by `ts DESC`, hard-capped at 5 total. Empty channels return `[]`, never omitted. |
+| `channels[].messages` | array | Up to 15 messages per channel: pinned rows first (in `pin_order ASC NULLS LAST`, ties by `ts DESC`), then newest unpinned rows by `ts DESC`, hard-capped at 15 total. Empty channels return `[]`, never omitted. |
 | `messages[].id` | int | `messages.id` PK from SQLite. Stable within a single hub. |
 | `messages[].ts` | int | Unix epoch seconds. |
+| `messages[].ts_str` | string | Pre-formatted `HH:MM` (24-hour) in the hub's configured `node.timezone` (default `America/Los_Angeles`). The renderer prints this verbatim — the Inkplate firmware does not compute time on its own. DST is handled by the Pi's zoneinfo database, so a fleet of hubs in different zones renders correct wall-clock without per-firmware tz config. `ts` is preserved alongside for future treatments (e.g. "X min ago", grouping by day) that need the raw epoch. |
 | `messages[].sender` | string | Author display name, normalized (see below), capped at 64 chars. |
 | `messages[].body` | string | Message body, normalized (see below), capped at 500 chars. |
 
@@ -165,6 +167,7 @@ breaking schema bump would require fixture updates.
 |---|---|---|
 | 1 | Phase 0 — hardcoded placeholder | (initial) |
 | 2 | Phase 1 — real data | Flat `messages[]` → nested `channels[].messages[]`; added `scope`, `server_time`; messages now carry `ts` (epoch int) and drop the `channel` field (channel is on the parent); `hub` now sourced from `cfg.node` instead of placeholders. |
+| 2 (additive) | Inkplate bulletin rework | `messages[].ts_str` added; per-channel cap raised from 5 to 15. Both additive per the forward-compat rule above — older firmware reading this payload ignores `ts_str` and gracefully consumes whatever subset of the 15 it has room for. |
 
 ---
 

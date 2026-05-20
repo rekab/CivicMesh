@@ -201,15 +201,14 @@ class TestExternalDisplayEnabled(unittest.TestCase):
             source="local",
         )
 
-        # --- #civicmesh-test: 6 mesh messages, varying ts ---
+        # --- #civicmesh-test: 20 mesh messages, varying ts ---
         # Insert in ts-ascending order; expect newest-first in payload.
-        for i, ts in enumerate(
-            [1_700_000_001, 1_700_000_002, 1_700_000_003,
-             1_700_000_004, 1_700_000_005, 1_700_000_006]
-        ):
+        # Sized to exceed _PER_CHANNEL_LIMIT (15) so the cap-behavior
+        # tests below actually exercise the slice.
+        for i in range(20):
             insert_message(
                 cls.db_cfg,
-                ts=ts,
+                ts=1_700_000_001 + i,
                 channel="#civicmesh-test",
                 sender=f"mesh-peer-{i}",
                 content=f"mesh message {i}",
@@ -321,36 +320,50 @@ class TestExternalDisplayEnabled(unittest.TestCase):
 
     # --- per-channel selection ------------------------------------------
 
-    def test_per_channel_cap_at_5(self):
+    def test_per_channel_cap_at_15(self):
         ch = self._channel(self._payload(), "#civicmesh-test")
-        self.assertEqual(len(ch["messages"]), 5)
+        self.assertEqual(len(ch["messages"]), 15)
 
     def test_messages_newest_first_by_ts(self):
         ch = self._channel(self._payload(), "#civicmesh-test")
         timestamps = [m["ts"] for m in ch["messages"]]
         self.assertEqual(timestamps, sorted(timestamps, reverse=True))
-        # The oldest of 6 (ts=1_700_000_001) should be dropped by the cap.
-        self.assertNotIn(1_700_000_001, timestamps)
+        # 20 inserted, cap 15 → the 5 oldest (ts=1_700_000_001..005) drop.
+        for old_ts in range(1_700_000_001, 1_700_000_006):
+            self.assertNotIn(old_ts, timestamps)
+        # And the newest (ts=1_700_000_020) is present.
+        self.assertIn(1_700_000_020, timestamps)
 
     def test_pinned_first_then_newest_unpinned(self):
         ch = self._channel(self._payload(), "#local")
-        self.assertEqual(len(ch["messages"]), 5)
+        # 2 pinned + 4 unpinned, all under the per-channel cap of 15.
+        self.assertEqual(len(ch["messages"]), 6)
         pin1, pin2 = self.pin_ids
         # Pinned come first, in pin_order ASC (1, 2).
         self.assertEqual(ch["messages"][0]["id"], pin1)
         self.assertEqual(ch["messages"][1]["id"], pin2)
-        # Remaining 3 slots are the 3 newest unpinned, in ts DESC.
+        # Remaining slots are the unpinned, newest first.
         unpinned_in_payload = [m["id"] for m in ch["messages"][2:]]
-        # Unpinned were inserted with ascending ts; newest 3 are the last 3.
-        self.assertEqual(unpinned_in_payload, self.unpinned_ids[-1:-4:-1])
+        self.assertEqual(unpinned_in_payload, list(reversed(self.unpinned_ids)))
 
     # --- message field projection ---------------------------------------
 
-    def test_message_keys_are_id_ts_sender_body_only(self):
+    def test_message_keys_are_id_ts_ts_str_sender_body_only(self):
         ch = self._channel(self._payload(), "#hub-board")
         self.assertTrue(ch["messages"], "expected at least one message in #hub-board")
         for m in ch["messages"]:
-            self.assertEqual(set(m.keys()), {"id", "ts", "sender", "body"})
+            self.assertEqual(
+                set(m.keys()), {"id", "ts", "ts_str", "sender", "body"}
+            )
+
+    def test_ts_str_formatted_in_configured_timezone(self):
+        # ts=1_700_000_700 is 2023-11-14 22:25 UTC = 14:25 in America/
+        # Los_Angeles (PST, UTC-8 — outside DST on that date). The test
+        # config doesn't set node.timezone, so the LA default applies.
+        ch = self._channel(self._payload(), "#hub-board")
+        norm_row = next(m for m in ch["messages"] if m["id"] == self.norm_msg_id)
+        self.assertEqual(norm_row["ts"], 1_700_000_700)
+        self.assertEqual(norm_row["ts_str"], "14:25")
 
     def test_normalization_applied_to_payload(self):
         ch = self._channel(self._payload(), "#hub-board")

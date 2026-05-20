@@ -11,6 +11,13 @@ namespace render {
 struct PayloadMessage {
   long id = 0;
   long ts = 0;
+  // Server-formatted "HH:MM" in the hub's configured tz. Authoritative
+  // when present. The raw `ts` is kept alongside so future treatments
+  // (e.g. "X min ago", grouping by day) don't need a second field.
+  // Empty string when the server didn't supply one — older payloads,
+  // legacy fixtures — in which case the renderer falls back to
+  // computing HH:MM from `ts` in UTC.
+  std::string ts_str;
   std::string sender;
   std::string body;
 };

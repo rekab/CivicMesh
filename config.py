@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import zoneinfo
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 from typing import Any, Optional
@@ -41,9 +42,19 @@ class NodeConfig:
         lowercased on load. Set as the firmware SenderName so the
         MeshCore companion app uses it as the avatar header on
         every channel post.
+    timezone: IANA tz database name (e.g. "America/Los_Angeles").
+        Used server-side to format message timestamps for the
+        external-display payload's `messages[].ts_str` field. The
+        Inkplate firmware does not compute time on its own — it
+        prints what the server provides. Default is
+        America/Los_Angeles because the project's home deployment
+        is PNW; ToorCamp and Seattle hubs get correct DST handling
+        without firmware changes. Validated against the Pi's
+        zoneinfo database at config load.
     """
     site_name: str
     callsign: str
+    timezone: str = "America/Los_Angeles"
 
 
 @dataclass(frozen=True)
@@ -315,7 +326,11 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
     were in the source file (load_config silently ignores those).
     """
     return {
-        "node": {"site_name": cfg.node.site_name, "callsign": cfg.node.callsign},
+        "node": {
+            "site_name": cfg.node.site_name,
+            "callsign": cfg.node.callsign,
+            "timezone": cfg.node.timezone,
+        },
         "network": {
             "ip": str(cfg.network.ip),
             "subnet_cidr": str(cfg.network.subnet_cidr),
@@ -497,10 +512,28 @@ def load_config(path: str) -> AppConfig:
         raise ValueError("node.callsign is required (short on-wire identity)")
     callsign = _validate_callsign(node["callsign"])
 
+    # IANA tz name. Optional in config.toml — defaults to America/Los_Angeles
+    # (PNW deployment is the home audience). Validated against the running
+    # Pi's zoneinfo DB so a typo fails loudly at startup rather than
+    # silently shipping wall-clock-shifted timestamps to the Inkplate.
+    raw_tz = node.get("timezone", "America/Los_Angeles")
+    if not isinstance(raw_tz, str) or not raw_tz.strip():
+        raise ValueError("node.timezone must be a non-empty string IANA tz name")
+    tz_name = raw_tz.strip()
+    try:
+        zoneinfo.ZoneInfo(tz_name)
+    except zoneinfo.ZoneInfoNotFoundError:
+        raise ValueError(
+            f"node.timezone {tz_name!r} is not a known IANA tz database "
+            "name on this host (expected e.g. 'America/Los_Angeles'). "
+            "Check /usr/share/zoneinfo or `timedatectl list-timezones`."
+        ) from None
+
     return AppConfig(
         node=NodeConfig(
             site_name=site_name,
             callsign=callsign,
+            timezone=tz_name,
         ),
         network=network,
         ap=ap,
