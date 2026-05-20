@@ -22,15 +22,18 @@ constexpr int kCustomFontBaseHeight = 16;    // LessPerfectDOSVGA native height
 constexpr int kCustomFont24BaseHeight = 24;  // LessPerfectDOSVGA24 native height
 constexpr int kBuiltinFontBaseHeight = 8;    // 5x7 + 1px line space
 
-// Bulletin-local header height. Smaller than layout.h's global
-// HEADER_H (50) because this screen uses size-1 text (16 px) where the
-// failure_shell family still uses size-2 (32 px) for visibility-at-
-// distance. Per-screen override avoids regenerating the failure_shell
-// golden — those templates aren't changing in this rework. Matches the
-// footer height for a balanced chrome strip top + bottom.
+// Bulletin-local header + footer heights. Smaller header than layout.h's
+// global HEADER_H (50) because this screen uses size-1 text (16 px)
+// where the failure_shell family still uses size-2 (32 px) for
+// visibility-at-distance. Footer is slightly larger than the global
+// FOOTER_H (30) to fit UI_SPEC §5's nerd strip — the sparkline wants
+// ~14 px vertical room above the 8-px built-in text. Per-screen
+// overrides avoid regenerating failure_shell goldens; those templates
+// aren't changing in this rework.
 constexpr int16_t BUL_HEADER_H = 30;
+constexpr int16_t BUL_FOOTER_H = 36;
 constexpr int16_t BUL_BODY_Y = BUL_HEADER_H;
-constexpr int16_t BUL_BODY_H = PANEL_H - BUL_HEADER_H - FOOTER_H;
+constexpr int16_t BUL_BODY_H = PANEL_H - BUL_HEADER_H - BUL_FOOTER_H;
 
 // Right-edge channel rail. Tabs stack vertically at the top of the rail
 // at a fixed height each (about three size-1 rows). The active tab
@@ -379,47 +382,164 @@ void draw_body_messages(Adafruit_GFX& gfx,
   }
 }
 
+// Format `uptime_s` into a compact "UP <d>d<h>h" / "UP <h>h<m>m" / "UP
+// <m>m". Drops trailing units below the relevant magnitude so a hub up
+// for 3 days reads as "UP 3d14h", not "UP 3d14h22m". Width is bounded
+// at ~10 chars even for multi-year uptimes — fits the footer budget.
+void format_uptime(uint32_t s, char* buf, size_t cap) {
+  const uint32_t d = s / 86400;
+  const uint32_t h = (s % 86400) / 3600;
+  const uint32_t m = (s % 3600) / 60;
+  if (d > 0) {
+    std::snprintf(buf, cap, "UP %ud%uh", d, h);
+  } else if (h > 0) {
+    std::snprintf(buf, cap, "UP %uh%um", h, m);
+  } else {
+    std::snprintf(buf, cap, "UP %um", m);
+  }
+}
+
+// Draw the messages_seen.hour sparkline as 12 fillRect bars in white
+// over the footer's inverted-bar background. Bars are normalized to the
+// max bar in the window; zero-count buckets render as a single-pixel
+// baseline so "no activity" still reads as data rather than "missing".
+//
+// Returns the x-coordinate just past the right edge of the sparkline so
+// the caller can resume cursor advance.
+int16_t draw_sparkline(Adafruit_GFX& gfx,
+                       int16_t x, int16_t footer_top,
+                       const std::vector<int>& bars) {
+  constexpr int16_t BAR_W = 4;
+  constexpr int16_t BAR_GAP = 1;
+  constexpr int16_t MAX_H = 14;
+  const int16_t spark_top = footer_top + (BUL_FOOTER_H - MAX_H) / 2;
+
+  int max_val = 0;
+  for (int v : bars) if (v > max_val) max_val = v;
+
+  for (size_t i = 0; i < bars.size(); ++i) {
+    int v = bars[i];
+    int16_t h = 1;
+    if (max_val > 0 && v > 0) {
+      h = static_cast<int16_t>((static_cast<long>(v) * MAX_H) / max_val);
+      if (h < 1) h = 1;
+    }
+    const int16_t bx = x + static_cast<int16_t>(i) * (BAR_W + BAR_GAP);
+    const int16_t by = spark_top + (MAX_H - h);
+    gfx.fillRect(bx, by, BAR_W, h, COLOR_WHITE);
+  }
+  if (bars.empty()) return x;
+  return x + static_cast<int16_t>(bars.size()) * (BAR_W + BAR_GAP) - BAR_GAP;
+}
+
 void draw_footer(Adafruit_GFX& gfx,
                  const Envelope& env,
-                 const Payload& payload) {
-  const int16_t y = PANEL_H - FOOTER_H;
-  draw_inverted_bar(gfx, y, FOOTER_H);
+                 const Payload& payload,
+                 const Stats& stats,
+                 const Status& status) {
+  const int16_t y = PANEL_H - BUL_FOOTER_H;
+  draw_inverted_bar(gfx, y, BUL_FOOTER_H);
   gfx.setFont();  // built-in 5x7
   gfx.setTextSize(1);
   gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
 
   const int16_t text_y =
-      y + (FOOTER_H - kBuiltinFontBaseHeight) / 2;
+      y + (BUL_FOOTER_H - kBuiltinFontBaseHeight) / 2;
 
-  // Left: civicmesh-fw vX.Y.Z / api vN
-  char left[64];
-  std::snprintf(left, sizeof(left), "civicmesh-fw %s / api v%d",
-                env.firmware_version.c_str(), payload.api_version);
-  gfx.setCursor(CHROME_PAD, text_y);
-  gfx.print(left);
+  // Layout is left-to-right segments separated by " | ". Each segment
+  // advances `cursor_x`; the sparkline is also a "segment" but drawn as
+  // rectangles rather than text. The relative-time string at the end
+  // is right-aligned independently.
+  int16_t cursor_x = CHROME_PAD;
+  bool any_segment = false;
 
-  // Center: relative time + optional stale tag
-  std::string center = format_relative_time(env.seconds_since_last_update);
-  if (env.status == "stale") center += " (stale)";
-  int16_t x1, y1;
-  uint16_t w, h;
-  gfx.getTextBounds(center.c_str(), 0, 0, &x1, &y1, &w, &h);
-  gfx.setCursor((PANEL_W - w) / 2, text_y);
-  gfx.print(center.c_str());
+  auto seg = [&](const char* s) {
+    if (any_segment) {
+      gfx.setCursor(cursor_x, text_y);
+      gfx.print(" | ");
+      // " | " is 3 chars × 6 px (built-in 5x7 advance) = 18 px.
+      cursor_x += 18;
+    }
+    any_segment = true;
+    gfx.setCursor(cursor_x, text_y);
+    gfx.print(s);
+    int16_t x1, y1; uint16_t w, h;
+    gfx.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+    cursor_x += w;
+  };
 
-  // Right: battery + radio glyphs
-  std::string right;
+  char buf[40];
+  if (stats.has_stats) {
+    format_uptime(stats.uptime_s, buf, sizeof(buf));
+    seg(buf);
+
+    std::snprintf(buf, sizeof(buf), "CPU %.2f %.0fC",
+                  static_cast<double>(stats.cpu_load_1m),
+                  static_cast<double>(stats.cpu_temp_c));
+    seg(buf);
+
+    std::snprintf(buf, sizeof(buf), "MEM %dM", stats.mem_available_mb);
+    seg(buf);
+
+    std::snprintf(buf, sizeof(buf), "SESS %d/%d",
+                  stats.wifi_sessions_now, stats.wifi_sessions_day);
+    seg(buf);
+
+    std::snprintf(buf, sizeof(buf), "OUTBOX %d", stats.outbox_depth_now);
+    seg(buf);
+
+    if (!stats.messages_seen_hour_bars.empty()) {
+      // Separator before the sparkline, then the sparkline itself.
+      gfx.setCursor(cursor_x, text_y);
+      gfx.print(" | ");
+      cursor_x += 18;
+      cursor_x = draw_sparkline(gfx, cursor_x, y,
+                                stats.messages_seen_hour_bars);
+      any_segment = true;
+    }
+  }
+
+  // RADIO segment from /api/status. Distinct from envelope.radio_state
+  // (a firmware-side coarse value); the server's radio_status is the
+  // operator-coded truth about mesh_bot liveness.
+  if (status.has_status && !status.radio_status.empty()) {
+    std::snprintf(buf, sizeof(buf), "RADIO %s",
+                  status.radio_status.c_str());
+    seg(buf);
+  }
+
+  // Battery warning (envelope-driven; firmware reads the analog pin).
+  // Only shown in the low-but-not-critical window — critical battery
+  // takes over the whole screen via draw_critical_battery.
   if (env.battery_volts >= BATT_CRIT_V &&
       env.battery_volts < BATT_LOW_V) {
-    right += "BATT LOW ";
+    seg("BATT LOW");
   }
-  if (env.radio_state == "down") {
-    right += "RADIO v";  // 'v' as a tiny down-chevron proxy in ASCII
+
+  // Far-right: how stale this frame is. Lives outside the cursor-advance
+  // loop because it's the only right-anchored segment; collisions with
+  // the left-aligned run mean the strip overflowed and we lose the
+  // relative-time tail (preferable to overwriting nerd-strip data).
+  std::string rel = format_relative_time(env.seconds_since_last_update);
+  if (env.status == "stale") rel += " (stale)";
+  int16_t x1, y1;
+  uint16_t w, h;
+  gfx.getTextBounds(rel.c_str(), 0, 0, &x1, &y1, &w, &h);
+  const int16_t rel_x = PANEL_W - CHROME_PAD - static_cast<int16_t>(w);
+  if (rel_x > cursor_x + 6) {
+    gfx.setCursor(rel_x, text_y);
+    gfx.print(rel.c_str());
   }
-  if (!right.empty()) {
-    gfx.getTextBounds(right.c_str(), 0, 0, &x1, &y1, &w, &h);
-    gfx.setCursor(PANEL_W - CHROME_PAD - w, text_y);
-    gfx.print(right.c_str());
+
+  // Fallback when no telemetry: show the old firmware/api banner so the
+  // strip doesn't go visibly blank. Fires when /api/stats was
+  // unreachable or not fetched (host_render fixtures without stats).
+  if (!any_segment) {
+    char banner[64];
+    std::snprintf(banner, sizeof(banner), "civicmesh-fw %s / api v%d",
+                  env.firmware_version.c_str(), payload.api_version);
+    gfx.setCursor(CHROME_PAD, text_y);
+    gfx.print(banner);
   }
 }
 
@@ -427,14 +547,16 @@ void draw_footer(Adafruit_GFX& gfx,
 
 void draw_bulletin(Adafruit_GFX& gfx,
                    const Envelope& env,
-                   const Payload& payload) {
+                   const Payload& payload,
+                   const Stats& stats,
+                   const Status& status) {
   gfx.fillScreen(COLOR_WHITE);
   draw_header(gfx, env, payload);
   draw_body_messages(gfx, env, payload);
   // Rail drawn after the body: its borders should paint over anything
   // that might bleed into the right column from earlier passes.
   draw_channel_rail(gfx, env, payload);
-  draw_footer(gfx, env, payload);
+  draw_footer(gfx, env, payload, stats, status);
 }
 
 }  // namespace screens

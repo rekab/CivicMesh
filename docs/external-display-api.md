@@ -140,6 +140,24 @@ The server emits exactly one `api_version` per response. There is no
 content negotiation — firmware does not request a specific version, and
 the server has no backward-compat path for older versions.
 
+## Companion endpoints
+
+Chat content lives here. Operator-coded chrome — the §5 nerd strip
+and radio liveness — comes from two other server routes the firmware
+also reads:
+
+- `GET /api/stats` — pre-bucketed metrics (uptime, CPU, memory, outbox,
+  session counts, message-activity histograms). Cached 20 s
+  server-side.
+- `GET /api/status` — captive-portal radio + mesh_bot liveness
+  (`radio_status`, `age_sec`).
+
+Neither has a written wire-format spec; both are de facto API by the
+existing UI consumers. See `inkplate/README.md` "Server endpoints
+consumed" for the firmware's polling cadence on each, and
+`inkplate/render/src/stats.cpp` / `status.cpp` for the exact field
+subset the renderer parses.
+
 ## Renderer
 
 The reference consumer of this payload is the C++ render library at

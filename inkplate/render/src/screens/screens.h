@@ -5,6 +5,8 @@
 
 #include "../envelope.h"
 #include "../payload.h"
+#include "../stats.h"
+#include "../status.h"
 
 namespace civicmesh {
 namespace render {
@@ -12,7 +14,9 @@ namespace screens {
 
 void draw_bulletin(Adafruit_GFX& gfx,
                    const Envelope& env,
-                   const Payload& payload);
+                   const Payload& payload,
+                   const Stats& stats,
+                   const Status& status);
 
 void draw_failure_shell(Adafruit_GFX& gfx,
                         const Envelope& env);

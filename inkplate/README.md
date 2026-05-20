@@ -29,6 +29,27 @@ Phase 3B+ work (NVS last-good cache, RTC / real
 chunk; the roadmap lives in `docs/inkplate-research.md`. Server-side
 contract that feeds the renderer is at `docs/external-display-api.md`.
 
+### Server endpoints consumed
+
+The bulletin firmware reads three HTTP endpoints per refresh cycle.
+None are Inkplate-owned — they're general server routes the Inkplate
+happens to consume. Treat this list as a soft dep registry: if you're
+about to change one of these endpoints, the Inkplate renderer is
+downstream.
+
+| Endpoint | Used for | Cadence |
+|---|---|---|
+| `GET /api/external-display/state` | Chat content + hub identity (channels, messages, site_name, callsign). Schema in `docs/external-display-api.md`. | Every active-state poll (Fibonacci 10→180 s); once per deep-sleep wake. |
+| `GET /api/stats` | UI_SPEC §5 nerd strip — uptime, CPU load + temp, available memory, outbox depth, WiFi session counts, `messages_seen.hour.bars` for the sparkline. Already cached 20 s server-side, so polling cost is bounded. | Once per deep-sleep wake (~5 min) is enough; can poll every N active-state polls instead. |
+| `GET /api/status` | Captive-portal radio/mesh_bot status (`radio_status`, `age_sec`). Mesh_bot liveness, not radio analog state. | Same cadence as `/api/stats` — they update on the same timescale. |
+
+Renderer-side parsing for the three responses lives in `render/src/`:
+`payload.h` (the chat payload), `stats.h` (telemetry subset), and
+`status.h` (radio status subset). All three are passed into
+`draw_bulletin` as separate structs; the host_render JSON shape is
+`{envelope, payload, stats, status}` so the contact-sheet harness can
+fabricate `stats` and `status` without standing up a live server.
+
 ## Renderer
 
 ### Directory layout

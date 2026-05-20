@@ -65,6 +65,35 @@ _STOCK_ENVELOPE = {
     "cached_payload": None,
 }
 
+# Stock /api/stats subset. The renderer only reads the subset of fields
+# stats.cpp parses; the rest of compute_stats's output is dropped here to
+# keep the harness file small and the visual mental model clear. Values
+# chosen to exercise the §5 nerd strip in a "healthy hub" state — bump
+# the values during iteration if a particular range matters.
+_STOCK_STATS = {
+    "system": {
+        "uptime_s": 273_625,  # ~3d 4h
+        "cpu": {"load_1m": 0.27, "temp_c": 64.8},
+        "mem": {"available_mb": 2011},
+        "outbox": {"depth_now": 0},
+    },
+    "wifi_sessions": {"now": 2, "day": 5, "week": 12},
+    "messages_seen": {
+        "hour": {
+            "bucket_s": 300,
+            # 12 buckets of 5-min activity. Mixed shape so the sparkline
+            # has actual contour to read; zeros and peaks both visible.
+            "bars": [0, 3, 7, 12, 9, 4, 1, 0, 6, 14, 8, 2],
+        },
+    },
+}
+
+# Stock /api/status subset. Same rationale as _STOCK_STATS.
+_STOCK_STATUS = {
+    "radio_status": "online",
+    "age_sec": 8,
+}
+
 _DEFAULT_SCENARIO = "silent-drift"
 
 
@@ -237,7 +266,15 @@ def main(argv: list[str] | None = None) -> int:
         envelope = dict(_STOCK_ENVELOPE)
         envelope["active_channel_index"] = 0
         png_path = _CONTACT_DIR / "00_empty.png"
-        _render_channel({"envelope": envelope, "payload": payload}, png_path)
+        _render_channel(
+            {
+                "envelope": envelope,
+                "payload": payload,
+                "stats": _STOCK_STATS,
+                "status": _STOCK_STATUS,
+            },
+            png_path,
+        )
         entries = [("(no channels)", "n/a", png_path.name)]
     else:
         entries: list[tuple[str, str, str]] = []
@@ -246,7 +283,15 @@ def main(argv: list[str] | None = None) -> int:
             envelope["active_channel_index"] = idx
             png_name = f"{idx:02d}_{_safe_segment(ch.get('name', f'ch{idx}'))}.png"
             png_path = _CONTACT_DIR / png_name
-            _render_channel({"envelope": envelope, "payload": payload}, png_path)
+            _render_channel(
+                {
+                    "envelope": envelope,
+                    "payload": payload,
+                    "stats": _STOCK_STATS,
+                    "status": _STOCK_STATUS,
+                },
+                png_path,
+            )
             entries.append((ch.get("name", "?"), ch.get("scope", "?"), png_name))
 
     index = _write_index(entries, scenario_path.stem)

@@ -991,6 +991,10 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/api/status":
+            # Consumers: captive portal (primary) + Inkplate bulletin firmware
+            # (secondary, reads `radio_status` and `age_sec` for the §5 nerd
+            # strip). See inkplate/README.md "Server endpoints consumed"
+            # before renaming or retyping fields here.
             row = get_status(self.server.db_cfg, process="mesh_bot", log=log)
             node_name = self.server.cfg.node.site_name
             # Skewed for the age computation below so age_sec stays consistent
@@ -1055,6 +1059,13 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/api/stats":
+            # Consumers: captive-portal stats page (primary) + Inkplate
+            # bulletin firmware (secondary, reads a small subset:
+            # system.uptime_s / cpu / mem / outbox, wifi_sessions, and
+            # messages_seen.hour.bars for the §5 sparkline). See
+            # inkplate/README.md "Server endpoints consumed" before
+            # renaming or retyping fields used by the renderer
+            # (inkplate/render/src/stats.cpp pinpoints which).
             now = time.time()
             if _stats_cache["data"] is not None and now - _stats_cache["ts"] < 20:
                 _json(self, 200, _stats_cache["data"])

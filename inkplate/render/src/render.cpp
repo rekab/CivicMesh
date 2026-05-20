@@ -6,6 +6,8 @@
 #include "envelope.h"
 #include "layout.h"
 #include "payload.h"
+#include "stats.h"
+#include "status.h"
 #include "screens/screens.h"
 
 // The renderer trusts server-side NFKD-to-ASCII normalization
@@ -86,6 +88,16 @@ bool render_frame(Adafruit_GFX& gfx, const char* combined_json) {
     }
   }
 
+  // Stats and Status are additive, optional top-level fields the
+  // firmware composes from /api/stats and /api/status. Parse failures
+  // (missing field, wrong shape) are NOT fatal — the renderer falls
+  // back to envelope-only chrome. See inkplate/README.md for the
+  // consumer map and stats.h / status.h for the field subset.
+  Stats stats;
+  parse_stats(doc["stats"], stats);
+  Status status;
+  parse_status(doc["status"], status);
+
   ScreenChoice choice = choose_screen(env, payload_parsed_ok, payload);
   switch (choice) {
     case ScreenChoice::kCriticalBattery:
@@ -99,7 +111,7 @@ bool render_frame(Adafruit_GFX& gfx, const char* combined_json) {
                                  extract_payload_json(combined_json));
       return true;
     case ScreenChoice::kBulletin:
-      screens::draw_bulletin(gfx, env, payload);
+      screens::draw_bulletin(gfx, env, payload, stats, status);
       return true;
   }
   return false;
