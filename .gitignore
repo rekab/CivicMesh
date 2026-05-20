@@ -36,3 +36,6 @@ content/hub-docs/*.pdf
 inkplate/host/host_render
 inkplate/host/*.o
 inkplate/host/main.dSYM/
+# Output from inkplate/tools/contact-sheet.py — per-run PNGs + index.html.
+# Wiped and rewritten on each invocation; never source.
+.contact/

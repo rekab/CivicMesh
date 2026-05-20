@@ -459,6 +459,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ISO8601 datetime used as the t=0 reference for ts_offset. "
              "Default: wall-clock now (UTC).",
     )
+    # Lets the host-side iteration harness (inkplate/tools/contact-sheet.py)
+    # point the injector at a scratch DB without editing config.toml.
+    # Bypasses cfg.db_path entirely; sidecar tracking still applies and is
+    # the operator's responsibility — using --replace-injected against a
+    # different DB than the one the sidecar was recorded against will
+    # silently fail to find anything to delete.
+    p.add_argument(
+        "--db",
+        default=None,
+        help="Override cfg.db_path with this SQLite path. For the host-side "
+             "iteration harness; leaves config.toml alone.",
+    )
     mx = p.add_mutually_exclusive_group()
     mx.add_argument(
         "--replace-injected",
@@ -506,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    db_cfg = DBConfig(path=cfg.db_path)
+    db_cfg = DBConfig(path=args.db or cfg.db_path)
     # Ensure schema exists; harmless if already initialized. The WAL-mode
     # PRAGMA check happens inside each do_* function so a misconfigured DB
     # fails before we touch any rows.
