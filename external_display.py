@@ -51,15 +51,20 @@ def _normalize_text(s: str, max_len: int) -> str:
 
 
 def _format_ts(ts: int, tz: zoneinfo.ZoneInfo) -> str:
-    """Format an epoch-seconds value as HH:MM in the hub's configured tz.
+    """Format an epoch-seconds value as "YYYY-MM-DD HH:MM" in the hub's
+    configured tz.
 
     Per UI_SPEC §5, timestamps on the Inkplate are server-provided
     pre-formatted strings — the firmware does not compute time. Doing
     the conversion here means DST is handled by the Pi's zoneinfo
     database, and a fleet of hubs in different zones can render their
     own wall-clock times without rebuilding firmware.
+
+    Date+time (rather than just HH:MM) so messages near midnight, or
+    multi-day-old messages surfaced by a quiet channel, don't read as
+    ambiguously "earlier today."
     """
-    return datetime.datetime.fromtimestamp(ts, tz=tz).strftime("%H:%M")
+    return datetime.datetime.fromtimestamp(ts, tz=tz).strftime("%Y-%m-%d %H:%M")
 
 
 def _channel_payload(db_cfg: DBConfig,

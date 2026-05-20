@@ -360,10 +360,12 @@ class TestExternalDisplayEnabled(unittest.TestCase):
         # ts=1_700_000_700 is 2023-11-14 22:25 UTC = 14:25 in America/
         # Los_Angeles (PST, UTC-8 — outside DST on that date). The test
         # config doesn't set node.timezone, so the LA default applies.
+        # Format is "YYYY-MM-DD HH:MM" so messages near midnight or
+        # multi-day-old activity don't read as ambiguously "today".
         ch = self._channel(self._payload(), "#hub-board")
         norm_row = next(m for m in ch["messages"] if m["id"] == self.norm_msg_id)
         self.assertEqual(norm_row["ts"], 1_700_000_700)
-        self.assertEqual(norm_row["ts_str"], "14:25")
+        self.assertEqual(norm_row["ts_str"], "2023-11-14 14:25")
 
     def test_normalization_applied_to_payload(self):
         ch = self._channel(self._payload(), "#hub-board")

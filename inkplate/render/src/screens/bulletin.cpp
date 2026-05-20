@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../fonts/LessPerfectDOSVGA.h"
+#include "../fonts/LessPerfectDOSVGA24.h"
 #include "../layout.h"
 #include "../relative_time.h"
 #include "../text_wrap.h"
@@ -17,8 +18,19 @@ namespace screens {
 
 namespace {
 
-constexpr int kCustomFontBaseHeight = 16;  // LessPerfectDOSVGA native height
-constexpr int kBuiltinFontBaseHeight = 8;  // 5x7 + 1px line space
+constexpr int kCustomFontBaseHeight = 16;    // LessPerfectDOSVGA native height
+constexpr int kCustomFont24BaseHeight = 24;  // LessPerfectDOSVGA24 native height
+constexpr int kBuiltinFontBaseHeight = 8;    // 5x7 + 1px line space
+
+// Bulletin-local header height. Smaller than layout.h's global
+// HEADER_H (50) because this screen uses size-1 text (16 px) where the
+// failure_shell family still uses size-2 (32 px) for visibility-at-
+// distance. Per-screen override avoids regenerating the failure_shell
+// golden — those templates aren't changing in this rework. Matches the
+// footer height for a balanced chrome strip top + bottom.
+constexpr int16_t BUL_HEADER_H = 30;
+constexpr int16_t BUL_BODY_Y = BUL_HEADER_H;
+constexpr int16_t BUL_BODY_H = PANEL_H - BUL_HEADER_H - FOOTER_H;
 
 // Right-edge channel rail. Tabs stack vertically at the top of the rail
 // at a fixed height each (about three size-1 rows). The active tab
@@ -48,10 +60,14 @@ constexpr int16_t DOUBLE_LINE_GAP = 2;
 // we use the same value as a row pitch so successive lines stack cleanly.
 constexpr int16_t LINE_H = kCustomFontBaseHeight;
 
-// Body indent for continuation lines, per UI_SPEC §5. Six size-1 cells
-// of ~8 px = 48 px. Aligns body lines under the sender column ("HH:MM "
-// is exactly 6 cells, so the body hangs under the sender name).
-constexpr int16_t BODY_INDENT_PX = 48;
+// Body indent for continuation lines. Two size-1 cells (~8 px each)
+// is enough to signal visual hierarchy without consuming pane width.
+// Deviates from UI_SPEC §5's literal "6 cols" (which was sized to
+// align with "HH:MM "); the new server-formatted "YYYY-MM-DD HH:MM "
+// prefix is 17 cells, and indenting body that far eats too much
+// wrap width. The hanging indent is small enough that body still
+// reads as belonging to the message above.
+constexpr int16_t BODY_INDENT_PX = 16;
 
 // Hard caps on visible content. MAX_MESSAGES_SHOWN matches the server's
 // _PER_CHANNEL_LIMIT so the renderer can display everything the payload
@@ -94,7 +110,8 @@ void draw_double_border_no_left(Adafruit_GFX& gfx,
   gfx.drawFastVLine(x_inner_right, y_inner_top, inner_v_h, COLOR_BLACK);
 }
 
-// Fallback: format an epoch-seconds timestamp as "HH:MM" in UTC.
+// Fallback: format an epoch-seconds timestamp as "YYYY-MM-DD HH:MM" in
+// UTC.
 //
 // Per UI_SPEC §5 the firmware does not compute time — the server
 // supplies a pre-formatted `ts_str` on each message (formatted in
@@ -102,31 +119,40 @@ void draw_double_border_no_left(Adafruit_GFX& gfx,
 // only fires when ts_str is missing: legacy fixtures or an older
 // server that doesn't carry the field. UTC is chosen because the
 // firmware has no timezone context of its own; the wall-clock time
-// will be wrong by the local tz offset, but the relative ordering
-// and the minute boundaries are still correct.
-std::string format_hhmm_utc_fallback(long ts) {
+// will be wrong by the local tz offset, but the relative ordering,
+// the date, and the minute boundaries are still correct.
+std::string format_ts_utc_fallback(long ts) {
   std::time_t t = static_cast<std::time_t>(ts);
   std::tm tm_buf{};
   gmtime_r(&t, &tm_buf);
-  char buf[8];
-  std::snprintf(buf, sizeof(buf), "%02d:%02d", tm_buf.tm_hour, tm_buf.tm_min);
+  // 64 bytes leaves headroom for the compiler's defensive estimate
+  // (it assumes %d can swing wider than four digits) while still being
+  // well under any reasonable stack budget.
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+                tm_buf.tm_hour, tm_buf.tm_min);
   return std::string(buf);
 }
 
 void draw_header(Adafruit_GFX& gfx,
                  const Envelope& env,
                  const Payload& payload) {
-  draw_inverted_bar(gfx, 0, HEADER_H);
+  draw_inverted_bar(gfx, 0, BUL_HEADER_H);
+  // Top bar uses the 16-px LessPerfectDOSVGA at size 1: a single chat-
+  // body row of text. The bar height (BUL_HEADER_H) still budgets vertical
+  // padding around it so the inverted strip reads as deliberate chrome
+  // rather than text-on-black.
   gfx.setFont(&LessPerfectDOSVGA);
-  gfx.setTextSize(2);
+  gfx.setTextSize(1);
   gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
 
   const std::string site = payload.site_name.empty()
                                ? std::string("CivicMesh")
                                : payload.site_name;
   set_cursor_top_left(gfx, CHROME_PAD,
-                      (HEADER_H - kCustomFontBaseHeight * 2) / 2,
-                      kCustomFontBaseHeight * 2);
+                      (BUL_HEADER_H - kCustomFontBaseHeight) / 2,
+                      kCustomFontBaseHeight);
   gfx.print(site.c_str());
 
   // Right side: channel name + (n/m) indicator.
@@ -145,8 +171,8 @@ void draw_header(Adafruit_GFX& gfx,
     uint16_t w, h;
     gfx.getTextBounds(channel_label.c_str(), 0, 0, &x1, &y1, &w, &h);
     set_cursor_top_left(gfx, PANEL_W - CHROME_PAD - w,
-                        (HEADER_H - kCustomFontBaseHeight * 2) / 2,
-                        kCustomFontBaseHeight * 2);
+                        (BUL_HEADER_H - kCustomFontBaseHeight) / 2,
+                        kCustomFontBaseHeight);
     gfx.print(channel_label.c_str());
   }
 }
@@ -163,10 +189,10 @@ void draw_channel_rail(Adafruit_GFX& gfx,
   if (payload.channels.empty()) return;
   const size_t n = payload.channels.size();
   const int16_t rail_x = PANEL_W - RAIL_W;
-  const int16_t rail_y = BODY_Y;
-  const int16_t rail_h_total = BODY_H;
+  const int16_t rail_y = BUL_BODY_Y;
+  const int16_t rail_h_total = BUL_BODY_H;
   // Clamp visible tab count to what fits in the rail (defensive — with
-  // TAB_H=54 and BODY_H=520 the rail holds ~9 tabs, more than the ~6 we
+  // TAB_H=54 and BUL_BODY_H=540 the rail holds ~9 tabs, more than the ~6 we
   // ever see in practice).
   const size_t max_visible = static_cast<size_t>(rail_h_total / TAB_H);
   const size_t visible = std::min(n, max_visible);
@@ -187,17 +213,31 @@ void draw_channel_rail(Adafruit_GFX& gfx,
       gfx.drawRect(rail_x, y_top, RAIL_W, TAB_H, COLOR_BLACK);
     }
 
-    // Tab label at heading size (setTextSize(2), same as the top status
-    // bar's site_name / channel-name). Vertically centered in the tab,
-    // left-aligned with TAB_PAD; labels too long for RAIL_W clip at the
-    // right edge of the tab.
-    gfx.setFont(&LessPerfectDOSVGA);
-    gfx.setTextSize(2);
+    // Tab label. Active = 32 px (LessPerfectDOSVGA at size 2) for
+    // emphasis; inactive = 24 px (native LessPerfectDOSVGA24 at size 1)
+    // so inactive tabs read as less prominent without the blocky-pixel
+    // look of an integer-scaled small font. Both centered horizontally
+    // and vertically inside their tab. Labels too long for RAIL_W still
+    // clip at the right edge — measured via getTextBounds.
+    if (is_active) {
+      gfx.setFont(&LessPerfectDOSVGA);
+      gfx.setTextSize(2);
+    } else {
+      gfx.setFont(&LessPerfectDOSVGA24);
+      gfx.setTextSize(1);
+    }
     gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    const int16_t label_h = kCustomFontBaseHeight * 2;  // 32 px
+    const int16_t label_h =
+        is_active ? kCustomFontBaseHeight * 2 : kCustomFont24BaseHeight;
+    const char* label = payload.channels[i].name.c_str();
+    int16_t bx, by;
+    uint16_t bw, bh;
+    gfx.getTextBounds(label, 0, 0, &bx, &by, &bw, &bh);
+    const int16_t label_x =
+        rail_x + (RAIL_W - static_cast<int16_t>(bw)) / 2;
     const int16_t label_top = y_top + (TAB_H - label_h) / 2;
-    set_cursor_top_left(gfx, rail_x + TAB_PAD, label_top, label_h);
-    gfx.print(payload.channels[i].name.c_str());
+    set_cursor_top_left(gfx, label_x, label_top, label_h);
+    gfx.print(label);
   }
 
   // Rail/pane boundary line, on the right edge of the pane (= left edge
@@ -225,7 +265,7 @@ void draw_pane_message(Adafruit_GFX& gfx, const char* msg,
   gfx.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
   const int16_t cx = pane_left + (pane_right - pane_left - static_cast<int16_t>(w)) / 2;
   set_cursor_top_left(gfx, cx,
-                      BODY_Y + (BODY_H - kCustomFontBaseHeight * 2) / 2,
+                      BUL_BODY_Y + (BUL_BODY_H - kCustomFontBaseHeight * 2) / 2,
                       kCustomFontBaseHeight * 2);
   gfx.print(msg);
 }
@@ -239,8 +279,8 @@ void draw_body_messages(Adafruit_GFX& gfx,
   const bool has_channels = !payload.channels.empty();
   const int16_t pane_left = BODY_PAD;
   const int16_t pane_right = has_channels ? (PANEL_W - RAIL_W) : PANEL_W;
-  const int16_t pane_top = BODY_Y;
-  const int16_t pane_bot = BODY_Y + BODY_H;
+  const int16_t pane_top = BUL_BODY_Y;
+  const int16_t pane_bot = BUL_BODY_Y + BUL_BODY_H;
   const int16_t pane_text_right = pane_right - BODY_PAD;
   const int16_t pane_inner_w = pane_text_right - pane_left;
   const int16_t body_wrap_w = pane_inner_w - BODY_INDENT_PX;
@@ -288,10 +328,11 @@ void draw_body_messages(Adafruit_GFX& gfx,
     const auto& m = ch.messages[sorted[i]];
     Block b;
     b.m = &m;
-    // Prefer the server-formatted HH:MM (in the hub's configured tz).
-    // Fall back to a UTC format only when the server didn't supply one
-    // — exists for legacy fixtures and old-server compatibility.
-    b.hhmm = m.ts_str.empty() ? format_hhmm_utc_fallback(m.ts) : m.ts_str;
+    // Prefer the server-formatted "YYYY-MM-DD HH:MM" (in the hub's
+    // configured tz). Fall back to a UTC format only when the server
+    // didn't supply one — exists for legacy fixtures and old-server
+    // compatibility.
+    b.hhmm = m.ts_str.empty() ? format_ts_utc_fallback(m.ts) : m.ts_str;
     b.body_lines = wrap_text(gfx, m.body, body_wrap_w, kBodyMaxLines);
     // 1 sender line + N body lines + 1 blank line between messages.
     b.height = LINE_H * (1 + static_cast<int16_t>(b.body_lines.size()) + 1);

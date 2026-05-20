@@ -57,7 +57,7 @@ Content-Type: application/json; charset=utf-8
         {
           "id": 1234,
           "ts": 1747430800,
-          "ts_str": "14:46",
+          "ts_str": "2025-05-16 14:46",
           "sender": "alice",
           "body": "Water in the parking lot"
         }
@@ -87,7 +87,7 @@ Content-Type: application/json; charset=utf-8
 | `channels[].messages` | array | Up to 15 messages per channel: pinned rows first (in `pin_order ASC NULLS LAST`, ties by `ts DESC`), then newest unpinned rows by `ts DESC`, hard-capped at 15 total. Empty channels return `[]`, never omitted. |
 | `messages[].id` | int | `messages.id` PK from SQLite. Stable within a single hub. |
 | `messages[].ts` | int | Unix epoch seconds. |
-| `messages[].ts_str` | string | Pre-formatted `HH:MM` (24-hour) in the hub's configured `node.timezone` (default `America/Los_Angeles`). The renderer prints this verbatim — the Inkplate firmware does not compute time on its own. DST is handled by the Pi's zoneinfo database, so a fleet of hubs in different zones renders correct wall-clock without per-firmware tz config. `ts` is preserved alongside for future treatments (e.g. "X min ago", grouping by day) that need the raw epoch. |
+| `messages[].ts_str` | string | Pre-formatted `YYYY-MM-DD HH:MM` (24-hour) in the hub's configured `node.timezone` (default `America/Los_Angeles`). The renderer prints this verbatim — the Inkplate firmware does not compute time on its own. DST is handled by the Pi's zoneinfo database, so a fleet of hubs in different zones renders correct wall-clock without per-firmware tz config. Date+time (rather than just `HH:MM`) so messages near midnight, or multi-day-old activity surfaced by a quiet channel, don't read as ambiguously "today". `ts` is preserved alongside for future treatments (e.g. "X min ago") that need the raw epoch. |
 | `messages[].sender` | string | Author display name, normalized (see below), capped at 64 chars. |
 | `messages[].body` | string | Message body, normalized (see below), capped at 500 chars. |
 

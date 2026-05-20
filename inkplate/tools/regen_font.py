@@ -17,6 +17,11 @@
 # Iterate `--px` to hit the target native glyph height. Doubled to
 # ~32px by setTextSize(2) at render time.
 #
+# --symbol overrides the C identifier used for the emitted GFXfont
+# struct (and its companion Bitmaps/Glyphs arrays) so multiple sizes
+# can be committed side-by-side and linked together. Default
+# "LessPerfectDOSVGA" preserves the original 16-px header's symbol.
+#
 # Source TTF: http://laemeur.sdf.org/fonts/LessPerfectDOSVGA.ttf
 # License: free for all use, commercial and non-commercial.
 
@@ -32,7 +37,7 @@ except ImportError:
 
 FIRST = 0x20  # space
 LAST = 0x7E   # tilde
-SYMBOL_NAME = "LessPerfectDOSVGA"
+DEFAULT_SYMBOL_NAME = "LessPerfectDOSVGA"
 
 
 def render_glyph(face, codepoint):
@@ -73,7 +78,7 @@ def pack_glyph(glyph):
     return bytes(packed)
 
 
-def emit_header(ttf_path, px, out_path):
+def emit_header(ttf_path, px, out_path, symbol_name):
     face = freetype.Face(str(ttf_path))
     face.set_pixel_sizes(0, px)
 
@@ -118,7 +123,7 @@ def emit_header(ttf_path, px, out_path):
     lines.append("")
     lines.append("#include \"gfxfont.h\"")
     lines.append("")
-    lines.append(f"const uint8_t {SYMBOL_NAME}Bitmaps[] PROGMEM = {{")
+    lines.append(f"const uint8_t {symbol_name}Bitmaps[] PROGMEM = {{")
     # 12 bytes per line, hex.
     bs = list(bitstream)
     for i in range(0, len(bs), 12):
@@ -127,7 +132,7 @@ def emit_header(ttf_path, px, out_path):
                      ("," if i + 12 < len(bs) else ""))
     lines.append("};")
     lines.append("")
-    lines.append(f"const GFXglyph {SYMBOL_NAME}Glyphs[] PROGMEM = {{")
+    lines.append(f"const GFXglyph {symbol_name}Glyphs[] PROGMEM = {{")
     for i, g in enumerate(glyphs):
         comma = "," if i < len(glyphs) - 1 else ""
         cp = g["codepoint"]
@@ -139,9 +144,9 @@ def emit_header(ttf_path, px, out_path):
         )
     lines.append("};")
     lines.append("")
-    lines.append(f"const GFXfont {SYMBOL_NAME} PROGMEM = {{")
-    lines.append(f"  (uint8_t *){SYMBOL_NAME}Bitmaps,")
-    lines.append(f"  (GFXglyph *){SYMBOL_NAME}Glyphs,")
+    lines.append(f"const GFXfont {symbol_name} PROGMEM = {{")
+    lines.append(f"  (uint8_t *){symbol_name}Bitmaps,")
+    lines.append(f"  (GFXglyph *){symbol_name}Glyphs,")
     lines.append(f"  0x{FIRST:02X}, 0x{LAST:02X}, {y_advance}")
     lines.append("};")
     lines.append("")
@@ -157,13 +162,17 @@ def main():
     p.add_argument("--px", type=int, default=16,
                    help="Target native glyph height in pixels (default 16)")
     p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--symbol", default=DEFAULT_SYMBOL_NAME,
+                   help="C symbol name for the emitted GFXfont (default "
+                        f"{DEFAULT_SYMBOL_NAME!r}). Use a different value to "
+                        "produce a second size that links alongside the first.")
     args = p.parse_args()
 
     if not args.ttf.exists():
         sys.exit(f"ERROR: TTF not found: {args.ttf}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    emit_header(args.ttf, args.px, args.out)
+    emit_header(args.ttf, args.px, args.out, args.symbol)
 
 
 if __name__ == "__main__":
