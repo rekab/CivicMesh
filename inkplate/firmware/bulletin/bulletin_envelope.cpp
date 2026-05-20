@@ -80,6 +80,32 @@ int16_t select_activity_channel(const JsonDocument& server_doc,
   return best_idx;
 }
 
+int16_t select_freshest_channel(const JsonDocument& server_doc) {
+  JsonArrayConst channels = server_doc["channels"].as<JsonArrayConst>();
+  if (channels.isNull()) return -1;
+  int16_t best_idx = -1;
+  uint32_t best_ts = 0;
+  uint16_t i = 0;
+  for (JsonVariantConst ch : channels) {
+    JsonArrayConst msgs = ch["messages"].as<JsonArrayConst>();
+    if (!msgs.isNull()) {
+      uint32_t newest = 0;
+      for (JsonVariantConst m : msgs) {
+        uint32_t ts = m["ts"].as<uint32_t>();
+        if (ts > newest) newest = ts;
+      }
+      // No hwm gate: any non-empty channel qualifies. Strictly > so
+      // lower index wins ties (and the all-empty case returns -1).
+      if (newest > 0 && newest > best_ts) {
+        best_ts = newest;
+        best_idx = static_cast<int16_t>(i);
+      }
+    }
+    ++i;
+  }
+  return best_idx;
+}
+
 namespace {
 
 void fill_envelope(JsonObject env,
@@ -145,6 +171,52 @@ String build_combined_failure_json(const char* reason,
                 /*seconds_since_last_update=*/0,
                 expected_api_version, firmware_version);
   out["payload"] = nullptr;
+
+  String s;
+  serializeJson(out, s);
+  return s;
+}
+
+String build_combined_critical_battery_json(float battery_volts,
+                                            int expected_api_version,
+                                            const char* firmware_version) {
+  JsonDocument out;
+  JsonObject env = out["envelope"].to<JsonObject>();
+  // status="ok" — critical_battery is dispatched BEFORE the
+  // status=="error" → failure_shell check (render.cpp:28-34), so
+  // setting "error" here would short-circuit to failure_shell and
+  // the critical_battery screen would never render. The renderer's
+  // dispatch trigger is purely battery_volts > 0 && < BATT_CRIT_V.
+  fill_envelope(env, "ok", "unknown", "unknown", nullptr,
+                /*active_channel_index=*/0, battery_volts,
+                /*seconds_since_last_update=*/0,
+                expected_api_version, firmware_version);
+  out["payload"] = nullptr;
+
+  String s;
+  serializeJson(out, s);
+  return s;
+}
+
+String build_combined_api_mismatch_json(const JsonDocument& server_doc,
+                                        float battery_volts,
+                                        int expected_api_version,
+                                        const char* firmware_version) {
+  JsonDocument out;
+  JsonObject env = out["envelope"].to<JsonObject>();
+  // status="ok" (NOT "error"). render.cpp:34 routes any status=="error"
+  // envelope to failure_shell BEFORE the api_version check, so an
+  // error-status envelope would render failure_shell instead of the
+  // dedicated api_mismatch screen. Dispatch hits api_mismatch when
+  // payload is parsable AND payload.api_version != env.expected_api_version
+  // (render.cpp:37-40).
+  fill_envelope(env, "ok", "unknown", "unknown", nullptr,
+                /*active_channel_index=*/0, battery_volts,
+                /*seconds_since_last_update=*/0,
+                expected_api_version, firmware_version);
+  // Payload attached so the renderer can extract the raw JSON dump
+  // (render.cpp:97-99 → extract_payload_json from the combined doc).
+  out["payload"] = server_doc.as<JsonVariantConst>();
 
   String s;
   serializeJson(out, s);

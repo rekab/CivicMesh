@@ -54,6 +54,12 @@ uint32_t max_ts_across_all_channels(const JsonDocument& server_doc);
 int16_t select_activity_channel(const JsonDocument& server_doc,
                                 uint32_t hwm);
 
+// WAKE-press freshest-channel scan: like select_activity_channel but
+// without the > hwm gate. Returns the channel whose newest message
+// has the largest ts; -1 only if every channel is empty. Tiebreaker
+// is lower channel index (strictly > comparison, same as activity).
+int16_t select_freshest_channel(const JsonDocument& server_doc);
+
 // Serialize the success-path combined doc. Attaches `server_doc` as
 // the payload by shallow reference; do not free server_doc until the
 // returned String is no longer needed.
@@ -75,6 +81,28 @@ String build_combined_failure_json(const char* reason,
                                    float battery_volts,
                                    int expected_api_version,
                                    const char* firmware_version);
+
+// Serialize a combined doc that routes to the critical_battery screen.
+// Envelope sets status="ok" so the renderer's dispatch order (see
+// render.cpp:28-42) hits critical_battery first via the
+// battery_volts > 0 && < BATT_CRIT_V gate. Setting status="error"
+// here would route to failure_shell instead, so we don't.
+// payload is null.
+String build_combined_critical_battery_json(float battery_volts,
+                                            int expected_api_version,
+                                            const char* firmware_version);
+
+// Serialize a combined doc that routes to the dedicated api_mismatch
+// screen. Envelope sets status="ok" (NOT "error" — render.cpp:34
+// checks status=="error" before the api_version comparison, so an
+// error-status envelope would route to failure_shell and the
+// api_mismatch screen would never render). The server_doc is
+// shallow-attached as payload so the renderer can extract its raw
+// JSON for the on-screen dump.
+String build_combined_api_mismatch_json(const JsonDocument& server_doc,
+                                        float battery_volts,
+                                        int expected_api_version,
+                                        const char* firmware_version);
 
 }  // namespace bulletin
 }  // namespace civicmesh
