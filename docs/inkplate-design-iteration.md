@@ -129,7 +129,7 @@ simulators driving it.
 - [`inkplate/README.md`](../inkplate/README.md) — full renderer /
   host / tools / fixtures guide; Prerequisites; fallback ladder for
   arduino-cli library discovery (only relevant if you do want to
-  flash the smoke target).
+  flash the bulletin firmware).
 - [`inkplate/render/NOTES.md`](../inkplate/render/NOTES.md) —
   Adafruit_GFX-only dep rule, the baseline-anchor convention for
   custom GFX fonts, the three library footguns the renderer

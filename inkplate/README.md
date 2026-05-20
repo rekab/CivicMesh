@@ -13,14 +13,21 @@ pieces live here:
    `firmware/bulletin/`) — Arduino sketches for the panel. `hello`
    and `fortunes` are standalone scaffolding that validates wiring,
    board revisions, and the wake/render/sleep cycle. `bulletin` is
-   the Phase 2 smoke target that calls the renderer with a
-   hard-coded fixture and renders one frame on real hardware — not
-   production firmware (no WiFi, no polling, no sleep).
+   the Phase 3A production firmware: associate WiFi, poll
+   `/api/external-display/state`, render through `render/`, repeat.
+   Fibonacci poll cadence with 5-min channel rotation, activity-jump
+   on new server-side messages, hybrid-refresh signature (skip
+   `display.display()` when the visible state hasn't changed). On
+   transient failures (WiFi/DNS/TCP/HTTP/JSON), renders
+   `failure_shell` and keeps polling; after 5 consecutive failures
+   or critical battery (<3.6V) it deep-sleeps until WAKE. Press
+   WAKE during normal operation to force-poll and jump to the
+   freshest-active channel.
 
-Phase 3 work (polling/sleep loop, WiFi join, NVS last-good cache,
-real envelope sourcing, OTA) is the next chunk; the roadmap lives
-in `docs/inkplate-research.md`. Server-side contract that feeds the
-renderer is at `docs/external-display-api.md`.
+Phase 3B+ work (NVS last-good cache, RTC / real
+`seconds_since_last_update`, adaptive layouts, OTA) is the next
+chunk; the roadmap lives in `docs/inkplate-research.md`. Server-side
+contract that feeds the renderer is at `docs/external-display-api.md`.
 
 ## Renderer
 
@@ -68,7 +75,6 @@ port; they're host-side only.
 | `regen_fixtures.sh --write` | Re-render and overwrite goldens. Use after an intentional layout change; inspect via `git diff` before committing. |
 | `render-live.sh [path]` | Fetch `/api/external-display/state` from the dev hub, wrap with a stock envelope, render to PNG. Set `HUB=http://...` to override. Useful for sanity-checking the renderer against real server output. |
 | `regen_font.sh` (`regen_font.py`) | Regenerate `render/src/fonts/LessPerfectDOSVGA.h` from the vendored TTF. Uses Python+freetype rather than Adafruit's C `fontconvert` because the dev Pi has `python3-freetype` but not `libfreetype-dev`. Set `PX=N` to change native glyph height (default 16). |
-| `fixture-to-smoke-header.sh <path>` | Convert a fixture `in.json` into `firmware/bulletin/smoke_fixture.h` (overwrites). Use to point the bulletin smoke sketch at a different fixture, then `cd firmware && make flash SKETCH_DIR=bulletin`. The output is a plain `static const char[]` — NOT `PROGMEM` — because ESP32's XIP flash mapping lets ArduinoJson read `.rodata` via a normal `const char*`. |
 
 Example — render the live server's current payload to a PNG:
 
@@ -99,30 +105,28 @@ grep -rE 'Inkplate\.h|esp_|Arduino\.h|WiFi\.h' inkplate/render/src/
 |---|---|---|
 | `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
 | `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `firmware/tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
-| `firmware/bulletin/` | Phase 2 smoke target. Renders one hard-coded fixture's JSON through the renderer in `render/`, then halts. Validates that the same renderer source compiles for ESP32 and the Inkplate panel accepts the framebuffer. The committed `smoke_fixture.h` defaults to `fixtures/normal_bulletin__pinned_first/in.json`; swap with `tools/fixture-to-smoke-header.sh fixtures/<name>/in.json`. Empty `loop()` — not production firmware. | First flash on a fresh dev Pi to confirm the renderer works on-device. Re-run after editing screens to eyeball the on-panel result against the host PNG. |
+| `firmware/bulletin/` | Phase 3A production firmware. WiFi-associate, fetch `/api/external-display/state`, wrap in a firmware-built envelope, render, repeat. Fibonacci poll cadence (10→300s, resets on activity/failure); 5-min channel rotation between polls; activity-jump on new server-side messages; failure_shell on transient failures; deep sleep after 5-failure streak or critical battery; dedicated critical_battery / api_mismatch screens. WAKE button (GPIO 36) force-polls during normal op and wakes from deep sleep. Requires `SSID=<wifi-ssid>` at `make` time; `ENDPOINT_URL` defaults to `http://10.0.0.1/api/external-display/state`. | The production firmware. Flash whenever you change the renderer or want to test the panel against a real (or dev) hub. |
 
-The Makefile defaults to `hello`; switch with `SKETCH_DIR=fortunes` or
-`SKETCH_DIR=bulletin` (see the Workflow section below). The bulletin
-sketch is the only one that calls the renderer; hello and fortunes
-are stand-alone hardware-validation sketches.
+The Makefile defaults to `bulletin`; switch with `SKETCH_DIR=hello`
+or `SKETCH_DIR=fortunes`. The bulletin sketch is the only one that
+calls the renderer; hello and fortunes are stand-alone
+hardware-validation sketches.
 
-Flash the bulletin smoke target (after the Prerequisites and the
-Inkplate is plugged in on a CH340 port):
+Flash the bulletin (after the Prerequisites and the Inkplate is
+plugged in on a CH340 port):
 
 ```bash
 cd inkplate/firmware
-make compile SKETCH_DIR=bulletin         # build only, no port access
-make flash SKETCH_DIR=bulletin           # check-port + upload
-make monitor SKETCH_DIR=bulletin         # watch serial: [bulletin] begin / ...
+make compile SSID=civicmesh-dev                                       # build only, no port access
+make flash   SSID=civicmesh-dev                                       # check-port + upload (uses default ENDPOINT_URL)
+make flash   SSID=civicmesh-dev ENDPOINT_URL=http://civicmesh:8080/api/external-display/state
+make monitor                                                          # watch serial: [bulletin] boot / ...
 ```
 
-To swap which fixture is the smoke target before flashing:
-
-```bash
-inkplate/tools/fixture-to-smoke-header.sh \
-    inkplate/fixtures/critical_battery/in.json
-cd inkplate/firmware && make flash SKETCH_DIR=bulletin
-```
+`SSID` is required for bulletin builds — the Makefile hard-errors at
+make-time if missing, so an empty SSID can't silently produce a
+sketch that associates with nothing and renders failure_shell
+forever.
 
 ## Prerequisites
 
@@ -266,8 +270,9 @@ make flash SKETCH_DIR=fortunes
 make flash-monitor SKETCH_DIR=hello
 ```
 
-The default is `SKETCH_DIR=hello`, which preserves the original Phase 0
-smoke-test workflow.
+The default is `SKETCH_DIR=bulletin` (the production firmware).
+`SKETCH_DIR=hello` preserves the Phase 0 smoke-test workflow for a
+fresh board; `SKETCH_DIR=fortunes` is the deep-sleep demo.
 
 **If `make flash` fails with `Failed to connect to ESP32: No serial
 data received`** (after a long row of `Connecting......` dots) the

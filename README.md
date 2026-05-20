@@ -363,10 +363,12 @@ context.
 - Offline-first: UI loads without radio; cached messages remain
   readable.
 - External e-paper display (Inkplate 6) supported via the
-  `/api/external-display/state` endpoint; renderer library, host-side
-  PNG iteration loop, and an ESP32 smoke sketch all ship in
-  `inkplate/`. Production firmware (WiFi join, polling, sleep, NVS
-  cache) is Phase 3.
+  `/api/external-display/state` endpoint; renderer library,
+  host-side PNG iteration loop, and Phase 3A production firmware
+  (WiFi join, Fibonacci poll, channel rotation, WAKE-button
+  force-poll, failure_shell / critical_battery / api_mismatch
+  screens, deep-sleep escalation) all ship in `inkplate/`. NVS
+  last-good cache, RTC, and OTA are Phase 3B+.
 
 ## Issue tracking
 

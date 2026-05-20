@@ -57,20 +57,42 @@ list") for the full taxonomy.
    instead. Don't swap back to `drawTextBox`; the wrap helper keeps
    host PNG and ESP32 panel output byte-identical.
 
-## Phase 3 footguns (out of scope here; flagged for the next person)
+## Phase 3 footguns (status after Phase 3A PR 2)
 
-- **PSRAM allocation.** Inkplate's 1-bit framebuffer requires 8MB
-  PSRAM; if `display.begin()` returns false at runtime, PSRAM init
-  failed. Phase 3 sketch needs the failure handling.
+- **PSRAM allocation.** Inkplate's 1-bit framebuffer (~60KB) and the
+  library's working buffers live in external PSRAM. If PSRAM init
+  failed, subsequent `display.display()` / `render_frame` calls touch
+  unallocated memory. `Inkplate::begin()` is `void` in v11
+  (`InkplateLibrary/src/Inkplate.h:40`), so the failure signal is the
+  esp32-core's `psramFound()` returning false. **Addressed** in
+  `firmware/bulletin/bulletin.ino`'s `setup()` — `psramFound()` is
+  checked after `display.begin()` and a false result logs to serial
+  and enters deep sleep instead of barreling ahead into UB.
+- **`getString` heap fragmentation.** Multiple long-string ops on
+  ESP32 fragment the heap quickly. **Addressed** —
+  `firmware/bulletin/bulletin_net.cpp` uses `http.getStream()` into
+  ArduinoJson, never `http.getString()`.
+- **WiFi-active `readBattery` noise.** Battery ADC reads are wildly
+  inaccurate while WiFi radio is on. **Addressed** — the bulletin
+  sketch's `sample_battery_with_wifi_off()` does
+  `WiFi.disconnect(true); WiFi.mode(WIFI_OFF); delay(100);` before
+  every `display.readBattery()`.
 - **`display(true)` + deep-sleep interaction.** Calling
   `display(true)` (partial refresh) then immediately deep-sleeping
-  leaves the panel in an undefined state. Phase 3 control loop must
-  separate refresh from sleep.
-- **`getString` heap fragmentation.** Multiple long-string ops on
-  ESP32 fragment the heap quickly. Phase 3 should pool buffers.
-- **WiFi-active `readBattery` noise.** Battery ADC reads are wildly
-  inaccurate while WiFi radio is on. Phase 3 must `WiFi.disconnect()`
-  before sampling, or sample only in deep-sleep pre-wake.
+  leaves the panel in an undefined state. **Not triggered today** —
+  the bulletin sketch only calls `display.display()` (full refresh).
+  Kept here as a warning for any future code that wants to add
+  partial-refresh: don't deep-sleep right after one without a settle
+  delay or a follow-up full refresh.
+- **WAKE-button EMI on GPIO 36.** Not in the original Phase 3
+  footgun list, discovered during PR 2 hardware bring-up: the
+  e-paper's TPS65186 PMIC switching (±15V rails) induces µs-scale
+  transients on GPIO 36's WAKE-button trace, which fire spurious
+  FALLING-edge interrupts and cause back-to-back refresh cycles.
+  **Addressed** in `firmware/bulletin/bulletin.ino` with two
+  filters: ISR-side `gpio_get_level` (kills µs transients shorter
+  than ISR-dispatch latency) and a loop-side `digitalRead` confirm
+  after the debounce window.
 
 ## Color polarity
 
@@ -93,6 +115,10 @@ panel-agnostic.
 
 Host build uses `std::string` / `std::vector` freely; ArduinoJson v7's
 `JsonDocument` grows on demand. ESP32 has 8MB PSRAM, so the same
-posture works there too, but Phase 3 may want to switch to
-`StaticJsonDocument`-equivalent or fixed-size buffers if heap
-fragmentation becomes a problem (see `getString` footgun above).
+posture works there too — Phase 3A PR 1 confirmed this on hardware
+(the bulletin sketch's twin `JsonDocument`s, one for the server
+response and one for the combined envelope+payload, fit comfortably
+in PSRAM). Phase 3B+ may want to switch to fixed-size buffers if
+NVS-cache + multi-channel state grows the working set into heap
+fragmentation territory; the `getString` footgun above still applies
+to any future code that does long-string ops.

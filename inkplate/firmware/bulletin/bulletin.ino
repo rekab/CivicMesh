@@ -423,6 +423,20 @@ void setup() {
   display.begin();
   display.clearDisplay();
 
+  // PSRAM sanity check: the 1-bit framebuffer (~60KB) and the Inkplate
+  // library's working buffers live in external PSRAM. If PSRAM init
+  // failed (loose solder joint, dead chip), psramFound() returns false
+  // and any subsequent display.display() / render_frame call touches
+  // unallocated memory — crash or garbage output. Best we can do is
+  // shout to serial and sleep. Operator wakes us with WAKE to reboot;
+  // if the hardware is genuinely broken we'll sleep again on the next
+  // boot, which is the least-bad outcome.
+  if (!psramFound()) {
+    Serial.println("[bulletin] PSRAM not initialized — display "
+                   "framebuffer unallocated. Cannot render. Sleeping.");
+    enter_deep_sleep_until_wake();  // no return
+  }
+
   // Setup-time dead-battery check: catches wake-from-deep-sleep with a
   // dead battery before we burn RF cycles trying to associate.
   float v = sample_battery_with_wifi_off();
