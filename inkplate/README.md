@@ -1,5 +1,8 @@
 # Inkplate display
 
+<p align="center">
+  <img src="img/01_civicmesh.png" alt="Inkplate demo UI" width="260">
+</p>
 Renderer + Arduino sketches for the Inkplate 6 e-paper display. Two
 pieces live here:
 
@@ -21,8 +24,9 @@ pieces live here:
    transient failures (WiFi/DNS/TCP/HTTP/JSON), renders
    `failure_shell` and keeps polling; after 5 consecutive failures
    or critical battery (<3.6V) it deep-sleeps until WAKE. Press
-   WAKE during normal operation to force-poll and jump to the
-   freshest-active channel.
+   WAKE during normal operation to force-poll and advance to the
+   next channel (wrap-around) — the button doubles as a manual
+   channel selector.
 
 Phase 3B+ work (NVS last-good cache, RTC / real
 `seconds_since_last_update`, adaptive layouts, OTA) is the next
@@ -126,7 +130,7 @@ grep -rE 'Inkplate\.h|esp_|Arduino\.h|WiFi\.h' inkplate/render/src/
 |---|---|---|
 | `firmware/hello/` | Phase 0 Hello World. Renders three static text lines, no networking, no sleep. Adafruit-GFX-only API surface so the renderer can compile against `GFXcanvas1` on the host. | First-boot smoke test after wiring up a new board, or whenever you want a known-good reference sketch. |
 | `firmware/fortunes/` | Picks a random fortune from a ~650-entry corpus, renders it full-panel via `drawTextBox`, deep-sleeps 1-5 random minutes, repeats. Exercises `esp_random`, `drawTextBox` word-wrap, and the deep-sleep wake cycle. Corpus extracted from `fortunes-min` by `firmware/tools/build_fortunes.py` (see NOTICE for the BSD attribution). | Demoing the panel without the full CivicMesh stack, or validating the wake/render/sleep loop before building the production renderer on top of it. |
-| `firmware/bulletin/` | Phase 3A production firmware. WiFi-associate, fetch `/api/external-display/state`, wrap in a firmware-built envelope, render, repeat. Fibonacci poll cadence (10→300s, resets on activity/failure); 5-min channel rotation between polls; activity-jump on new server-side messages; failure_shell on transient failures; deep sleep after 5-failure streak or critical battery; dedicated critical_battery / api_mismatch screens. WAKE button (GPIO 36) force-polls during normal op and wakes from deep sleep. Requires `SSID=<wifi-ssid>` at `make` time; `ENDPOINT_URL` defaults to `http://10.0.0.1/api/external-display/state`. | The production firmware. Flash whenever you change the renderer or want to test the panel against a real (or dev) hub. |
+| `firmware/bulletin/` | Phase 3A production firmware. WiFi-associate, fetch `/api/external-display/state`, wrap in a firmware-built envelope, render, repeat. Fibonacci poll cadence (10→300s, resets on activity/failure); 5-min channel rotation between polls; activity-jump on new server-side messages; failure_shell on transient failures; deep sleep after 5-failure streak or critical battery; dedicated critical_battery / api_mismatch screens. WAKE button (GPIO 36) force-polls and advances to the next channel during normal op (wrap-around — works as a manual channel selector), and also wakes from deep sleep. Requires `SSID=<wifi-ssid>` at `make` time; `ENDPOINT_URL` defaults to `http://10.0.0.1/api/external-display/state`. | The production firmware. Flash whenever you change the renderer or want to test the panel against a real (or dev) hub. |
 
 The Makefile defaults to `bulletin`; switch with `SKETCH_DIR=hello`
 or `SKETCH_DIR=fortunes`. The bulletin sketch is the only one that

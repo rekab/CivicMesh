@@ -8,8 +8,9 @@
 // visible change.
 //
 // PR 2 adds the off-paths and the one user-input surface:
-//   - WAKE button (GPIO 36, active-LOW): ISR force-poll during normal
-//     op; ext0 source for waking from deep sleep.
+//   - WAKE button (GPIO 36, active-LOW): ISR force-poll + advance to
+//     next channel (wrap-around) during normal op — the press is a
+//     manual channel selector; ext0 source for waking from deep sleep.
 //   - 5-strike failure streak → deep sleep until WAKE.
 //   - Battery sampling on every failure (with WiFi quiesced). If
 //     <3.6V, render critical_battery + sleep instead of failure_shell.
