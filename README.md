@@ -10,6 +10,7 @@ CivicMesh is:
 - bridged to MeshCore over USB serial
 - exposing selected public mesh channels over WiFi
 - for walk-up users with ordinary phones
+- optionally driving an Inkplate 6 e-paper bulletin display
 - optimized for Seattle Emergency Hubs and disaster drills
 
 <p align="center">
@@ -41,6 +42,73 @@ prioritize high-impact traffic. CivicMesh exists as a parallel low-friction
 channel for neighborhood-scale information that would otherwise never enter the
 formal net.
 
+## Reference document library
+
+CivicMesh's captive portal can optionally serve a curated set of
+static reference PDFs alongside the message board. Mesh messaging
+carries current information ("the gas main on 4th smells funny");
+reference docs carry stable information — how to shut off utilities
+after a quake, how to disinfect water, how to use a water heater as
+a 40-gallon reservoir, how to set up an emergency toilet. Documents
+are readable in the portal and downloadable to the phone before the
+user leaves WiFi range, so the references survive once the AP is
+out of reach.
+
+The mechanism is content-agnostic. The first content set is the Hub
+Reference Library, mirroring the Seattle Emergency Hubs printed
+handouts and driving the design. The runtime treats the contents as
+opaque static files; the same mechanism can serve any other curated
+set — a different community organization, hackerspace, or regional
+preparedness group editing the manifest and shipping a different zip.
+
+- **Optional.** A node with no docs installed shows no Reference
+  section — the captive portal is identical to a messaging-only
+  deployment.
+- **Read-only and curated.** Walk-up users cannot upload; an
+  operator edits a TOML manifest, runs a build, and ships a zip to
+  the node.
+- **Single-file distribution.** Releases are zip artifacts installed
+  atomically via `civicmesh install-hub-docs`, with rollback to any
+  previously-installed release.
+
+Currently in development; design lives in
+[`docs/hub-reference-library.md`](docs/hub-reference-library.md).
+
+## External bulletin display
+
+A CivicMesh hub can optionally drive an Inkplate 6 e-paper display
+hung at the Hub, rendering recent mesh chat at arm's length.
+Walk-up readers see the bulletin without picking up their phone —
+useful when a passerby wants to know what's going on but doesn't
+want to join the WiFi or open the captive portal.
+
+<p align="center">
+  <img src="inkplate/img/01_civicmesh.png" alt="Inkplate bulletin display" width="600">
+</p>
+
+The display is its own device — its own ESP32, its own battery, its
+own WiFi client. It polls `/api/external-display/state` from the
+hub's AP, renders the bulletin client-side, and never receives
+bitmaps over WiFi (a 1-bit JSON payload parses cheaper than a
+60 KB framebuffer crosses the air). The same hub serves both the
+phone portal and the bulletin from the same SQLite store; no extra
+moving parts.
+
+- **Optional.** Hubs without an Inkplate are unaffected; the API
+  endpoint exists either way.
+- **Walk-up readable.** BBS-aesthetic chrome and e-paper
+  persistence — the last bulletin stays visible when the panel
+  deep-sleeps.
+- **WAKE button doubles as a manual channel selector** — press to
+  advance to the next channel.
+- **Graceful fallback screens** for radio outage, AP unreachable,
+  Pi unreachable, critical battery, and api_mismatch.
+
+Renderer library, host-side PNG iteration loop, and Phase 3A
+production firmware all ship in [`inkplate/`](inkplate/) — see that
+directory's README for renderer architecture, fixtures, host
+iteration loop, and firmware sketches.
+
 ## Non-goals
 
 CivicMesh is not:
@@ -54,24 +122,6 @@ CivicMesh is not:
 - a general-purpose community WiFi ISP
 - a resilient social network
 - a moderation-heavy platform
-
-## Threat model
-
-Messages are public and observable by anyone on the mesh or local
-WiFi. CivicMesh prioritizes accessibility and operability over
-confidentiality. Do not enter secrets, do not post anything you
-wouldn't write on a public board at the Hub.
-
-The portal is HTTP-only by design — modern phones don't reliably
-trust self-signed certs on captive portals, and a public-information
-board doesn't need TLS to do its job. Posting and voting require a
-session cookie plus MAC-address validation (ARP lookup via
-`/proc/net/arp`), so a poster can't trivially impersonate another
-walk-up. Rate limits are configurable per-session, and MAC/cookie
-mismatches surface in the security log. None of this stops a
-determined adversary on the same WiFi from causing harm; it raises
-the cost of casual abuse and pins posts to a device when something
-goes wrong.
 
 ## How it works
 
@@ -195,37 +245,23 @@ or shore power without dropping service. Full methodology, the 65+ hour
 unattended run, thermal data, and per-watt runtime table are in
 [docs/power-budget.md](docs/power-budget.md).
 
-## Reference document library
+## Threat model
 
-CivicMesh's captive portal can optionally serve a curated set of
-static reference PDFs alongside the message board. Mesh messaging
-carries current information ("the gas main on 4th smells funny");
-reference docs carry stable information — how to shut off utilities
-after a quake, how to disinfect water, how to use a water heater as
-a 40-gallon reservoir, how to set up an emergency toilet. Documents
-are readable in the portal and downloadable to the phone before the
-user leaves WiFi range, so the references survive once the AP is
-out of reach.
+Messages are public and observable by anyone on the mesh or local
+WiFi. CivicMesh prioritizes accessibility and operability over
+confidentiality. Do not enter secrets, do not post anything you
+wouldn't write on a public board at the Hub.
 
-The mechanism is content-agnostic. The first content set is the Hub
-Reference Library, mirroring the Seattle Emergency Hubs printed
-handouts and driving the design. The runtime treats the contents as
-opaque static files; the same mechanism can serve any other curated
-set — a different community organization, hackerspace, or regional
-preparedness group editing the manifest and shipping a different zip.
-
-- **Optional.** A node with no docs installed shows no Reference
-  section — the captive portal is identical to a messaging-only
-  deployment.
-- **Read-only and curated.** Walk-up users cannot upload; an
-  operator edits a TOML manifest, runs a build, and ships a zip to
-  the node.
-- **Single-file distribution.** Releases are zip artifacts installed
-  atomically via `civicmesh install-hub-docs`, with rollback to any
-  previously-installed release.
-
-Currently in development; design lives in
-[`docs/hub-reference-library.md`](docs/hub-reference-library.md).
+The portal is HTTP-only by design — modern phones don't reliably
+trust self-signed certs on captive portals, and a public-information
+board doesn't need TLS to do its job. Posting and voting require a
+session cookie plus MAC-address validation (ARP lookup via
+`/proc/net/arp`), so a poster can't trivially impersonate another
+walk-up. Rate limits are configurable per-session, and MAC/cookie
+mismatches surface in the security log. None of this stops a
+determined adversary on the same WiFi from causing harm; it raises
+the cost of casual abuse and pins posts to a device when something
+goes wrong.
 
 ## Hardware
 
@@ -258,6 +294,7 @@ AP configuration, package install, and the systemd unit's serial-device access.
 - weatherproof enclosure
 - USB ethernet adapter
 - battery/solar system
+- Inkplate 6 e-paper display (for the external bulletin — see [`inkplate/`](inkplate/))
 
 ## Deployment
 
