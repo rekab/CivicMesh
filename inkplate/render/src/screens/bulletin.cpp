@@ -1,6 +1,7 @@
 #include "screens.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -85,19 +86,142 @@ void draw_inverted_bar(Adafruit_GFX& gfx, int16_t y, int16_t h) {
   gfx.fillRect(0, y, PANEL_W, h, COLOR_BLACK);
 }
 
-// WiFi glyph — three nested upper-half arcs above a single-pixel dot,
-// the classic "signal radiating outward from a source" shape. Arcs
-// stand at r/3, 2r/3, r (equispaced); glyph is (2r+1) wide × (r+1)
-// tall. `cx`, `cy` is the position of the dot; arcs render above it.
+// Welcome box for the gray rail above the CHANNELS bar. A white card
+// with a 1-px black border carrying the hub name + a "FREE WIFI / NO
+// INTERNET" two-line explainer underneath. Sized to fit horizontally
+// inside RAIL_W with margin; vertical position is "centered in the
+// available gray expanse" — caller passes the bounds of that area.
+//
+// Title uses LessPerfectDOSVGA24 size 1 (24 px native, smoother than
+// integer-scaled 16-px). Subtitle lines use LessPerfectDOSVGA size 1
+// (16 px) — distinctly smaller so the visual hierarchy is unambiguous.
+void draw_welcome_box(Adafruit_GFX& gfx, const std::string& title,
+                      int16_t rail_x, int16_t area_y, int16_t area_h) {
+  // Title at size 2 of the 16-px LessPerfectDOSVGA (32 px tall, ~144 px
+  // wide for "CivicMesh"). The chunky pixel-doubled look fits the BBS
+  // skin's chrome better than the smoother 24-px native font. Subtitles
+  // stay at size-1 (16 px) for strong size contrast. Generous padding
+  // around the title in particular — the user-visible captive-portal
+  // brand should breathe inside the box.
+  constexpr int16_t INNER_PAD_X = 12;
+  constexpr int16_t INNER_PAD_TOP = 20;
+  constexpr int16_t INNER_PAD_BOT = 16;
+  constexpr int16_t TITLE_GAP = 20;     // breathing room below the title
+  constexpr int16_t SUB_GAP = 4;        // tight gap between the two subs
+  constexpr int16_t BORDER = 1;
+  constexpr int16_t TITLE_H = kCustomFontBaseHeight * 2;  // 32 (size 2)
+  constexpr int16_t SUB_H = kCustomFontBaseHeight;        // 16
+
+  gfx.setFont(&LessPerfectDOSVGA);
+  gfx.setTextSize(2);
+  int16_t bx, by;
+  uint16_t tw_title, bh;
+  gfx.getTextBounds(title.c_str(), 0, 0, &bx, &by, &tw_title, &bh);
+
+  gfx.setFont(&LessPerfectDOSVGA);
+  gfx.setTextSize(1);
+  const char* sub1 = "FREE WIFI";
+  const char* sub2 = "NO INTERNET";
+  uint16_t tw_sub1, tw_sub2;
+  gfx.getTextBounds(sub1, 0, 0, &bx, &by, &tw_sub1, &bh);
+  gfx.getTextBounds(sub2, 0, 0, &bx, &by, &tw_sub2, &bh);
+
+  const uint16_t widest = std::max({tw_title, tw_sub1, tw_sub2});
+  const int16_t max_text_w =
+      widest > 0 ? static_cast<int16_t>(widest) : 0;
+  const int16_t box_w = max_text_w + 2 * (INNER_PAD_X + BORDER);
+  const int16_t content_h =
+      INNER_PAD_TOP + TITLE_H + TITLE_GAP + SUB_H + SUB_GAP + SUB_H +
+      INNER_PAD_BOT;
+  const int16_t box_h = content_h + 2 * BORDER;
+  if (box_h + 4 > area_h) return;  // not enough vertical room; bail quietly
+
+  const int16_t box_x = rail_x + (RAIL_W - box_w) / 2;
+  const int16_t box_y = area_y + (area_h - box_h) / 2;
+
+  gfx.fillRect(box_x, box_y, box_w, box_h, COLOR_WHITE);
+  gfx.drawRect(box_x, box_y, box_w, box_h, COLOR_BLACK);
+
+  // Title (size-2 LessPerfectDOSVGA, centered horizontally).
+  gfx.setFont(&LessPerfectDOSVGA);
+  gfx.setTextSize(2);
+  gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  int16_t tx = box_x + (box_w - static_cast<int16_t>(tw_title)) / 2;
+  int16_t ty = box_y + BORDER + INNER_PAD_TOP;
+  set_cursor_top_left(gfx, tx, ty, TITLE_H);
+  gfx.print(title.c_str());
+
+  // Subtitles (size-1 LessPerfectDOSVGA, centered).
+  gfx.setFont(&LessPerfectDOSVGA);
+  gfx.setTextSize(1);
+  int16_t y2 = ty + TITLE_H + TITLE_GAP;
+  tx = box_x + (box_w - static_cast<int16_t>(tw_sub1)) / 2;
+  set_cursor_top_left(gfx, tx, y2, SUB_H);
+  gfx.print(sub1);
+  int16_t y3 = y2 + SUB_H + SUB_GAP;
+  tx = box_x + (box_w - static_cast<int16_t>(tw_sub2)) / 2;
+  set_cursor_top_left(gfx, tx, y3, SUB_H);
+  gfx.print(sub2);
+}
+
+// 50% Bayer-equivalent checkerboard. At 1-bit display density a 2x2
+// Bayer matrix and a (x+y) parity checkerboard are indistinguishable;
+// the parity form is one branch per pixel and skips the matrix lookup.
+// Used for the channel-rail background — reads as a flat gray that
+// separates the rail visually from the white pane on its left without
+// the visual weight of a solid black fill.
+void fill_bayer_50(Adafruit_GFX& gfx,
+                   int16_t x, int16_t y, int16_t w, int16_t h) {
+  for (int16_t yy = y; yy < y + h; ++yy) {
+    for (int16_t xx = x; xx < x + w; ++xx) {
+      if (((xx + yy) & 1) == 0) gfx.drawPixel(xx, yy, COLOR_BLACK);
+    }
+  }
+}
+
+// WiFi glyph — three nested wedge-shaped arcs above a single-pixel dot,
+// the classic "signal radiating outward from a source" shape. Each arc
+// spans the angular range [45°, 135°] (the upper-center wedge) rather
+// than a full upper semicircle, which gives the icon a narrower V shape
+// that reads more like a WiFi symbol than a half-disc target. Arcs sit
+// at r/3, 2r/3, r (equispaced). `cx`, `cy` is the position of the dot;
+// arcs render above it. Glyph extent is roughly (2r·sin45°) wide ×
+// (r+1) tall.
+//
+// Implementation: drawCircleHelper only plots full quadrants. For a
+// sub-quadrant arc we iterate the angle and plot one pixel per degree.
+// 91 plots over a ~28-pixel arc length at r=18 means heavy overdraw, but
+// every pixel gets hit and the cos/sin calls are FPU-accelerated on
+// both ESP32 and the host build.
 void draw_wifi_glyph(Adafruit_GFX& gfx,
                      int16_t cx, int16_t cy, int16_t r_outer,
                      uint16_t color) {
-  gfx.drawPixel(cx, cy, color);
-  // cornername bitmask: 0x1 = upper-left, 0x2 = upper-right;
-  // 0x3 = full upper semicircle.
-  gfx.drawCircleHelper(cx, cy, r_outer / 3, 0x3, color);
-  gfx.drawCircleHelper(cx, cy, (r_outer * 2) / 3, 0x3, color);
-  gfx.drawCircleHelper(cx, cy, r_outer, 0x3, color);
+  // Dot at the bottom; doubled vertically so it has the same visual
+  // weight as the 2-px-thick arc strokes above.
+  gfx.fillRect(cx - 1, cy - 1, 3, 2, color);
+  const int16_t base_radii[3] = {
+      static_cast<int16_t>(r_outer / 3),
+      static_cast<int16_t>((r_outer * 2) / 3),
+      r_outer,
+  };
+  // Each arc is drawn 2 px thick (the nominal radius and r-1) so the
+  // wifi glyph reads as bold strokes rather than thin curves at the
+  // size we render it. The 1-px gap between concentric pairs (e.g. 5-6
+  // and 11-12 for r_outer=18) keeps the three rings visually distinct.
+  for (int16_t r_base : base_radii) {
+    if (r_base <= 0) continue;
+    for (int stroke = 0; stroke < 2; ++stroke) {
+      const int16_t r = static_cast<int16_t>(r_base - stroke);
+      if (r <= 0) continue;
+      for (int deg = 45; deg <= 135; ++deg) {
+        const float rad = deg * 3.14159265f / 180.0f;
+        const int16_t x = cx + static_cast<int16_t>(r * std::cos(rad));
+        // Subtract sin: screen y grows downward, so up = -y.
+        const int16_t y = cy - static_cast<int16_t>(r * std::sin(rad));
+        gfx.drawPixel(x, y, color);
+      }
+    }
+  }
 }
 
 // Battery glyph — outlined rectangle body + small "nub" on the right
@@ -280,16 +404,22 @@ void draw_header(Adafruit_GFX& gfx,
   }
 }
 
-// Right-edge file-folder channel tabs. Drawn AFTER the body so a tab's
-// border paints cleanly over any pane content that would otherwise bleed
-// into the rail column.
+// Right-edge channel rail. Drawn AFTER the body so a tab's border paints
+// cleanly over any pane content that would otherwise bleed into the rail
+// column.
 //
-// Tabs are vertically centered in the rail area, with the surrounding
-// rail painted inverted (black) above and below. A "CHANNELS" header
-// in white sits just above the topmost tab on the black backing. The
-// black bars do double duty as the pane/rail boundary - no explicit
-// drawFastVLine needed, since white pane ↔ black rail is its own
-// implicit edge.
+// Visual structure:
+//   - Rail background is a 50% Bayer dither (gray) so the rail reads as
+//     a distinct column from the white pane on its left.
+//   - A black "CHANNELS" bar sits just above the tab stack, with the
+//     CHANNELS label + flanking down-arrows in white.
+//   - Tabs themselves have white interiors so labels read cleanly.
+//   - The left edge of the rail is a continuous DOUBLE vertical line
+//     running the full body height, broken only by the active tab's
+//     "open" gap. Inactive tabs draw single-line top/right/bottom
+//     borders only — their left side is supplied by the continuous
+//     double line. Active tab uses draw_double_border_no_left for its
+//     top/right/bottom (left is the gap).
 void draw_channel_rail(Adafruit_GFX& gfx,
                        const Envelope& env,
                        const Payload& payload) {
@@ -298,37 +428,59 @@ void draw_channel_rail(Adafruit_GFX& gfx,
   const int16_t rail_x = PANEL_W - RAIL_W;
   const int16_t rail_y = BUL_BODY_Y;
   const int16_t rail_h_total = BUL_BODY_H;
+  const int16_t rail_bot = rail_y + rail_h_total;
 
-  // Reserve vertical room above the tab block for the "CHANNELS"
-  // header. Tabs + header center together as one block in the rail.
   constexpr int16_t HDR_TXT_H = 16;     // size-1 LessPerfectDOSVGA
-  constexpr int16_t HDR_GAP = 10;       // gap between header and first tab
+  constexpr int16_t HDR_BAR_H = 24;     // black bar height (text + padding)
+  // CHANNELS bar sits flush against the first tab — no gap. The black
+  // bar's bottom edge IS the visual lid of the tab block.
+  constexpr int16_t HDR_GAP = 0;
 
   const size_t max_visible = static_cast<size_t>(
-      (rail_h_total - HDR_TXT_H - HDR_GAP) / TAB_H);
+      (rail_h_total - HDR_BAR_H - HDR_GAP) / TAB_H);
   const size_t visible = std::min(n, max_visible);
 
   int active_idx = env.active_channel_index;
   if (active_idx < 0 || active_idx >= static_cast<int>(n)) active_idx = 0;
+  if (static_cast<size_t>(active_idx) >= visible) {
+    active_idx = static_cast<int>(visible) - 1;
+  }
 
   const int16_t block_h =
-      HDR_TXT_H + HDR_GAP + static_cast<int16_t>(visible) * TAB_H;
-  const int16_t hdr_top = rail_y + (rail_h_total - block_h) / 2;
-  const int16_t tabs_top = hdr_top + HDR_TXT_H + HDR_GAP;
-  const int16_t tabs_bot =
-      tabs_top + static_cast<int16_t>(visible) * TAB_H;
+      HDR_BAR_H + HDR_GAP + static_cast<int16_t>(visible) * TAB_H;
+  // Place the tab block in the lower portion of the rail with about
+  // one tab's worth of gray space below it. Pure bottom-align looked
+  // crowded against the footer; this leaves visual breathing room
+  // while still keeping the welcome box up top with plenty of space.
+  constexpr int16_t TABS_BOTTOM_GAP = TAB_H;
+  const int16_t bar_top =
+      rail_y + rail_h_total - block_h - TABS_BOTTOM_GAP;
+  const int16_t tabs_top = bar_top + HDR_BAR_H + HDR_GAP;
+  const int16_t active_top =
+      tabs_top + static_cast<int16_t>(active_idx) * TAB_H;
+  const int16_t active_bot = active_top + TAB_H;
 
-  // Inverted (black) backing above the tab block - covers the header
-  // strip AND the empty space above it. The pane (white) at x < rail_x
-  // gives an implicit boundary at x=rail_x without needing a drawn line.
-  gfx.fillRect(rail_x, rail_y, RAIL_W,
-               tabs_top - rail_y, COLOR_BLACK);
-  gfx.fillRect(rail_x, tabs_bot, RAIL_W,
-               rail_y + rail_h_total - tabs_bot, COLOR_BLACK);
+  // 1. Gray dither over the whole rail area. Start from white so the
+  //    parity-checker sets every other pixel against a known background.
+  gfx.fillRect(rail_x, rail_y, RAIL_W, rail_h_total, COLOR_WHITE);
+  fill_bayer_50(gfx, rail_x, rail_y, RAIL_W, rail_h_total);
 
-  // "▼ CHANNELS ▼" header in white on the black backing, centered.
-  // Arrows are filled triangles (no Unicode arrow in LessPerfectDOSVGA;
-  // drawn triangles give crisper edges than ASCII proxies).
+  // 2. Welcome box in the gray expanse above the CHANNELS bar. Title
+  //    is the literal project name (not the hub's site_name — the
+  //    captive-portal welcome card is project branding). Bails if
+  //    there's not enough vertical room (tiny rail or tab block fills
+  //    the whole column).
+  const int16_t welcome_area_h = bar_top - rail_y;
+  if (welcome_area_h > 0) {
+    draw_welcome_box(gfx, "CivicMesh", rail_x, rail_y, welcome_area_h);
+  }
+
+  // 3. Black CHANNELS bar above the tab stack.
+  gfx.fillRect(rail_x, bar_top, RAIL_W, HDR_BAR_H, COLOR_BLACK);
+
+  // 4. CHANNELS label (white on black), centered. Down-arrow triangles
+  //    used to flank the text but the tab stack right below already
+  //    reads as "list of things"; the arrows were redundant chrome.
   gfx.setFont(&LessPerfectDOSVGA);
   gfx.setTextSize(1);
   gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
@@ -336,51 +488,55 @@ void draw_channel_rail(Adafruit_GFX& gfx,
   int16_t hx1, hy1;
   uint16_t hw, hh;
   gfx.getTextBounds(hdr_label, 0, 0, &hx1, &hy1, &hw, &hh);
-
-  constexpr int16_t ARROW_W = 9;
-  constexpr int16_t ARROW_H = 6;
-  constexpr int16_t ARROW_GAP = 8;
-  const int16_t total_label_w =
-      ARROW_W + ARROW_GAP + static_cast<int16_t>(hw) + ARROW_GAP + ARROW_W;
-  const int16_t label_x = rail_x + (RAIL_W - total_label_w) / 2;
-  const int16_t arrow_y = hdr_top + (HDR_TXT_H - ARROW_H) / 2;
-
-  gfx.fillTriangle(label_x, arrow_y,
-                   label_x + ARROW_W - 1, arrow_y,
-                   label_x + ARROW_W / 2, arrow_y + ARROW_H - 1,
-                   COLOR_WHITE);
-  set_cursor_top_left(gfx, label_x + ARROW_W + ARROW_GAP,
-                      hdr_top, kCustomFontBaseHeight);
+  const int16_t label_x = rail_x + (RAIL_W - static_cast<int16_t>(hw)) / 2;
+  const int16_t text_top = bar_top + (HDR_BAR_H - HDR_TXT_H) / 2;
+  set_cursor_top_left(gfx, label_x, text_top, kCustomFontBaseHeight);
   gfx.print(hdr_label);
-  const int16_t right_arrow_x =
-      label_x + ARROW_W + ARROW_GAP + static_cast<int16_t>(hw) + ARROW_GAP;
-  gfx.fillTriangle(right_arrow_x, arrow_y,
-                   right_arrow_x + ARROW_W - 1, arrow_y,
-                   right_arrow_x + ARROW_W / 2, arrow_y + ARROW_H - 1,
-                   COLOR_WHITE);
 
-  // Tabs starting at tabs_top. Interiors remain white (nothing painted
-  // black over them); the active tab's punch-through merge with the
-  // pane works the same as before.
+  // 5. Tab interiors filled white so the dither doesn't show through
+  //    behind labels or strokes.
+  for (size_t i = 0; i < visible; ++i) {
+    const int16_t y_top = tabs_top + static_cast<int16_t>(i) * TAB_H;
+    gfx.fillRect(rail_x, y_top, RAIL_W, TAB_H, COLOR_WHITE);
+  }
+
+  // 6. Tab borders. Active = double on top/right/bottom (left is the
+  //    gap in the continuous line). Inactive = single on top/right/
+  //    bottom (left is supplied by the continuous line below).
   for (size_t i = 0; i < visible; ++i) {
     const int16_t y_top = tabs_top + static_cast<int16_t>(i) * TAB_H;
     const bool is_active = (static_cast<int>(i) == active_idx);
-
     if (is_active) {
-      // Active: double-line border on top/right/bottom; no left border
-      // so the tab and pane read as one continuous piece of paper.
       draw_double_border_no_left(gfx, rail_x, y_top, RAIL_W, TAB_H);
     } else {
-      // Inactive: plain single-line rectangle. No fill, no shading.
-      gfx.drawRect(rail_x, y_top, RAIL_W, TAB_H, COLOR_BLACK);
+      gfx.drawFastHLine(rail_x, y_top, RAIL_W, COLOR_BLACK);
+      gfx.drawFastHLine(rail_x, y_top + TAB_H - 1, RAIL_W, COLOR_BLACK);
+      gfx.drawFastVLine(rail_x + RAIL_W - 1, y_top, TAB_H, COLOR_BLACK);
     }
+  }
 
-    // Tab label. Active = 32 px (LessPerfectDOSVGA at size 2) for
-    // emphasis; inactive = 24 px (native LessPerfectDOSVGA24 at size 1)
-    // so inactive tabs read as less prominent without the blocky-pixel
-    // look of an integer-scaled small font. Both centered horizontally
-    // and vertically inside their tab. Labels too long for RAIL_W still
-    // clip at the right edge — measured via getTextBounds.
+  // 7. Continuous DOUBLE vertical line on the left side of the rail,
+  //    running the full body height. Broken only at the active tab's
+  //    y range — that's the "open gap" the user sees when a tab is
+  //    selected, the pane and the active tab reading as one piece of
+  //    paper. Drawn over inactive tabs (their left side gets the
+  //    double-line treatment for free) but skips the active tab.
+  const int16_t above_h = active_top - rail_y;
+  if (above_h > 0) {
+    gfx.drawFastVLine(rail_x, rail_y, above_h, COLOR_BLACK);
+    gfx.drawFastVLine(rail_x + DOUBLE_LINE_GAP, rail_y, above_h, COLOR_BLACK);
+  }
+  const int16_t below_h = rail_bot - active_bot;
+  if (below_h > 0) {
+    gfx.drawFastVLine(rail_x, active_bot, below_h, COLOR_BLACK);
+    gfx.drawFastVLine(rail_x + DOUBLE_LINE_GAP, active_bot, below_h, COLOR_BLACK);
+  }
+
+  // 8. Tab labels. Active = size-2 LessPerfectDOSVGA (32 px), inactive
+  //    = LessPerfectDOSVGA24 size-1 (24 px native). Both centered.
+  for (size_t i = 0; i < visible; ++i) {
+    const int16_t y_top = tabs_top + static_cast<int16_t>(i) * TAB_H;
+    const bool is_active = (static_cast<int>(i) == active_idx);
     if (is_active) {
       gfx.setFont(&LessPerfectDOSVGA);
       gfx.setTextSize(2);
@@ -391,22 +547,16 @@ void draw_channel_rail(Adafruit_GFX& gfx,
     gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
     const int16_t label_h =
         is_active ? kCustomFontBaseHeight * 2 : kCustomFont24BaseHeight;
-    const char* label = payload.channels[i].name.c_str();
+    const char* lbl = payload.channels[i].name.c_str();
     int16_t bx, by;
     uint16_t bw, bh;
-    gfx.getTextBounds(label, 0, 0, &bx, &by, &bw, &bh);
-    const int16_t label_x =
+    gfx.getTextBounds(lbl, 0, 0, &bx, &by, &bw, &bh);
+    const int16_t lbl_x =
         rail_x + (RAIL_W - static_cast<int16_t>(bw)) / 2;
-    const int16_t label_top = y_top + (TAB_H - label_h) / 2;
-    set_cursor_top_left(gfx, label_x, label_top, label_h);
-    gfx.print(label);
+    const int16_t lbl_top = y_top + (TAB_H - label_h) / 2;
+    set_cursor_top_left(gfx, lbl_x, lbl_top, label_h);
+    gfx.print(lbl);
   }
-
-  // (Previously: drawFastVLine below the last tab to extend the pane/
-  // rail boundary to body bottom. With the black-backed rail above and
-  // below the tab block, the boundary is implicit — white pane meets
-  // black rail at x=rail_x for the entire body height except where the
-  // active tab punches through with a white interior.)
 }
 
 // Center a small message in the pane area. Used for the two empty states.
@@ -511,14 +661,80 @@ void draw_body_messages(Adafruit_GFX& gfx,
 
   int16_t y = pane_top + BODY_PAD;
   for (const auto& b : blocks) {
-    // Sender line: "HH:MM sender" at setTextSize(1). UI_SPEC §5 wants
-    // sender at body-size, not heading-size; reverse-video is the
-    // emphasis tool we reach for later, not larger text.
-    std::string line = b.hhmm;
-    line += ' ';
-    line += b.m->sender;
-    set_cursor_top_left(gfx, pane_left, y, kCustomFontBaseHeight);
-    gfx.print(line.c_str());
+    // Sender line: "<sender> • <date> • <time>" at setTextSize(1).
+    // UI_SPEC §5 wants sender at body-size, not heading-size; reverse-
+    // video is the emphasis tool we reach for later, not larger text.
+    // Split the server-formatted ts_str (which arrives as
+    // "YYYY-MM-DD HH:MM") on the space so date and time render as
+    // independent segments. The bullet between segments is a 2x2 px
+    // filled rectangle — LessPerfectDOSVGA is ASCII-only (no Unicode
+    // bullet glyph), and drawing it inline gives crisper edges than
+    // any "*" or "." substitute would.
+    const std::string& ts = b.hhmm;
+    const size_t sp = ts.find(' ');
+    const std::string date_str = (sp == std::string::npos) ? ts : ts.substr(0, sp);
+    const std::string time_str = (sp == std::string::npos) ? std::string()
+                                                           : ts.substr(sp + 1);
+
+    // Sender in reverse video — a small black "tag" with white text,
+    // matches UI_SPEC §3's emphasis convention (the active tab and the
+    // CHANNELS bar use the same treatment). Date and time after the
+    // bullet stay normal black-on-white, so the sender pops without
+    // weighing down the whole line.
+    //
+    // The bg extends LINE_H + 4 px tall: the LessPerfectDOSVGA glyph
+    // cell has descenders sitting ~3 px below the nominal LINE_H
+    // boundary, so a strict LINE_H-tall fill leaves the bottom of
+    // letters like 'q', 'g', 'p', 'y' poking out into the white. The
+    // extra padding only overlaps the empty top of the wrapped body
+    // line below (above its ascender), so it reads as deliberate
+    // padding on the tag rather than running into body text.
+    {
+      int16_t sx1, sy1;
+      uint16_t sw, sh;
+      gfx.getTextBounds(b.m->sender.c_str(), 0, 0, &sx1, &sy1, &sw, &sh);
+      constexpr int16_t SENDER_PAD_X = 3;
+      constexpr int16_t SENDER_BG_EXTRA = 4;
+      const int16_t bg_w = static_cast<int16_t>(sw) + 2 * SENDER_PAD_X;
+      gfx.fillRect(pane_left, y, bg_w, LINE_H + SENDER_BG_EXTRA, COLOR_BLACK);
+      gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
+      set_cursor_top_left(gfx, pane_left + SENDER_PAD_X, y,
+                          kCustomFontBaseHeight);
+      gfx.print(b.m->sender.c_str());
+      // Restore normal colors and step past the black tag for the
+      // bullets + date/time that follow.
+      gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      set_cursor_top_left(gfx, pane_left + bg_w, y,
+                          kCustomFontBaseHeight);
+    }
+
+    // Inline bullet between segments. Layout: " <bullet> " — a full
+    // space on each side. Print the leading space so the cursor advances
+    // by one character width naturally, stamp the 2x2 bullet at the
+    // cursor's current x (offset down into the lower half of the glyph
+    // box where the VGA font's x-height baseline sits), then manually
+    // step the cursor past the bullet and print the trailing space.
+    auto draw_inline_bullet = [&]() {
+      gfx.print(' ');
+      const int16_t bx = gfx.getCursorX();
+      constexpr int16_t BULLET_W = 2;
+      // y + 13: LessPerfectDOSVGA size-1 puts the glyph baseline near
+      // y + 13 (in a 16-tall cell). The bullet sits just above the
+      // baseline so it reads as a midline punctuation dot rather than
+      // hovering above the x-height.
+      gfx.fillRect(bx, y + 11, BULLET_W, BULLET_W, COLOR_BLACK);
+      set_cursor_top_left(gfx, bx + BULLET_W, y, kCustomFontBaseHeight);
+      gfx.print(' ');
+    };
+
+    if (!date_str.empty()) {
+      draw_inline_bullet();
+      gfx.print(date_str.c_str());
+    }
+    if (!time_str.empty()) {
+      draw_inline_bullet();
+      gfx.print(time_str.c_str());
+    }
     y += LINE_H;
     // Body, indented BODY_INDENT_PX so wrapped lines hang under the
     // sender column.
