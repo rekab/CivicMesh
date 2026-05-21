@@ -137,6 +137,8 @@ void fill_envelope(JsonObject env,
 }  // namespace
 
 String build_combined_ok_json(const JsonDocument& server_doc,
+                              const JsonDocument* stats_doc,
+                              const JsonDocument* status_doc,
                               uint16_t active_channel_index,
                               float battery_volts,
                               uint32_t seconds_since_last_update,
@@ -150,6 +152,12 @@ String build_combined_ok_json(const JsonDocument& server_doc,
   // Shallow attach: out["payload"] references server_doc's tree. Caller
   // must hold server_doc alive until the returned String is built.
   out["payload"] = server_doc.as<JsonVariantConst>();
+  if (stats_doc) {
+    out["stats"] = stats_doc->as<JsonVariantConst>();
+  }
+  if (status_doc) {
+    out["status"] = status_doc->as<JsonVariantConst>();
+  }
 
   String s;
   serializeJson(out, s);

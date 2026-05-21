@@ -63,7 +63,17 @@ int16_t select_freshest_channel(const JsonDocument& server_doc);
 // Serialize the success-path combined doc. Attaches `server_doc` as
 // the payload by shallow reference; do not free server_doc until the
 // returned String is no longer needed.
+//
+// `stats_doc` and `status_doc` are optional (pass nullptr to omit).
+// When supplied, they're shallow-attached as the `stats` / `status`
+// top-level keys the renderer reads (see render.cpp:81-90 and the
+// parse_stats / parse_status helpers). The renderer treats both as
+// additive — if either is absent, the footer falls back to the legacy
+// firmware-version banner — so passing nullptr is the right move when
+// a best-effort telemetry fetch failed.
 String build_combined_ok_json(const JsonDocument& server_doc,
+                              const JsonDocument* stats_doc,
+                              const JsonDocument* status_doc,
                               uint16_t active_channel_index,
                               float battery_volts,
                               uint32_t seconds_since_last_update,

@@ -35,6 +35,11 @@
 // CIVICMESH_SSID is required (the Makefile errors out if unset);
 // CIVICMESH_ENDPOINT defaults to http://10.0.0.1/api/external-display/state;
 // CIVICMESH_FW_VERSION defaults to 0.1.0.
+//
+// /api/stats and /api/status URLs are DERIVED from CIVICMESH_ENDPOINT
+// at setup (cached in stats_url / status_url). They're used to render
+// UI_SPEC §5's bottom nerd strip — uptime, CPU, mem, sparkline, radio
+// status. See inkplate/README.md "Server endpoints consumed".
 #ifndef CIVICMESH_SSID
 #error "CIVICMESH_SSID must be defined via -D flag in the Makefile"
 #endif
@@ -56,6 +61,12 @@ static constexpr uint32_t ROTATION_INTERVAL_MS    = 300000;
 static constexpr uint8_t  WIFI_CONNECT_TIMEOUT_S  = 20;
 static constexpr uint16_t HTTP_CONNECT_TIMEOUT_MS = 5000;
 static constexpr uint16_t HTTP_READ_TIMEOUT_MS    = 5000;
+// Shorter timeouts for best-effort telemetry fetches so a stalled
+// /api/stats doesn't add 10 s of WiFi-on time to every poll. The
+// failure path here is just "log + keep last-known-good", so we'd
+// rather give up early.
+static constexpr uint16_t TELEMETRY_CONNECT_TIMEOUT_MS = 2000;
+static constexpr uint16_t TELEMETRY_READ_TIMEOUT_MS    = 2000;
 static constexpr int      EXPECTED_API_VERSION    = 2;
 
 // Phase 3D will replace this with display.readBattery() on every poll.
@@ -99,11 +110,25 @@ static RenderSig last_render_sig      = {};
 // pre-flight DNS so failure_shell can show dns_failure vs pi_unreachable.
 static String cached_host;
 
+// Telemetry endpoints derived from CIVICMESH_ENDPOINT at boot. Empty if
+// CIVICMESH_ENDPOINT doesn't contain "/api/" in a recognizable form;
+// the telemetry-fetch code skips the call when empty.
+static String stats_url;
+static String status_url;
+
 // Last successful server response, retained so the rotation timer can
 // re-render a different channel between polls without re-fetching, and
 // so handle_wake_press can render with select_freshest_channel.
 static JsonDocument g_last_server_doc;
 static bool g_has_last_server_doc = false;
+
+// Best-effort telemetry fetches. Cached so a fetch failure on poll N
+// doesn't blank the nerd strip — the renderer keeps showing whatever
+// the last successful fetch returned. Cleared only when never set.
+static JsonDocument g_last_stats_doc;
+static bool g_has_last_stats_doc = false;
+static JsonDocument g_last_status_doc;
+static bool g_has_last_status_doc = false;
 
 // PR 2 globals.
 volatile bool wake_flag = false;      // set by ISR; cleared in loop()
@@ -177,8 +202,17 @@ static void push_to_panel(const String& combined_json, const char* reason) {
 
 static void render_combined_ok(const JsonDocument& server_doc,
                                const char* reason) {
+  // Pass cached telemetry docs through so the footer's nerd strip
+  // renders. Either may be null on the very first poll if its fetch
+  // failed; the renderer falls back to the legacy banner in that
+  // case (parse_stats / parse_status set has_stats=false).
+  const JsonDocument* stats_p =
+      g_has_last_stats_doc ? &g_last_stats_doc : nullptr;
+  const JsonDocument* status_p =
+      g_has_last_status_doc ? &g_last_status_doc : nullptr;
   String s = civicmesh::bulletin::build_combined_ok_json(
-      server_doc, active_channel_index, SUCCESS_PATH_BATTERY_PLACEHOLDER,
+      server_doc, stats_p, status_p,
+      active_channel_index, SUCCESS_PATH_BATTERY_PLACEHOLDER,
       /*seconds_since_last_update=*/0, EXPECTED_API_VERSION,
       CIVICMESH_FW_VERSION);
   push_to_panel(s, reason);
@@ -242,6 +276,52 @@ static void render_api_mismatch_screen(const JsonDocument& server_doc,
   String s = civicmesh::bulletin::build_combined_api_mismatch_json(
       server_doc, battery_volts, EXPECTED_API_VERSION, CIVICMESH_FW_VERSION);
   push_to_panel(s, "api_mismatch");
+}
+
+// Best-effort telemetry fetch. Logs verbosely so the serial monitor
+// shows each attempt and any error. On success, populates `out_doc` and
+// returns true; on failure, logs the reason and returns false WITHOUT
+// touching failure_streak — telemetry failures must not cascade into
+// the chat-fetch failure_shell path. Caller decides whether to swap
+// the result into the cached global.
+static bool fetch_telemetry(const char* label,
+                            const String& url,
+                            JsonDocument& out_doc) {
+  if (url.length() == 0) {
+    Serial.printf("[bulletin] %s skip: url not configured\n", label);
+    return false;
+  }
+  Serial.printf("[bulletin] %s polling url=%s\n", label, url.c_str());
+  int code = 0;
+  IPAddress resolved;
+  civicmesh::bulletin::FetchError err =
+      civicmesh::bulletin::fetch_payload(
+          url.c_str(), cached_host.c_str(),
+          TELEMETRY_CONNECT_TIMEOUT_MS, TELEMETRY_READ_TIMEOUT_MS,
+          out_doc, &code, &resolved);
+  if (err == civicmesh::bulletin::FetchError::kOk) {
+    Serial.printf("[bulletin] %s fetch ok ip=%s http=%d\n",
+                  label, resolved.toString().c_str(), code);
+    return true;
+  }
+  const char* err_str = "?";
+  switch (err) {
+    case civicmesh::bulletin::FetchError::kDnsFailure:
+      err_str = "dns_failure"; break;
+    case civicmesh::bulletin::FetchError::kPiUnreachable:
+      err_str = "pi_unreachable"; break;
+    case civicmesh::bulletin::FetchError::kHttpError:
+      err_str = "http_error"; break;
+    case civicmesh::bulletin::FetchError::kBadJson:
+      err_str = "bad_json"; break;
+    case civicmesh::bulletin::FetchError::kOk:
+      err_str = "ok"; break;  // unreachable
+  }
+  Serial.printf("[bulletin] %s fetch FAILED err=%s code=%d "
+                "(footer will show last-known-good or fall back to "
+                "legacy banner)\n",
+                label, err_str, code);
+  return false;
 }
 
 // Centralized failure handler used by every transient-failure case in
@@ -323,6 +403,26 @@ static PollOutcome poll(bool is_wake_driven = false) {
 
   // Success.
   failure_streak = 0;
+
+  // Best-effort telemetry fetches for the §5 nerd strip. Both are
+  // independent of the chat path: a failed stats or status fetch must
+  // NOT trip failure_streak or render failure_shell. The cached docs
+  // hold last-known-good values; if both this fetch fails AND no
+  // previous successful fetch, the renderer falls back to the legacy
+  // banner. Order: stats first (bigger payload, more likely to fail
+  // on a slow link) so its failure log lands before status.
+  {
+    JsonDocument tmp_stats;
+    if (fetch_telemetry("stats", stats_url, tmp_stats)) {
+      g_last_stats_doc = tmp_stats;
+      g_has_last_stats_doc = true;
+    }
+    JsonDocument tmp_status;
+    if (fetch_telemetry("status", status_url, tmp_status)) {
+      g_last_status_doc = tmp_status;
+      g_has_last_status_doc = true;
+    }
+  }
 
   JsonArrayConst channels = server_doc["channels"].as<JsonArrayConst>();
   channel_count = channels.isNull() ? 0 : channels.size();
@@ -457,6 +557,28 @@ void setup() {
 
   cached_host = civicmesh::bulletin::parse_host_from_url(CIVICMESH_ENDPOINT);
   Serial.printf("[bulletin] cached host=%s\n", cached_host.c_str());
+
+  // Derive /api/stats and /api/status URLs from CIVICMESH_ENDPOINT by
+  // chopping at "/api/" and pasting the new paths on. If the endpoint
+  // doesn't contain "/api/" (operator typoed it, or it's some custom
+  // shape), we log loudly and skip telemetry — the renderer still
+  // renders the bulletin, just with the legacy footer banner.
+  {
+    String ep(CIVICMESH_ENDPOINT);
+    int api_idx = ep.indexOf("/api/");
+    if (api_idx >= 0) {
+      String base = ep.substring(0, api_idx);
+      stats_url = base + "/api/stats";
+      status_url = base + "/api/status";
+      Serial.printf("[bulletin] telemetry urls stats=%s status=%s\n",
+                    stats_url.c_str(), status_url.c_str());
+    } else {
+      Serial.printf("[bulletin] WARN: CIVICMESH_ENDPOINT %s does not "
+                    "contain '/api/' — telemetry fetches disabled, "
+                    "nerd strip will fall back to legacy banner\n",
+                    CIVICMESH_ENDPOINT);
+    }
+  }
 
   // Schedule first poll immediately so we don't wait an initial 10s.
   last_poll_millis = millis() - next_poll_delay_ms;
