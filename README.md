@@ -399,16 +399,10 @@ context.
   not delivered to recipients.
 - Offline-first: UI loads without radio; cached messages remain
   readable.
-- External e-paper display (Inkplate 6) supported via the
-  `/api/external-display/state` endpoint; renderer library,
-  host-side PNG iteration loop, and Phase 3A production firmware
-  (WiFi join, Fibonacci poll, channel rotation, WAKE-button
-  next-channel cycle + force-poll, failure_shell /
-  critical_battery / api_mismatch screens, deep-sleep escalation)
-  all ship in [`inkplate/`](inkplate/) — see that directory's
-  README for renderer architecture, fixtures, host iteration
-  loop, and firmware sketches. NVS last-good cache, RTC, and OTA
-  are Phase 3B+.
+- External e-paper display (Inkplate 6) ships at Phase 3A — see
+  [External bulletin display](#external-bulletin-display) above
+  and [`inkplate/`](inkplate/) for renderer + firmware details.
+  NVS last-good cache, RTC, and OTA are Phase 3B+.
 
 ## Issue tracking
 
