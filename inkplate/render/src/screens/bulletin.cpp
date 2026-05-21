@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -84,6 +85,58 @@ void draw_inverted_bar(Adafruit_GFX& gfx, int16_t y, int16_t h) {
   gfx.fillRect(0, y, PANEL_W, h, COLOR_BLACK);
 }
 
+// WiFi glyph — three nested upper-half arcs above a single-pixel dot,
+// the classic "signal radiating outward from a source" shape. Arcs
+// stand at r/3, 2r/3, r (equispaced); glyph is (2r+1) wide × (r+1)
+// tall. `cx`, `cy` is the position of the dot; arcs render above it.
+void draw_wifi_glyph(Adafruit_GFX& gfx,
+                     int16_t cx, int16_t cy, int16_t r_outer,
+                     uint16_t color) {
+  gfx.drawPixel(cx, cy, color);
+  // cornername bitmask: 0x1 = upper-left, 0x2 = upper-right;
+  // 0x3 = full upper semicircle.
+  gfx.drawCircleHelper(cx, cy, r_outer / 3, 0x3, color);
+  gfx.drawCircleHelper(cx, cy, (r_outer * 2) / 3, 0x3, color);
+  gfx.drawCircleHelper(cx, cy, r_outer, 0x3, color);
+}
+
+// Battery glyph — outlined rectangle body + small "nub" on the right
+// (the positive terminal), filled internally proportional to charge.
+// `pct` is 0.0..1.0; clamped to that range. The glyph is sized (w × h)
+// excluding the nub; the nub adds ~2 px on the right.
+void draw_battery_glyph(Adafruit_GFX& gfx,
+                        int16_t x, int16_t y, int16_t w, int16_t h,
+                        float pct, uint16_t color) {
+  if (pct < 0.0f) pct = 0.0f;
+  if (pct > 1.0f) pct = 1.0f;
+  // Body outline
+  gfx.drawRect(x, y, w, h, color);
+  // Nub: 2 px wide, centered vertically, sits flush against right side
+  const int16_t nub_h = h - 4;
+  const int16_t nub_y = y + 2;
+  gfx.fillRect(x + w, nub_y, 2, nub_h, color);
+  // Interior fill (1 px inset from outline so the outline stays visible)
+  const int16_t inset = 1;
+  const int16_t fill_max = w - 2 * inset;
+  const int16_t fill_w = static_cast<int16_t>(fill_max * pct + 0.5f);
+  if (fill_w > 0) {
+    gfx.fillRect(x + inset, y + inset, fill_w, h - 2 * inset, color);
+  }
+}
+
+// Map Li-ion volts to a 0..1 charge fraction for the icon's fill bar.
+// Battery curves aren't linear, but for a coarse 4-state visual the
+// linear approximation over [BATT_CRIT_V .. 4.20 V] is honest enough
+// and matches what the operator sees on the LOW threshold (≈3.9 V
+// shows roughly half-full).
+float battery_pct(float volts) {
+  constexpr float V_MAX = 4.20f;
+  constexpr float V_MIN = BATT_CRIT_V;  // 3.60
+  if (volts <= V_MIN) return 0.0f;
+  if (volts >= V_MAX) return 1.0f;
+  return (volts - V_MIN) / (V_MAX - V_MIN);
+}
+
 // Draw the active tab's double-line border: outer stroke on top, right,
 // and bottom (no left — that side merges with the pane), and a second
 // inner stroke inset by DOUBLE_LINE_GAP. The inner top/bottom lines
@@ -143,49 +196,100 @@ void draw_header(Adafruit_GFX& gfx,
                  const Payload& payload) {
   draw_inverted_bar(gfx, 0, BUL_HEADER_H);
   // Top bar uses the 16-px LessPerfectDOSVGA at size 1: a single chat-
-  // body row of text. The bar height (BUL_HEADER_H) still budgets vertical
+  // body row of text. The bar height (BUL_HEADER_H) budgets vertical
   // padding around it so the inverted strip reads as deliberate chrome
-  // rather than text-on-black.
+  // rather than text-on-black. The channel name + (n/m) indicator that
+  // used to sit on the right has been retired — the active tab on the
+  // right rail already shows the channel identity, and the position
+  // info reads visually from the tab stack.
   gfx.setFont(&LessPerfectDOSVGA);
   gfx.setTextSize(1);
   gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
 
-  const std::string site = payload.site_name.empty()
-                               ? std::string("CivicMesh")
-                               : payload.site_name;
-  set_cursor_top_left(gfx, CHROME_PAD,
-                      (BUL_HEADER_H - kCustomFontBaseHeight) / 2,
-                      kCustomFontBaseHeight);
-  gfx.print(site.c_str());
+  const int16_t text_top = (BUL_HEADER_H - kCustomFontBaseHeight) / 2;
 
-  // Right side: channel name + (n/m) indicator.
-  std::string channel_label;
-  if (!payload.channels.empty()) {
-    int idx = env.active_channel_index;
-    if (idx < 0 || idx >= static_cast<int>(payload.channels.size())) idx = 0;
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "%s (%d/%zu)",
-                  payload.channels[idx].name.c_str(),
-                  idx + 1, payload.channels.size());
-    channel_label = buf;
-  }
-  if (!channel_label.empty()) {
-    int16_t x1, y1;
-    uint16_t w, h;
-    gfx.getTextBounds(channel_label.c_str(), 0, 0, &x1, &y1, &w, &h);
-    set_cursor_top_left(gfx, PANEL_W - CHROME_PAD - w,
-                        (BUL_HEADER_H - kCustomFontBaseHeight) / 2,
-                        kCustomFontBaseHeight);
-    gfx.print(channel_label.c_str());
+  // --- Left: SSID label + wifi glyph + site name ---
+  // Format: "SSID: <wifi-glyph> <site_name>" where the glyph is sized
+  // to fill most of the bar height (r_outer=18 → 19 px tall in a 30 px
+  // bar). We use site_name as the "SSID" value since that's the
+  // closest network-identity field the payload carries; if the firmware
+  // grows a true SSID envelope field later, it slots in here verbatim.
+  constexpr int16_t WIFI_R = 18;
+  constexpr int16_t WIFI_GAP = 8;
+  const int16_t wifi_glyph_h = WIFI_R + 1;        // 19
+  const int16_t wifi_glyph_w = WIFI_R * 2 + 1;    // 37
+  const int16_t wifi_dot_y =
+      (BUL_HEADER_H - wifi_glyph_h) / 2 + wifi_glyph_h - 1;
+
+  const std::string ssid_value = payload.site_name.empty()
+                                     ? std::string("CivicMesh")
+                                     : payload.site_name;
+
+  // "SSID: " prefix
+  const char* prefix = "SSID: ";
+  set_cursor_top_left(gfx, CHROME_PAD, text_top, kCustomFontBaseHeight);
+  gfx.print(prefix);
+
+  int16_t x1, y1;
+  uint16_t pw, ph;
+  gfx.getTextBounds(prefix, 0, 0, &x1, &y1, &pw, &ph);
+
+  // Wifi glyph centered vertically in the bar, just after the prefix
+  const int16_t wifi_cx = CHROME_PAD + static_cast<int16_t>(pw) +
+                          WIFI_R;  // leftmost arc col is at cx - r
+  draw_wifi_glyph(gfx, wifi_cx, wifi_dot_y, WIFI_R, COLOR_WHITE);
+
+  // Site name to the right of the glyph
+  const int16_t ssid_x =
+      CHROME_PAD + static_cast<int16_t>(pw) + wifi_glyph_w + WIFI_GAP;
+  set_cursor_top_left(gfx, ssid_x, text_top, kCustomFontBaseHeight);
+  gfx.print(ssid_value.c_str());
+
+  // --- Right: battery indicator (glyph + voltage) ---
+  // Critical battery has its own takeover screen; this draws for the
+  // "good" (>= BATT_LOW_V) and "low" (BATT_CRIT_V .. BATT_LOW_V) cases.
+  // The renderer assumes env.battery_volts > 0 means a valid reading;
+  // a zero/negative reading hides the indicator (firmware booting,
+  // host_render fixture without battery data).
+  if (env.battery_volts > 0.0f) {
+    const bool is_low = env.battery_volts < BATT_LOW_V;
+    char volt_buf[16];
+    std::snprintf(volt_buf, sizeof(volt_buf), "%.2fV",
+                  static_cast<double>(env.battery_volts));
+    if (is_low) {
+      // Low-battery suffix per UI_SPEC §5; reads as a single chunk
+      // (battery icon + voltage + "LOW") rather than three separate
+      // segments.
+      std::strncat(volt_buf, " LOW", sizeof(volt_buf) - std::strlen(volt_buf) - 1);
+    }
+    int16_t vx1, vy1;
+    uint16_t vw, vh;
+    gfx.getTextBounds(volt_buf, 0, 0, &vx1, &vy1, &vw, &vh);
+
+    constexpr int16_t BATT_W = 18;
+    constexpr int16_t BATT_H = 10;
+    // Layout from right to left: chrome pad, voltage text, gap, battery
+    // glyph (incl. nub width = 2).
+    const int16_t volt_x = PANEL_W - CHROME_PAD - static_cast<int16_t>(vw);
+    set_cursor_top_left(gfx, volt_x, text_top, kCustomFontBaseHeight);
+    gfx.print(volt_buf);
+    const int16_t batt_x = volt_x - 6 - (BATT_W + 2);
+    const int16_t batt_y = (BUL_HEADER_H - BATT_H) / 2;
+    draw_battery_glyph(gfx, batt_x, batt_y, BATT_W, BATT_H,
+                       battery_pct(env.battery_volts), COLOR_WHITE);
   }
 }
 
 // Right-edge file-folder channel tabs. Drawn AFTER the body so a tab's
 // border paints cleanly over any pane content that would otherwise bleed
-// into the rail column. Tabs are fixed-height (TAB_H) and stack from the
-// top of the rail. The area below the last tab is still bounded by the
-// rail's continuous right edge — the rail reads as a column, not a
-// loose stack of tabs.
+// into the rail column.
+//
+// Tabs are vertically centered in the rail area, with the surrounding
+// rail painted inverted (black) above and below. A "CHANNELS" header
+// in white sits just above the topmost tab on the black backing. The
+// black bars do double duty as the pane/rail boundary - no explicit
+// drawFastVLine needed, since white pane ↔ black rail is its own
+// implicit edge.
 void draw_channel_rail(Adafruit_GFX& gfx,
                        const Envelope& env,
                        const Payload& payload) {
@@ -194,17 +298,72 @@ void draw_channel_rail(Adafruit_GFX& gfx,
   const int16_t rail_x = PANEL_W - RAIL_W;
   const int16_t rail_y = BUL_BODY_Y;
   const int16_t rail_h_total = BUL_BODY_H;
-  // Clamp visible tab count to what fits in the rail (defensive — with
-  // TAB_H=54 and BUL_BODY_H=540 the rail holds ~9 tabs, more than the ~6 we
-  // ever see in practice).
-  const size_t max_visible = static_cast<size_t>(rail_h_total / TAB_H);
+
+  // Reserve vertical room above the tab block for the "CHANNELS"
+  // header. Tabs + header center together as one block in the rail.
+  constexpr int16_t HDR_TXT_H = 16;     // size-1 LessPerfectDOSVGA
+  constexpr int16_t HDR_GAP = 10;       // gap between header and first tab
+
+  const size_t max_visible = static_cast<size_t>(
+      (rail_h_total - HDR_TXT_H - HDR_GAP) / TAB_H);
   const size_t visible = std::min(n, max_visible);
 
   int active_idx = env.active_channel_index;
   if (active_idx < 0 || active_idx >= static_cast<int>(n)) active_idx = 0;
 
+  const int16_t block_h =
+      HDR_TXT_H + HDR_GAP + static_cast<int16_t>(visible) * TAB_H;
+  const int16_t hdr_top = rail_y + (rail_h_total - block_h) / 2;
+  const int16_t tabs_top = hdr_top + HDR_TXT_H + HDR_GAP;
+  const int16_t tabs_bot =
+      tabs_top + static_cast<int16_t>(visible) * TAB_H;
+
+  // Inverted (black) backing above the tab block - covers the header
+  // strip AND the empty space above it. The pane (white) at x < rail_x
+  // gives an implicit boundary at x=rail_x without needing a drawn line.
+  gfx.fillRect(rail_x, rail_y, RAIL_W,
+               tabs_top - rail_y, COLOR_BLACK);
+  gfx.fillRect(rail_x, tabs_bot, RAIL_W,
+               rail_y + rail_h_total - tabs_bot, COLOR_BLACK);
+
+  // "▼ CHANNELS ▼" header in white on the black backing, centered.
+  // Arrows are filled triangles (no Unicode arrow in LessPerfectDOSVGA;
+  // drawn triangles give crisper edges than ASCII proxies).
+  gfx.setFont(&LessPerfectDOSVGA);
+  gfx.setTextSize(1);
+  gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
+  const char* hdr_label = "CHANNELS";
+  int16_t hx1, hy1;
+  uint16_t hw, hh;
+  gfx.getTextBounds(hdr_label, 0, 0, &hx1, &hy1, &hw, &hh);
+
+  constexpr int16_t ARROW_W = 9;
+  constexpr int16_t ARROW_H = 6;
+  constexpr int16_t ARROW_GAP = 8;
+  const int16_t total_label_w =
+      ARROW_W + ARROW_GAP + static_cast<int16_t>(hw) + ARROW_GAP + ARROW_W;
+  const int16_t label_x = rail_x + (RAIL_W - total_label_w) / 2;
+  const int16_t arrow_y = hdr_top + (HDR_TXT_H - ARROW_H) / 2;
+
+  gfx.fillTriangle(label_x, arrow_y,
+                   label_x + ARROW_W - 1, arrow_y,
+                   label_x + ARROW_W / 2, arrow_y + ARROW_H - 1,
+                   COLOR_WHITE);
+  set_cursor_top_left(gfx, label_x + ARROW_W + ARROW_GAP,
+                      hdr_top, kCustomFontBaseHeight);
+  gfx.print(hdr_label);
+  const int16_t right_arrow_x =
+      label_x + ARROW_W + ARROW_GAP + static_cast<int16_t>(hw) + ARROW_GAP;
+  gfx.fillTriangle(right_arrow_x, arrow_y,
+                   right_arrow_x + ARROW_W - 1, arrow_y,
+                   right_arrow_x + ARROW_W / 2, arrow_y + ARROW_H - 1,
+                   COLOR_WHITE);
+
+  // Tabs starting at tabs_top. Interiors remain white (nothing painted
+  // black over them); the active tab's punch-through merge with the
+  // pane works the same as before.
   for (size_t i = 0; i < visible; ++i) {
-    const int16_t y_top = rail_y + static_cast<int16_t>(i) * TAB_H;
+    const int16_t y_top = tabs_top + static_cast<int16_t>(i) * TAB_H;
     const bool is_active = (static_cast<int>(i) == active_idx);
 
     if (is_active) {
@@ -243,18 +402,11 @@ void draw_channel_rail(Adafruit_GFX& gfx,
     gfx.print(label);
   }
 
-  // Rail/pane boundary line, on the right edge of the pane (= left edge
-  // of the rail). Inactive tabs already supply this line via their own
-  // left border; the active tab leaves it open (the "gap" — its merge
-  // with the pane). This extension covers the empty area below the last
-  // tab so the boundary continues to the body bottom and the rail still
-  // reads as a bounded column even when only a few tabs fill it.
-  const int16_t last_tab_bot = rail_y + static_cast<int16_t>(visible) * TAB_H;
-  const int16_t rail_bot = rail_y + rail_h_total;
-  if (last_tab_bot < rail_bot) {
-    gfx.drawFastVLine(rail_x, last_tab_bot,
-                      rail_bot - last_tab_bot, COLOR_BLACK);
-  }
+  // (Previously: drawFastVLine below the last tab to extend the pane/
+  // rail boundary to body bottom. With the black-backed rail above and
+  // below the tab block, the boundary is implicit — white pane meets
+  // black rail at x=rail_x for the entire body height except where the
+  // active tab punches through with a white interior.)
 }
 
 // Center a small message in the pane area. Used for the two empty states.
@@ -508,13 +660,9 @@ void draw_footer(Adafruit_GFX& gfx,
     seg(buf);
   }
 
-  // Battery warning (envelope-driven; firmware reads the analog pin).
-  // Only shown in the low-but-not-critical window — critical battery
-  // takes over the whole screen via draw_critical_battery.
-  if (env.battery_volts >= BATT_CRIT_V &&
-      env.battery_volts < BATT_LOW_V) {
-    seg("BATT LOW");
-  }
+  // (Battery warning moved to the top bar's battery indicator. The
+  // critical-battery case still takes over the whole screen via
+  // draw_critical_battery.)
 
   // Far-right: how stale this frame is. Lives outside the cursor-advance
   // loop because it's the only right-anchored segment; collisions with
