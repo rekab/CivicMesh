@@ -1,8 +1,9 @@
 # Inkplate display
 
 <p align="center">
-  <img src="img/01_civicmesh.png" alt="Inkplate demo UI" width="260">
+  <img src="img/01_civicmesh.png" alt="Inkplate demo UI" width="600">
 </p>
+
 Renderer + Arduino sketches for the Inkplate 6 e-paper display. Two
 pieces live here:
 
