@@ -366,9 +366,12 @@ context.
   `/api/external-display/state` endpoint; renderer library,
   host-side PNG iteration loop, and Phase 3A production firmware
   (WiFi join, Fibonacci poll, channel rotation, WAKE-button
-  force-poll, failure_shell / critical_battery / api_mismatch
-  screens, deep-sleep escalation) all ship in `inkplate/`. NVS
-  last-good cache, RTC, and OTA are Phase 3B+.
+  next-channel cycle + force-poll, failure_shell /
+  critical_battery / api_mismatch screens, deep-sleep escalation)
+  all ship in [`inkplate/`](inkplate/) — see that directory's
+  README for renderer architecture, fixtures, host iteration
+  loop, and firmware sketches. NVS last-good cache, RTC, and OTA
+  are Phase 3B+.
 
 ## Issue tracking
 
@@ -403,6 +406,7 @@ Feature designs:
 - [Message lifecycle](docs/message_lifecycle.md) — outbox state machine
 - [Heard-count / echo tracking](docs/heard_count_design.md)
 - [Reference documents](docs/hub-reference-library.md) — offline PDFs served from the captive portal; Hub Reference Library is the first content set
+- [External display (Inkplate 6)](inkplate/README.md) — e-paper bulletin renderer + Phase 3A production firmware
 
 Radio / hardware:
 - [Recovery implementation](docs/recovery.md) — state machine, ladder, observability
