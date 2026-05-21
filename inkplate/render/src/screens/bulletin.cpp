@@ -61,18 +61,21 @@ constexpr int16_t TAB_H = 54;  // ~3 size-1 rows; comfortably fits size-2 label
 // separate lines at 1-bit display density.
 constexpr int16_t DOUBLE_LINE_GAP = 2;
 
-// Sender + body line height at setTextSize(1). The font's yAdvance is 16;
-// we use the same value as a row pitch so successive lines stack cleanly.
-constexpr int16_t LINE_H = kCustomFontBaseHeight;
+// Sender + body line height. The chat body uses LessPerfectDOSVGA24
+// at setTextSize(1) — native 24-px rasterization, smoother than the
+// pixel-doubled 32-px size-2 of the 16-px font. 24 px is the
+// readability sweet spot at arm's length on the Inkplate panel; the
+// trade-off vs. 16 px is fewer visible messages per pane (~5-7 vs.
+// ~10).
+constexpr int16_t LINE_H = kCustomFont24BaseHeight;
 
-// Body indent for continuation lines. Two size-1 cells (~8 px each)
-// is enough to signal visual hierarchy without consuming pane width.
-// Deviates from UI_SPEC §5's literal "6 cols" (which was sized to
-// align with "HH:MM "); the new server-formatted "YYYY-MM-DD HH:MM "
-// prefix is 17 cells, and indenting body that far eats too much
-// wrap width. The hanging indent is small enough that body still
-// reads as belonging to the message above.
-constexpr int16_t BODY_INDENT_PX = 16;
+// Body indent for continuation lines. Two size-1 cells of the 24-px
+// font are ~12 px each → 24 px. Deviates from UI_SPEC §5's literal
+// "6 cols" (which was sized to align with "HH:MM "); the new server-
+// formatted "YYYY-MM-DD HH:MM " prefix is 17 cells, and indenting
+// body that far eats too much wrap width. The hanging indent is small
+// enough that body still reads as belonging to the message above.
+constexpr int16_t BODY_INDENT_PX = 24;
 
 // Hard caps on visible content. MAX_MESSAGES_SHOWN matches the server's
 // _PER_CHANNEL_LIMIT so the renderer can display everything the payload
@@ -604,7 +607,12 @@ void draw_body_messages(Adafruit_GFX& gfx,
     return;
   }
 
-  gfx.setFont(&LessPerfectDOSVGA);
+  // Chat body uses the 24-px LessPerfectDOSVGA24 font (size 1). This
+  // is the smoother native rasterization at 24 px; integer-doubling the
+  // 16-px font would be 32 px and pixel-chunky. Wrap measurements and
+  // every subsequent set_cursor_top_left in this loop assume this font
+  // is the active one.
+  gfx.setFont(&LessPerfectDOSVGA24);
   gfx.setTextSize(1);
   gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
 
@@ -682,30 +690,29 @@ void draw_body_messages(Adafruit_GFX& gfx,
     // bullet stay normal black-on-white, so the sender pops without
     // weighing down the whole line.
     //
-    // The bg extends LINE_H + 4 px tall: the LessPerfectDOSVGA glyph
-    // cell has descenders sitting ~3 px below the nominal LINE_H
-    // boundary, so a strict LINE_H-tall fill leaves the bottom of
-    // letters like 'q', 'g', 'p', 'y' poking out into the white. The
-    // extra padding only overlaps the empty top of the wrapped body
-    // line below (above its ascender), so it reads as deliberate
-    // padding on the tag rather than running into body text.
+    // Vertical sizing: LessPerfectDOSVGA24's glyph cell extends ~6 px
+    // below the nominal LINE_H boundary for descenders (q, g, p, y, j)
+    // — scaled from the 16-px font's ~4 px descender. The bg starts
+    // 1 px below `y` so the top of the previous line isn't clipped.
     {
       int16_t sx1, sy1;
       uint16_t sw, sh;
       gfx.getTextBounds(b.m->sender.c_str(), 0, 0, &sx1, &sy1, &sw, &sh);
-      constexpr int16_t SENDER_PAD_X = 3;
-      constexpr int16_t SENDER_BG_EXTRA = 4;
+      constexpr int16_t SENDER_PAD_X = 4;
+      constexpr int16_t SENDER_BG_TOP_OFFSET = 1;
+      constexpr int16_t SENDER_BG_EXTRA = 6;
       const int16_t bg_w = static_cast<int16_t>(sw) + 2 * SENDER_PAD_X;
-      gfx.fillRect(pane_left, y, bg_w, LINE_H + SENDER_BG_EXTRA, COLOR_BLACK);
+      gfx.fillRect(pane_left, y + SENDER_BG_TOP_OFFSET, bg_w,
+                   LINE_H + SENDER_BG_EXTRA, COLOR_BLACK);
       gfx.setTextColor(COLOR_WHITE, COLOR_BLACK);
       set_cursor_top_left(gfx, pane_left + SENDER_PAD_X, y,
-                          kCustomFontBaseHeight);
+                          kCustomFont24BaseHeight);
       gfx.print(b.m->sender.c_str());
       // Restore normal colors and step past the black tag for the
       // bullets + date/time that follow.
       gfx.setTextColor(COLOR_BLACK, COLOR_WHITE);
       set_cursor_top_left(gfx, pane_left + bg_w, y,
-                          kCustomFontBaseHeight);
+                          kCustomFont24BaseHeight);
     }
 
     // Inline bullet between segments. Layout: " <bullet> " — a full
@@ -717,13 +724,13 @@ void draw_body_messages(Adafruit_GFX& gfx,
     auto draw_inline_bullet = [&]() {
       gfx.print(' ');
       const int16_t bx = gfx.getCursorX();
-      constexpr int16_t BULLET_W = 2;
-      // y + 13: LessPerfectDOSVGA size-1 puts the glyph baseline near
-      // y + 13 (in a 16-tall cell). The bullet sits just above the
-      // baseline so it reads as a midline punctuation dot rather than
-      // hovering above the x-height.
-      gfx.fillRect(bx, y + 11, BULLET_W, BULLET_W, COLOR_BLACK);
-      set_cursor_top_left(gfx, bx + BULLET_W, y, kCustomFontBaseHeight);
+      constexpr int16_t BULLET_W = 3;
+      // LessPerfectDOSVGA24 size-1 puts the glyph baseline near y + 20
+      // in a 24-tall cell; the bullet sits just above the baseline at
+      // y + 17 so it reads as a midline punctuation dot. Bullet bumped
+      // to 3x3 to keep visual weight proportional to the bigger text.
+      gfx.fillRect(bx, y + 17, BULLET_W, BULLET_W, COLOR_BLACK);
+      set_cursor_top_left(gfx, bx + BULLET_W, y, kCustomFont24BaseHeight);
       gfx.print(' ');
     };
 
@@ -740,7 +747,7 @@ void draw_body_messages(Adafruit_GFX& gfx,
     // sender column.
     for (const auto& body_line : b.body_lines) {
       set_cursor_top_left(gfx, pane_left + BODY_INDENT_PX, y,
-                          kCustomFontBaseHeight);
+                          kCustomFont24BaseHeight);
       gfx.print(body_line.c_str());
       y += LINE_H;
     }
