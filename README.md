@@ -185,6 +185,16 @@ integration model, channel semantics, and regional adoption in the Pacific
 Northwest. The architecture is intentionally simple and may support additional
 radio backends later.
 
+## Preparedness, not product
+
+CivicMesh is preparedness infrastructure. Like any earthquake kit, it
+may spend most of its life unused, overbuilt in some ways, missing
+things in others, waiting for a scenario no drill can fully
+reproduce. The goal is not to prove in advance that every assumption
+is right. The goal is to make the system simple enough, legible
+enough, and testable enough that when the moment comes, it has a
+chance of being useful.
+
 ## Project status
 
 CivicMesh is a working prototype, not a finished product. A few
