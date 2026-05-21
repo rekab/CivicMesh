@@ -10,8 +10,9 @@ CivicMesh is:
 - bridged to MeshCore over USB serial
 - exposing selected public mesh channels over WiFi
 - for walk-up users with ordinary phones
-- optionally driving an Inkplate 6 e-paper bulletin display
-- optimized for Seattle Emergency Hubs and disaster drills
+- optionally serves offline preparedness PDFs
+- optionally drives an Inkplate 6 e-paper bulletin display
+- optimized for Seattle Emergency Hubs
 
 <p align="center">
   <img src="docs/img/screenshot-channels.jpg" alt="Channel list on phone" width="260">
@@ -50,9 +51,8 @@ carries current information ("the gas main on 4th smells funny");
 reference docs carry stable information — how to shut off utilities
 after a quake, how to disinfect water, how to use a water heater as
 a 40-gallon reservoir, how to set up an emergency toilet. Documents
-are readable in the portal and downloadable to the phone before the
-user leaves WiFi range, so the references survive once the AP is
-out of reach.
+are downloadable to the phone before the user leaves WiFi range, so the
+references survive once the AP is out of reach.
 
 The mechanism is content-agnostic. The first content set is the Hub
 Reference Library, mirroring the Seattle Emergency Hubs printed
@@ -144,10 +144,10 @@ MeshCore channels
 
 Two processes share state through a single SQLite database (WAL mode):
 
-- `web_server.py` — synchronous HTTP server. Serves the captive
+- [`web_server.py`](web_server.py) — synchronous HTTP server. Serves the captive
   portal SPA, handles posts and votes, manages sessions, enforces
   rate limits.
-- `mesh_bot.py` — async process. Talks to the Heltec over USB
+- [`mesh_bot.py`](mesh_bot.py) — async process. Talks to the Heltec over USB
   serial via the `meshcore` library, joins channels, records
   inbound messages, drains the outbox onto the air.
 
@@ -385,7 +385,7 @@ afterwards — see the
 
 ## Recovery
 
-`mesh_bot` includes a silent-hang detector that watches for radio
+[`mesh_bot`](mesh_bot.py) includes a silent-hang detector that watches for radio
 unresponsiveness via a periodic `get_stats_core` ping (3 consecutive
 timeouts ≈ 90s) and sustained outbox send failures (3 consecutive
 `send_chan_msg` errors — echo-confirmed sends and successful sends
@@ -464,7 +464,7 @@ the Python package.
 
 - `diagnostics/radio/` — Mac-side test harness that drives both
   CivicMesh nodes' radios over SSH via the `meshcore_py` library,
-  bypassing `mesh_bot`. Used to isolate library/radio bugs from
+  bypassing [`mesh_bot`](mesh_bot.py). Used to isolate library/radio bugs from
   app-layer behavior. See `diagnostics/radio/README.md` and
   `diagnostics/radio/FINDINGS.md`.
 - `diagnostics/mesh-sim/` — UI-iteration tool that bypasses the
@@ -473,7 +473,7 @@ the Python package.
   `/api/_test/state` for overriding server-health fields (radio
   status, recovery state, server clock skew) so the captive portal
   and external-display indicators can be exercised without
-  `mesh_bot`. Gated by `[diagnostics] enabled = true` in
+  [`mesh_bot`](mesh_bot.py). Gated by `[diagnostics] enabled = true` in
   `config.toml`; refuses to run otherwise. See
   `diagnostics/mesh-sim/README.md`.
 - `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` —
