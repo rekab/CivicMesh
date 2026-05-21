@@ -118,7 +118,8 @@ static String status_url;
 
 // Last successful server response, retained so the rotation timer can
 // re-render a different channel between polls without re-fetching, and
-// so handle_wake_press can render with select_freshest_channel.
+// so handle_wake_press can re-render the chosen next channel without
+// burning a fetch on every press.
 static JsonDocument g_last_server_doc;
 static bool g_has_last_server_doc = false;
 
@@ -452,12 +453,12 @@ static PollOutcome poll(bool is_wake_driven = false) {
   uint32_t new_hwm = civicmesh::bulletin::max_ts_across_all_channels(server_doc);
   if (new_hwm > high_water_mark_ts) high_water_mark_ts = new_hwm;
 
-  // Cache before render so rotation between polls / wake-press freshest-
-  // channel scan have fresh data.
+  // Cache before render so rotation between polls and wake-press
+  // re-renders have fresh data.
   g_last_server_doc = server_doc;
   g_has_last_server_doc = true;
 
-  if (jump_to >= 0) {
+  if (jump_to >= 0 && !is_wake_driven) {
     active_channel_index = (uint16_t)jump_to;
     uint32_t prev = next_poll_delay_ms;
     next_poll_delay_ms = POLL_CADENCE_INIT_MS;
@@ -466,9 +467,13 @@ static PollOutcome poll(bool is_wake_driven = false) {
                   (unsigned)active_channel_index,
                   (unsigned)high_water_mark_ts,
                   (unsigned)prev, (unsigned)next_poll_delay_ms);
-    if (!is_wake_driven) {
-      render_combined_ok(g_last_server_doc, "activity");
-    }
+    render_combined_ok(g_last_server_doc, "activity");
+  } else if (jump_to >= 0 && is_wake_driven) {
+    // WAKE-press is a manual channel selector — handle_wake_press will
+    // advance the channel itself. Don't let the passive activity-jump
+    // mutate active_channel_index out from under the user.
+    Serial.printf("[bulletin] wake-driven: activity in channel=%u detected, deferring to wake handler\n",
+                  (unsigned)jump_to);
   } else {
     // Quiet poll: gate fib_advance on !is_wake_driven so handle_wake_press's
     // own reset to POLL_CADENCE_INIT_MS isn't overwritten by fib_advance(10s)=20s.
@@ -496,10 +501,16 @@ static void handle_wake_press() {
     return;  // poll already rendered failure_shell or slept; nothing more here.
   }
   // poll succeeded; g_last_server_doc is populated but unrendered.
+  // WAKE is a manual channel selector — each press advances to the
+  // next channel with wrap-around. poll(is_wake_driven=true) deliberately
+  // does not touch active_channel_index, so the increment below is the
+  // sole source of channel change on a press.
   if (g_has_last_server_doc && channel_count > 0) {
-    int16_t jump_to = civicmesh::bulletin::select_freshest_channel(
-        g_last_server_doc);
-    if (jump_to >= 0) active_channel_index = (uint16_t)jump_to;
+    uint16_t prev = active_channel_index;
+    active_channel_index = (uint16_t)((prev + 1) % channel_count);
+    Serial.printf("[bulletin] wake -> next channel %u -> %u (of %u)\n",
+                  (unsigned)prev, (unsigned)active_channel_index,
+                  (unsigned)channel_count);
   }
   next_rotation_at_ms = millis() + ROTATION_INTERVAL_MS;
   // Unconditional: bypass sig check. The press is a UX signal; user

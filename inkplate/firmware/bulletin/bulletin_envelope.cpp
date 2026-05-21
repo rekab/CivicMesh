@@ -80,32 +80,6 @@ int16_t select_activity_channel(const JsonDocument& server_doc,
   return best_idx;
 }
 
-int16_t select_freshest_channel(const JsonDocument& server_doc) {
-  JsonArrayConst channels = server_doc["channels"].as<JsonArrayConst>();
-  if (channels.isNull()) return -1;
-  int16_t best_idx = -1;
-  uint32_t best_ts = 0;
-  uint16_t i = 0;
-  for (JsonVariantConst ch : channels) {
-    JsonArrayConst msgs = ch["messages"].as<JsonArrayConst>();
-    if (!msgs.isNull()) {
-      uint32_t newest = 0;
-      for (JsonVariantConst m : msgs) {
-        uint32_t ts = m["ts"].as<uint32_t>();
-        if (ts > newest) newest = ts;
-      }
-      // No hwm gate: any non-empty channel qualifies. Strictly > so
-      // lower index wins ties (and the all-empty case returns -1).
-      if (newest > 0 && newest > best_ts) {
-        best_ts = newest;
-        best_idx = static_cast<int16_t>(i);
-      }
-    }
-    ++i;
-  }
-  return best_idx;
-}
-
 namespace {
 
 void fill_envelope(JsonObject env,

@@ -54,12 +54,6 @@ uint32_t max_ts_across_all_channels(const JsonDocument& server_doc);
 int16_t select_activity_channel(const JsonDocument& server_doc,
                                 uint32_t hwm);
 
-// WAKE-press freshest-channel scan: like select_activity_channel but
-// without the > hwm gate. Returns the channel whose newest message
-// has the largest ts; -1 only if every channel is empty. Tiebreaker
-// is lower channel index (strictly > comparison, same as activity).
-int16_t select_freshest_channel(const JsonDocument& server_doc);
-
 // Serialize the success-path combined doc. Attaches `server_doc` as
 // the payload by shallow reference; do not free server_doc until the
 // returned String is no longer needed.
