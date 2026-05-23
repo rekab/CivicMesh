@@ -930,14 +930,39 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/external-display/state":
             if not self.server.cfg.external_display.enabled:
+                # The Inkplate renders any non-2xx as a generic "http error"
+                # (bulletin_net.cpp:66-68), so a hub that enabled the display
+                # in config.toml but never restarted civicmesh-web — leaving
+                # the running server on the old, disabled config — looks
+                # identical to a wiring fault. Warn so `journalctl -u
+                # civicmesh-web` names the cause instead of staying silent.
+                log.warning(
+                    "external_display:disabled ip=%s — endpoint polled but "
+                    "external_display.enabled is false in the running config; "
+                    "restart civicmesh-web if you just enabled it",
+                    self._client_ip(),
+                )
                 _json(self, 404, {"error": "not found"})
                 return
             from external_display import build_state
-            _json(self, 200, build_state(
-                self.server.cfg,
-                self.server.db_cfg,
-                now=_now_ts_with_skew(self.server),
-            ))
+            try:
+                payload = build_state(
+                    self.server.cfg,
+                    self.server.db_cfg,
+                    now=_now_ts_with_skew(self.server),
+                )
+            except Exception:
+                # Without this the handler still 500s, but the cause lands in
+                # the default BaseHTTPRequestHandler trace with no request
+                # context; the Inkplate just shows "http error" either way.
+                log.exception("external_display:error ip=%s", self._client_ip())
+                _json(self, 500, {"error": "internal error"})
+                return
+            log.info(
+                "external_display:served ip=%s channels=%d",
+                self._client_ip(), len(payload["channels"]),
+            )
+            _json(self, 200, payload)
             return
 
         if path == "/api/_test/state":
