@@ -125,8 +125,10 @@ bootstrap on a configured Pi is safe.
 sudo -u civicmesh civicmesh configure
 ```
 
-Walks through prompts for hub name, location, channels, AP SSID,
-etc. Writes `/usr/local/civicmesh/etc/config.toml`.
+Walks through prompts for hub name, channels, AP SSID, radio serial
+port, etc. — including whether this hub has an Inkplate display
+attached (answer yes only if one is physically wired in). Writes
+`/usr/local/civicmesh/etc/config.toml`.
 
 ## 6. Install the hub reference library (optional)
 

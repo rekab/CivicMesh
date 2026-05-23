@@ -649,6 +649,7 @@ inside the mode's allowed tree.
 | `ap.channel` | `6` | Must be `1`, `6`, or `11`. |
 | `network.iface` | `wlan0` (or sole `wlan*` if exactly one) | Validated against `ip link`. |
 | `network.country_code` | `US` | Two-letter ISO 3166. |
+| `external_display.enabled` | `false` | Asked as: "Does this hub have an Inkplate display attached?" Only hubs with a physical Inkplate 6 should enable it; otherwise `/api/external-display/state` stays disabled (404). |
 | `debug.allow_eth0` | `false` | Asked as: "Is this a development machine reachable over wired ethernet?" |
 
 **Tier 2 fields (not prompted; edit `config.toml` by hand):**

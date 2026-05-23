@@ -83,6 +83,7 @@ _ENTER_THROUGH_WALK = [
     "",   # ap.channel
     "",   # network.iface (no detection -> just prompt)
     "",   # network.country_code
+    "",   # external_display.enabled (default False -> Enter accepts)
     "",   # debug.allow_eth0 (default False -> Enter accepts)
     "y",  # confirm write
 ]
@@ -115,6 +116,40 @@ class ConfigureRoundTripTest(unittest.TestCase):
             # Tier 1 round-tripped too (defaults accepted).
             self.assertEqual(cfg.node.site_name, "CivicMesh")
             self.assertEqual(cfg.ap.channel, 6)
+            # Default Enter at the Inkplate prompt leaves the display off.
+            self.assertFalse(cfg.external_display.enabled)
+
+    def test_inkplate_prompt_enables_external_display(self) -> None:
+        """Answering "y" at the Inkplate prompt sets external_display.enabled,
+        promoting what used to be a hand-edit-only Tier 2 field into the walk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(_good_config_text(
+                log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
+            ))
+            walk = [
+                "",   # node.site_name
+                "",   # node.callsign
+                "d",  # channels: done
+                "",   # radio.serial_port
+                "",   # ap.ssid
+                "",   # ap.channel
+                "",   # network.iface
+                "",   # network.country_code
+                "y",  # external_display.enabled -> attached
+                "",   # debug.allow_eth0
+                "y",  # confirm write
+            ]
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=walk):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+            cfg = load_config(str(cfg_path))
+            self.assertTrue(cfg.external_display.enabled)
 
     def test_legacy_node_shape_migrates_through_walk(self) -> None:
         """A pre-CIV-11 config with [node] name + location migrates to the
@@ -176,6 +211,7 @@ log_level = "WARNING"
                 "",          # ap.channel
                 "",          # network.iface
                 "",          # network.country_code
+                "",          # external_display.enabled
                 "",          # debug.allow_eth0
                 "y",         # confirm write
             ]

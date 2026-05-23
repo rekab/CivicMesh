@@ -125,8 +125,8 @@ allow_eth0 = false
 # Optional Inkplate 6 e-paper bulletin display for walk-up users.
 # Most hubs won't have one. When false (the default), the
 # /api/external-display/state endpoint returns 404 and the feature
-# imposes no runtime cost. Tier 2 — hand-edit only on hubs that
-# physically have the display. [runtime] (consumed by web_server
+# imposes no runtime cost. Tier 1 — civicmesh configure asks whether
+# this hub has the display attached. [runtime] (consumed by web_server
 # only). See docs/external-display-api.md.
 [external_display]
 enabled = false

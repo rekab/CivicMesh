@@ -226,6 +226,7 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
     network = baseline.get("network", {})
     channels = baseline.get("channels", {})
     debug = baseline.get("debug", {})
+    external_display = baseline.get("external_display", {})
 
     print("Configuring CivicMesh node. Press Enter to accept defaults shown in brackets.\n")
 
@@ -266,6 +267,15 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         str(network.get("country_code") or "US"),
         _validate_country,
     )
+    print("\nexternal_display.enabled — optional Inkplate 6 e-paper bulletin "
+          "display for walk-up users. Most hubs don't have one. Enable only "
+          "if this hub physically has the Inkplate wired in; otherwise the "
+          "/api/external-display/state endpoint stays disabled and the "
+          "feature imposes no runtime cost.")
+    external_display_enabled = _prompt_bool(
+        "Does this hub have an Inkplate display attached?",
+        bool(external_display.get("enabled", False)),
+    )
     print("\ndebug.allow_eth0 — DEV ONLY. When true, traffic on eth0 "
           "bypasses MAC validation and auto-creates portal sessions. "
           "Leave false for any deployed node.")
@@ -283,6 +293,7 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "ap.channel": channel,
         "network.iface": iface,
         "network.country_code": country,
+        "external_display.enabled": external_display_enabled,
         "debug.allow_eth0": allow_eth0,
     }
 
@@ -361,6 +372,7 @@ def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     baseline.setdefault("network", {})["iface"] = tier1["network.iface"]
     baseline["network"]["country_code"] = tier1["network.country_code"]
     baseline.setdefault("debug", {})["allow_eth0"] = tier1["debug.allow_eth0"]
+    baseline.setdefault("external_display", {})["enabled"] = tier1["external_display.enabled"]
 
     # Bake an absolute db_path. config.py refuses any other shape.
     baseline["db_path"] = str(_default_db_path().resolve())
