@@ -39,6 +39,14 @@ civicmesh-mesh = "mesh_bot:main"
 civicmesh = "civicmesh:main"
 
 [tool.setuptools]
-py-modules = ["civicmesh", "config", "configure", "database", "hub_docs", "logger", "mesh_bot", "outbox_echoes", "promote", "recovery", "telemetry", "web_server"]
+# Every top-level module the installed app imports must be listed here.
+# setuptools ships ONLY these in the built wheel — `git archive` (promote)
+# also drops the raw .py in the app dir, but civicmesh-web runs from the
+# uv-installed package, so an unlisted module ImportErrors at runtime, not
+# build time. external_display was missing and only failed when the
+# external-display endpoint was first hit on prod. Lazily-imported modules
+# (e.g. external_display, imported inside the handler) are the easy ones to
+# forget — keep this list == root-level *.py the app imports.
+py-modules = ["civicmesh", "config", "configure", "database", "external_display", "hub_docs", "logger", "mesh_bot", "outbox_echoes", "promote", "recovery", "telemetry", "web_server"]
 packages = ["apply"]
 
