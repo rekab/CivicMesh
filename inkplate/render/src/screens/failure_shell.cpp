@@ -159,6 +159,18 @@ void draw_cached_payload_region(Adafruit_GFX& gfx,
 void draw_failure_shell(Adafruit_GFX& gfx, const Envelope& env) {
   gfx.fillScreen(COLOR_WHITE);
   FailureCopy copy = copy_for(env.failure_reason);
+  // Surface the actual status code on the HTTP-error screen so a 404
+  // (display enabled in config.toml but civicmesh-web never restarted, so
+  // the endpoint is still gated off) reads differently from a 5xx. Older
+  // firmware that omits http_code sends 0 and keeps the generic detail.
+  // Buffer lives for the rest of this call, which is all draw_upper_body
+  // needs — it copies nothing.
+  char http_detail[48];
+  if (env.failure_reason == "http_error" && env.http_code > 0) {
+    snprintf(http_detail, sizeof(http_detail),
+             "The hub responded with HTTP %d.", env.http_code);
+    copy.detail = http_detail;
+  }
   draw_header(gfx, copy);
   draw_upper_body(gfx, copy);
   if (env.has_cached_payload) {

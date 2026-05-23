@@ -17,6 +17,7 @@ struct Envelope {
   uint32_t seconds_since_last_update = 0;
   int16_t active_channel_index = 0;
   std::string failure_reason;  // empty if absent or null
+  int http_code = 0;           // non-2xx status for failure_reason=="http_error"; 0 if absent
   std::string firmware_version;
   int expected_api_version = 0;
   bool has_cached_payload = false;

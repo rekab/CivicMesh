@@ -244,10 +244,11 @@ static void render_if_sig_changed(const JsonDocument& server_doc,
   render_combined_ok(server_doc, reason);
 }
 
-static void render_failure(const char* reason, float battery_volts) {
+static void render_failure(const char* reason, float battery_volts,
+                           int http_code = 0) {
   String s = civicmesh::bulletin::build_combined_failure_json(
       reason, active_channel_index, battery_volts,
-      EXPECTED_API_VERSION, CIVICMESH_FW_VERSION);
+      EXPECTED_API_VERSION, CIVICMESH_FW_VERSION, http_code);
   char tag[48];
   snprintf(tag, sizeof(tag), "failure(%s)", reason);
   push_to_panel(s, tag);
@@ -328,7 +329,7 @@ static bool fetch_telemetry(const char* label,
 
 // Centralized failure handler used by every transient-failure case in
 // poll(). May not return (battery-critical or streak-max paths sleep).
-static void on_failure(const char* reason) {
+static void on_failure(const char* reason, int http_code = 0) {
   next_poll_delay_ms = POLL_CADENCE_INIT_MS;   // fast retry
   float v = sample_battery_with_wifi_off();
   Serial.printf("[bulletin] failure battery_v=%.2f reason=%s\n", v, reason);
@@ -337,7 +338,7 @@ static void on_failure(const char* reason) {
     enter_deep_sleep_until_wake();             // no return
   }
   failure_streak++;
-  render_failure(reason, v);
+  render_failure(reason, v, http_code);
   Serial.printf("[bulletin] streak=%u/%u\n",
                 (unsigned)failure_streak, (unsigned)FAILURE_STREAK_MAX);
   if (failure_streak >= FAILURE_STREAK_MAX) {
@@ -377,7 +378,7 @@ static PollOutcome poll(bool is_wake_driven = false) {
       on_failure("pi_unreachable"); return PollOutcome::kFail;
     case FetchError::kHttpError:
       Serial.printf("[bulletin] fetch http_error code=%d\n", http_code);
-      on_failure("http_error"); return PollOutcome::kFail;
+      on_failure("http_error", http_code); return PollOutcome::kFail;
     case FetchError::kBadJson:
       Serial.println("[bulletin] fetch bad_json");
       on_failure("bad_json"); return PollOutcome::kFail;

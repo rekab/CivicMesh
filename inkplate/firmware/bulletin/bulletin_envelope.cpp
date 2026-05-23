@@ -142,7 +142,8 @@ String build_combined_failure_json(const char* reason,
                                    uint16_t active_channel_index,
                                    float battery_volts,
                                    int expected_api_version,
-                                   const char* firmware_version) {
+                                   const char* firmware_version,
+                                   int http_code) {
   JsonDocument out;
   JsonObject env = out["envelope"].to<JsonObject>();
   // For failure_shell, radio/portal go to "unknown" — matches
@@ -152,6 +153,9 @@ String build_combined_failure_json(const char* reason,
                 active_channel_index, battery_volts,
                 /*seconds_since_last_update=*/0,
                 expected_api_version, firmware_version);
+  // Only the http_error screen renders this; 0 elsewhere is harmless
+  // (the renderer keeps the generic detail when http_code <= 0).
+  env["http_code"] = http_code;
   out["payload"] = nullptr;
 
   String s;

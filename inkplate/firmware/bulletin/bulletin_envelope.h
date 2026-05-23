@@ -79,12 +79,15 @@ String build_combined_ok_json(const JsonDocument& server_doc,
 // copy_for() lookup in screens/failure_shell.cpp:25-42 (canonical:
 // "ap_unreachable" | "dns_failure" | "pi_unreachable" |
 // "http_error" | "bad_json"; any other string renders as
-// "ERROR / <reason>").
+// "ERROR / <reason>"). `http_code` is the non-2xx status code; it is
+// only meaningful for reason=="http_error", where the renderer shows it
+// on screen. Pass 0 (the default) for every other reason.
 String build_combined_failure_json(const char* reason,
                                    uint16_t active_channel_index,
                                    float battery_volts,
                                    int expected_api_version,
-                                   const char* firmware_version);
+                                   const char* firmware_version,
+                                   int http_code = 0);
 
 // Serialize a combined doc that routes to the critical_battery screen.
 // Envelope sets status="ok" so the renderer's dispatch order (see

@@ -20,6 +20,7 @@ bool parse_envelope(JsonObjectConst obj, Envelope& out, std::string& err) {
   out.seconds_since_last_update = obj["seconds_since_last_update"].as<uint32_t>();
   out.active_channel_index = obj["active_channel_index"].as<int16_t>();
   out.failure_reason = str_or_empty(obj["failure_reason"]);
+  out.http_code = obj["http_code"].as<int>();  // 0 when absent/null
   out.firmware_version = str_or_empty(obj["firmware_version"]);
   out.expected_api_version = obj["expected_api_version"].as<int>();
 
