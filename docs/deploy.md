@@ -3,7 +3,7 @@
 This document walks through deploying CivicMesh from a fresh Raspberry
 Pi and an unflashed Heltec V3. The flow is: flash radio → flash SD →
 SSH in → bootstrap → configure → (optional) install docs → apply →
-verify.
+verify → (optional) flash the Inkplate display.
 
 The cutover from your home network to the new CivicMesh AP happens
 when you `sudo reboot` at the end of step 7 — `apply` itself stages
@@ -181,6 +181,30 @@ able to send messages to public mesh channels.
 
 If not, check `systemctl status civicmesh-mesh` and
 `journalctl -u civicmesh-mesh`.
+
+## 9. Flash the Inkplate display (optional)
+
+Only if this hub has an Inkplate 6 e-paper bulletin and you answered
+"yes" at the `external_display` prompt in step 5. The display is a
+separate ESP32 board that joins the hub's AP and polls
+`/api/external-display/state` — so do this after the hub is up (step 8)
+and serving that endpoint. Full prerequisites (arduino-cli, the Soldered
+board core, the duplicate-`Adafruit GFX` gotcha) and the iteration loop
+are in [`inkplate/README.md`](../inkplate/README.md); the short version,
+once the toolchain is installed:
+
+```bash
+cd inkplate/firmware
+# SSID is the hub AP from step 5; ENDPOINT_URL points at this hub.
+make flash SSID=CivicMesh-Messages ENDPOINT_URL=http://10.0.0.1/api/external-display/state
+make monitor   # watch the [bulletin] serial log; "fetch http_error code=NNN" names a bad poll
+```
+
+If the panel shows "HTTP ERROR", the status code now appears beneath it
+(e.g. HTTP 404 = `external_display.enabled` is off in the *running*
+config — restart `civicmesh-web`). See
+[external-display-api.md](external-display-api.md) for the endpoint
+contract.
 
 ## Updates after first deploy
 
