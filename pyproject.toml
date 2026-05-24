@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "civicmesh"
-version = "0.1.0"
+version = "0.1.1"
 description = "Civic Mesh Hub Relay Bot: WiFi captive-portal relay for MeshCore channels"
 readme = "README.md"
 # Both deployment targets (Pi 4 dev, Pi Zero 2W prod) run Python 3.13.5.
