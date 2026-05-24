@@ -713,6 +713,10 @@ body {
   color: var(--danger);
   margin-top: 4px;
 }
+/* Softer, non-error tone for transient notes (e.g. auto-stripped characters). */
+.compose-field__error--note {
+  color: var(--warn-text);
+}
 .compose-modal__actions {
   display: flex;
   gap: 10px;

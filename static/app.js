@@ -587,6 +587,7 @@ function openCompose() {
     $("composeModal").classList.add("active");
   });
   $("postError").textContent = "";
+  setNameMessage("", false);
 }
 
 function closeCompose() {
@@ -855,12 +856,7 @@ async function postMessage() {
   var content = $("content").value.trim();
   var channel = state.activeChannel;
   $("postError").textContent = "";
-  if (!nameVal) {
-    $("postError").textContent = "Name is required to post.";
-    return;
-  }
-  validateNameLive();
-  if ($("postError").textContent) return;
+  if (!validateName()) return;
   if (!channel) {
     $("postError").textContent = "Pick a channel to post.";
     return;
@@ -999,26 +995,102 @@ function setRadioStatus(status) {
   });
 }
 
-function validateNameLive() {
+/* Name field handling. The allowed-character set is whatever limits.name_pattern
+   admits (config.toml -> name_pattern, default ^[A-Za-z0-9_-]+$). We can't invert
+   an arbitrary regex, so we test each character individually \u2014 this assumes
+   name_pattern is a character-class allowlist. Sanitize live as the user types;
+   validate (for empty/length) only at submit. */
+
+var nameNoteTimer = null;
+var nameComposing = false;
+
+function charAllowed(c) {
+  return state.namePattern.test(c);
+}
+
+// Show a message below the name field. isError uses the danger style; otherwise
+// it's a softer note. Clears any pending note auto-dismiss timer.
+function setNameMessage(msg, isError) {
+  var el = $("nameError");
+  if (!el) return;
+  if (nameNoteTimer) { clearTimeout(nameNoteTimer); nameNoteTimer = null; }
+  el.textContent = msg || "";
+  el.classList.toggle("compose-field__error--note", !!msg && !isError);
+}
+
+// Transient note that auto-dismisses (e.g. "removed unsupported characters").
+function flashNameNote(msg) {
+  setNameMessage(msg, false);
+  nameNoteTimer = setTimeout(function() {
+    var el = $("nameError");
+    if (el && el.classList.contains("compose-field__error--note")) {
+      el.textContent = "";
+      el.classList.remove("compose-field__error--note");
+    }
+    nameNoteTimer = null;
+  }, 2500);
+}
+
+// Rewrite the name field to contain only allowed characters: spaces become "_"
+// (the field expects a separator-style handle, e.g. "Fremont-Jo"), and any other
+// disallowed character is dropped. Caret position is preserved, and a brief note
+// is shown when characters were removed (space->_ conversion is silent).
+function sanitizeNameInput(ev) {
+  if ((ev && ev.isComposing) || nameComposing) return;  // don't disrupt IME mid-composition
   var nameEl = $("name");
-  var errorEl = $("postError");
-  if (!nameEl || !errorEl) return;
+  if (!nameEl) return;
+  var raw = nameEl.value;
+  var spaceRepl = charAllowed("_") ? "_" : "";
+  var caret = nameEl.selectionStart;
+  var newCaret = caret;
+  var out = "";
+  var removed = false;
+  for (var i = 0; i < raw.length; i++) {
+    var c = raw[i];
+    if (c === " ") {
+      out += spaceRepl;
+      if (newCaret != null && spaceRepl === "" && i < caret) newCaret--;
+      continue;
+    }
+    if (charAllowed(c)) {
+      out += c;
+    } else {
+      removed = true;
+      if (newCaret != null && i < caret) newCaret--;
+    }
+  }
+  if (out !== raw) {
+    nameEl.value = out;
+    if (newCaret != null) {
+      newCaret = Math.max(0, Math.min(newCaret, out.length));
+      try { nameEl.setSelectionRange(newCaret, newCaret); } catch (e) {}
+    }
+  }
+  if (removed) flashNameNote("Removed unsupported characters \u2014 use letters, numbers, _ or -.");
+}
+
+// Submit-time gate: returns true if the (already-sanitized) name is postable,
+// otherwise shows the error below the name field and returns false.
+function validateName() {
+  var nameEl = $("name");
+  if (!nameEl) return false;
   var name = nameEl.value.trim();
   if (!name) {
-    if (errorEl.textContent.includes("Name")) errorEl.textContent = "";
-    return;
+    setNameMessage("Name is required to post.", true);
+    return false;
   }
   if (name.length > state.maxNameChars) {
-    errorEl.textContent = "Name is too long (" + name.length + "/" + state.maxNameChars + ").";
-    return;
+    setNameMessage("Name is too long (" + name.length + "/" + state.maxNameChars + ").", true);
+    return false;
   }
+  // Safety net \u2014 sanitizeNameInput keeps this from firing on typed/pasted input.
+  // Message must match limits.name_pattern in config.toml.
   if (!state.namePattern.test(name)) {
-    errorEl.textContent = "Pick any character but : and @. That\u2019s the ^[^:@]+$!";
-    return;
+    setNameMessage("Use only letters, numbers, _ or -.", true);
+    return false;
   }
-  if (errorEl.textContent.includes("Name")) {
-    errorEl.textContent = "";
-  }
+  setNameMessage("", false);
+  return true;
 }
 
 /* ---- Node Stats Overlay ---- */
@@ -1612,7 +1684,9 @@ async function init() {
   loadNameFromCookie();
   $("name").addEventListener("change", storeNameToCookie);
   $("name").addEventListener("blur", storeNameToCookie);
-  $("name").addEventListener("input", validateNameLive);
+  $("name").addEventListener("input", sanitizeNameInput);
+  $("name").addEventListener("compositionstart", function() { nameComposing = true; });
+  $("name").addEventListener("compositionend", function() { nameComposing = false; sanitizeNameInput(); });
 
   // View navigation
   $("welcomeStartBtn").addEventListener("click", showChannels);

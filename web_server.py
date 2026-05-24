@@ -1254,7 +1254,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             if not re.match(self.server.cfg.limits.name_pattern, name):
                 if sec:
                     sec.error("InvalidName", ip=ip, mac=mac, msg="name invalid characters", session_id=sid, name=name)
-                _json(self, 400, {"error": "Pick any character but : and @. That's the ^[^:@]+$!"})
+                # message must match limits.name_pattern (config.toml)
+                _json(self, 400, {"error": "Use only letters, numbers, _ or -."})
                 return
             if len(content) > self.server.cfg.limits.message_max_chars:
                 _json(self, 400, {"error": "message too long"})
