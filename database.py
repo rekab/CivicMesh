@@ -130,12 +130,21 @@ CREATE TABLE IF NOT EXISTS clock_state (
 --                     step happened (NTP, manual `date`, etc.) — we
 --                     only know what it is now.
 --
+-- applied_boot_id is the Linux boot ID at insert time. Boot scoping
+-- (first_correction_done check, stats prior-boot detection) compares
+-- equality against the current boot ID. applied_at_monotonic alone
+-- cannot answer "is this row from this boot?" — a prior-boot row with
+-- small monotonic value silently passes "monotonic <= now" tests once
+-- the current process has been up long enough. Mirrors the sessions
+-- table's boot-id-for-identity / monotonic-for-age split.
+--
 -- voter_count and median_offset_vote_sec are NULL for non-consensus
 -- triggers. source_summary holds JSON: voter cookies/MACs, individual
 -- offset votes, and trigger-specific flags like fake_hwclock_save_failed.
 CREATE TABLE IF NOT EXISTS clock_corrections (
     id INTEGER PRIMARY KEY,
     applied_at_monotonic    REAL,
+    applied_boot_id         TEXT,
     system_time_before      INTEGER,
     system_time_after       INTEGER,
     offset_before_sec       INTEGER,
@@ -425,6 +434,21 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add sessions.clock_vote_epoch")
             conn.execute("ALTER TABLE sessions ADD COLUMN clock_vote_epoch INTEGER")
+
+        # CIV-99 follow-up: applied_boot_id on clock_corrections.
+        # Without this, "is this row from this boot?" devolves into a
+        # monotonic comparison, which only proves "could be this boot,"
+        # not "is this boot" — see the schema comment.
+        corrections_cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(clock_corrections)").fetchall()
+        }
+        if "applied_boot_id" not in corrections_cols:
+            if log:
+                log.info("db:migrate add clock_corrections.applied_boot_id")
+            conn.execute(
+                "ALTER TABLE clock_corrections ADD COLUMN applied_boot_id TEXT"
+            )
 
         # Seed clock_state singletons. INSERT OR IGNORE so a re-run never
         # overwrites a live offset or vote_epoch.
@@ -2224,7 +2248,7 @@ def get_latest_clock_correction(cfg: DBConfig, *, log=None) -> Optional[dict[str
         conn.close()
 
 
-def has_consensus_correction_in_boot(cfg: DBConfig, *, mono_now: float, log=None) -> bool:
+def has_consensus_correction_in_boot(cfg: DBConfig, *, current_boot_id: str, log=None) -> bool:
     """True iff a 'consensus' clock_corrections row exists this boot epoch.
 
     Per the design (docs/clock_consensus.md), `first_correction_done` is
@@ -2232,17 +2256,23 @@ def has_consensus_correction_in_boot(cfg: DBConfig, *, mono_now: float, log=None
     NOT consume the first-correction privilege — after either, the next
     consensus may legitimately need a large jump.
 
-    Boot-epoch scope: filtered by applied_at_monotonic <= mono_now. A row
-    with applied_at_monotonic > mono_now was written by a prior boot
-    (monotonic resets at OS reboot but survives process restart), so it
-    doesn't count toward THIS boot's first-correction privilege.
+    Boot-epoch scope is by `applied_boot_id == current_boot_id`. Earlier
+    revisions used `applied_at_monotonic <= time.monotonic()` for this,
+    which is only sufficient — a prior-boot row with a small monotonic
+    value silently passes once the current process has been up long
+    enough. Identity comparison against the Linux boot ID has no such
+    gap, mirroring the sessions.clock_report_boot_id design.
+
+    NULL applied_boot_id (rows predating the column) does not match any
+    current boot id, so they don't consume the privilege either —
+    defensive and conservative.
     """
     conn = _connect(cfg)
     try:
         row = conn.execute(
             "SELECT 1 FROM clock_corrections "
-            "WHERE trigger='consensus' AND applied_at_monotonic <= ? LIMIT 1",
-            (float(mono_now),),
+            "WHERE trigger='consensus' AND applied_boot_id = ? LIMIT 1",
+            (current_boot_id,),
         ).fetchone()
         return row is not None
     finally:
@@ -2367,10 +2397,16 @@ def evaluate_and_maybe_apply_consensus(
             except (TypeError, ValueError):
                 current_vote_epoch = 0
 
+            # Boot scoping via applied_boot_id, NOT applied_at_monotonic.
+            # A prior-boot consensus row whose monotonic happened to be
+            # small (e.g. 60s into that boot) would silently pass a
+            # `monotonic <= mono_now` check once the current process has
+            # been up for >60s. Identity comparison against the current
+            # boot ID has no such gap.
             fcd_row = conn.execute(
                 "SELECT 1 FROM clock_corrections "
-                "WHERE trigger='consensus' AND applied_at_monotonic <= ? LIMIT 1",
-                (float(mono_now),),
+                "WHERE trigger='consensus' AND applied_boot_id = ? LIMIT 1",
+                (boot_id,),
             ).fetchone()
             first_correction_done = fcd_row is not None
 
@@ -2428,12 +2464,13 @@ def evaluate_and_maybe_apply_consensus(
             cur = conn.execute(
                 """
                 INSERT INTO clock_corrections
-                  (applied_at_monotonic, system_time_before, system_time_after,
+                  (applied_at_monotonic, applied_boot_id,
+                   system_time_before, system_time_after,
                    offset_before_sec, offset_after_sec,
                    trigger, voter_count, median_offset_vote_sec, source_summary)
-                VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
                 """,
-                (mono_now, raw_now, raw_now,
+                (mono_now, boot_id, raw_now, raw_now,
                  current_offset, int(decision.new_offset),
                  int(decision.voter_count),
                  int(decision.median_offset_vote_sec),
@@ -2476,6 +2513,7 @@ def write_consensus_correction(
     voter_count: int,
     median_offset_vote_sec: int,
     source_summary_json: str,
+    applied_boot_id: str,
     log=None,
 ) -> int:
     """Lower-level consensus writer used by tests and the migration path.
@@ -2487,6 +2525,11 @@ def write_consensus_correction(
     write. Splitting them (as this function alone does) reintroduces
     that race; this helper survives because the unit tests for the
     schema-level behavior need a direct entry point.
+
+    `applied_boot_id` is required: tests pass an explicit value (often
+    `clock.get_boot_id()` or a fabricated string like "test-boot-1"),
+    making boot-scoping behavior testable without depending on
+    /proc state.
 
     Runs under BEGIN IMMEDIATE. Caller MUST have already verified
     `nudge != 0` (no-op suppression policy) before calling — this
@@ -2513,12 +2556,13 @@ def write_consensus_correction(
             cur = conn.execute(
                 """
                 INSERT INTO clock_corrections
-                  (applied_at_monotonic, system_time_before, system_time_after,
+                  (applied_at_monotonic, applied_boot_id,
+                   system_time_before, system_time_after,
                    offset_before_sec, offset_after_sec,
                    trigger, voter_count, median_offset_vote_sec, source_summary)
-                VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
                 """,
-                (mono, raw_now, raw_now,
+                (mono, applied_boot_id, raw_now, raw_now,
                  offset_before, int(new_offset),
                  int(voter_count), int(median_offset_vote_sec), source_summary_json),
             )
@@ -2545,10 +2589,16 @@ def write_external_step_correction(
     cfg: DBConfig,
     *,
     source_summary_json: str,
+    applied_boot_id: str,
     log=None,
 ) -> int:
     """Apply an external-clock-step rebase: offset->0, vote_epoch bump,
     NULL session vote columns, append audit row.
+
+    `applied_boot_id` is required so the audit row can be boot-scoped
+    later (mainly for stats display; first_correction_done filters by
+    trigger='consensus' only, so external_step rows don't otherwise
+    use the column).
 
     Runs under BEGIN IMMEDIATE on the consensus task's connection.
     Returns the new clock_corrections.id.
@@ -2583,12 +2633,14 @@ def write_external_step_correction(
             cur = conn.execute(
                 """
                 INSERT INTO clock_corrections
-                  (applied_at_monotonic, system_time_before, system_time_after,
+                  (applied_at_monotonic, applied_boot_id,
+                   system_time_before, system_time_after,
                    offset_before_sec, offset_after_sec,
                    trigger, voter_count, median_offset_vote_sec, source_summary)
-                VALUES (?, ?, ?, ?, 0, 'external_step', NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, 0, 'external_step', NULL, NULL, ?)
                 """,
-                (mono, system_time_before, system_time_before,
+                (mono, applied_boot_id,
+                 system_time_before, system_time_before,
                  offset_before, source_summary_json),
             )
             new_id = int(cur.lastrowid)

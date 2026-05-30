@@ -363,32 +363,51 @@ def _cmd_unpin(args: argparse.Namespace) -> None:
 
 
 def _format_clock_last_correction(
-    trigger, applied_at_monotonic, mono_now: float,
+    trigger,
+    applied_boot_id,
+    applied_at_monotonic,
+    current_boot_id: str,
+    mono_now: float,
 ) -> str:
     """Format the last_correction age for `civicmesh stats`.
 
-    Uses `applied_at_monotonic` (set on every clock_corrections write)
-    rather than the system_time_* columns: those are in different
-    reference frames for different triggers ('consensus' /
-    'external_step' write raw int(time.time()) while 'admin' writes
-    pre/post the date -s jump), so a single age comparison across
-    triggers would silently mix frames.
+    Boot identity (this-boot vs prior-boot) is decided by Linux
+    `applied_boot_id == current_boot_id`. Earlier revisions of this
+    function used `applied_at_monotonic > mono_now` for the same
+    decision, but that test is only sufficient: a prior-boot row
+    whose monotonic happened to be small (e.g. correction applied
+    60s into that boot) silently passes once the current process
+    has been up for >60s. Identity comparison has no such gap.
 
-    Monotonic only advances within a single boot. A stored value
-    greater than `mono_now` must be from a prior boot; report that
-    instead of a bogus giant age. The predicate mirrors
-    `has_consensus_correction_in_boot`'s boot-scoping check.
+    The system_time_* columns are NOT used because they're in
+    different reference frames per trigger ('consensus' /
+    'external_step' write raw int(time.time()), 'admin' writes
+    pre/post the date -s jump). Cross-trigger age via those columns
+    would mix frames.
 
-    Returns "<trigger>@<N>s_ago" or "<trigger>@prior_boot".
+    `applied_at_monotonic` is still useful for the AGE computation
+    once we know the row is from this boot — monotonic only advances
+    within a boot, so `mono_now - applied_at_monotonic` is a true
+    elapsed-time delta.
+
+    Returns:
+      "none"                — no row
+      "<trigger>@prior_boot" — applied_boot_id != current_boot_id
+                               (includes NULL applied_boot_id rows)
+      "<trigger>@unknown"   — defensive: row from this boot but
+                               monotonic missing
+      "<trigger>@<N>s_ago"  — row from this boot, monotonic present
     """
     if trigger is None:
         return "none"
-    if applied_at_monotonic is None:
-        # Defensive: predates the column being populated. Don't
-        # invent an age.
-        return f"{trigger}@unknown"
-    if applied_at_monotonic > mono_now:
+    if applied_boot_id != current_boot_id:
         return f"{trigger}@prior_boot"
+    if applied_at_monotonic is None:
+        return f"{trigger}@unknown"
+    # Defensive: monotonic shouldn't run backwards within a boot, but
+    # clamp the comparison just in case.
+    if applied_at_monotonic > mono_now:
+        return f"{trigger}@unknown"
     return f"{trigger}@{int(mono_now - applied_at_monotonic)}s_ago"
 
 
@@ -419,7 +438,7 @@ def _cmd_stats(args: argparse.Namespace) -> None:
         ).fetchone()
         vote_epoch = int(ve_row["value"]) if ve_row else 0
         last_row = conn.execute(
-            "SELECT trigger, applied_at_monotonic "
+            "SELECT trigger, applied_boot_id, applied_at_monotonic "
             "FROM clock_corrections ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
@@ -428,9 +447,12 @@ def _cmd_stats(args: argparse.Namespace) -> None:
     if last_row is None:
         last_str = "none"
     else:
+        from clock import get_boot_id
         last_str = _format_clock_last_correction(
             last_row["trigger"],
+            last_row["applied_boot_id"],
             last_row["applied_at_monotonic"],
+            get_boot_id(),
             _time.monotonic(),
         )
     print(
@@ -1077,15 +1099,23 @@ def _cmd_set_clock(args: argparse.Namespace) -> None:
                 "fake_hwclock_save_failed": fake_hwclock_save_failed,
                 "fake_hwclock_stderr": fake_hwclock_stderr,
             }, sort_keys=True, separators=(",", ":"))
+            # Stamp the current Linux boot ID on the audit row so it can
+            # be boot-scoped later (mainly for `civicmesh stats`'
+            # prior-boot detection; first_correction_done only consults
+            # 'consensus' rows). The admin command runs on Linux because
+            # set-clock requires `date -s` + `fake-hwclock save`.
+            from clock import get_boot_id
             conn.execute(
                 """
                 INSERT INTO clock_corrections
-                  (applied_at_monotonic, system_time_before, system_time_after,
+                  (applied_at_monotonic, applied_boot_id,
+                   system_time_before, system_time_after,
                    offset_before_sec, offset_after_sec,
                    trigger, voter_count, median_offset_vote_sec, source_summary)
-                VALUES (?, ?, ?, ?, 0, 'admin', NULL, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, 0, 'admin', NULL, NULL, ?)
                 """,
-                (mono, original_system_time, target,
+                (mono, get_boot_id(),
+                 original_system_time, target,
                  current_offset, source_summary),
             )
             conn.execute("COMMIT")

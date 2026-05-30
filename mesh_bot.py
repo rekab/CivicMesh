@@ -209,6 +209,7 @@ async def _clock_task(cfg, db_cfg: DBConfig, log):
                             "mono_now": mono_t,
                             "mono_at_last_tick": mono_at_last_tick,
                         }),
+                        applied_boot_id=boot_id,
                         log=log,
                     )
                     last_seen_id = new_id

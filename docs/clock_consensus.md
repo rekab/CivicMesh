@@ -207,10 +207,21 @@ human-paced traffic.
 **`first_correction_done` is derived from `'consensus'` rows only.**
 `'admin'` and `'external_step'` rows do NOT consume the first-correction
 privilege. After either, we have just lost confidence in the offset,
-and the next consensus may legitimately need a large jump. Scoped to
-the current boot epoch via
-`applied_at_monotonic <= time.monotonic()` (CLOCK_MONOTONIC resets at
-OS boot but survives process restart).
+and the next consensus may legitimately need a large jump.
+
+Boot-scoping uses `clock_corrections.applied_boot_id` equality against
+the current Linux boot ID (read once at process start from
+`/proc/sys/kernel/random/boot_id`), mirroring the
+`sessions.clock_report_boot_id` design used for client clock reports.
+`applied_at_monotonic` is also stored, but it's used only for age
+display in `civicmesh stats` — NOT for identity. The
+monotonic-only predicate (`applied_at_monotonic <= time.monotonic()`)
+is only sufficient: a prior-boot row whose CLOCK_MONOTONIC happened to
+be small (e.g. correction applied 60s into that boot) silently passes
+the test once the current process has been up >60s, which would
+incorrectly consume the first-correction privilege and force the next
+legitimate large correction through the `max_nudge_sec` cap. Identity
+comparison has no such gap.
 
 **No-op suppression.** A consensus tick with `nudge == 0` writes
 neither an audit row nor a telemetry event. A steady phone population

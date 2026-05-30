@@ -153,10 +153,17 @@ and silent-breakage when you do:
   excludes prior-boot rows). The three rules are distinct; don't
   rationalize them into one.
 - **`first_correction_done` is derived from `'consensus'` rows
-  only**, scoped to the current boot epoch via `applied_at_monotonic`.
-  `'admin'` and `'external_step'` rows do NOT consume the
-  first-correction privilege — after either, the next consensus may
-  legitimately need a large jump.
+  only**, scoped to the current boot epoch via
+  `clock_corrections.applied_boot_id == current Linux boot ID`.
+  Mirrors the `sessions.clock_report_boot_id` design used for client
+  clock reports. `applied_at_monotonic` is stored too but is used only
+  for in-boot age display in `civicmesh stats`, NOT for identity —
+  monotonic-only comparison (`applied_at_monotonic <= time.monotonic()`)
+  is sufficient but not necessary: a prior-boot row whose
+  CLOCK_MONOTONIC happened to be small silently passes it once
+  uptime exceeds the stored value. `'admin'` and `'external_step'`
+  rows do NOT count toward first_correction_done — after either, the
+  next consensus may legitimately need a large jump.
 - **`fake-hwclock save` failure in `civicmesh set-clock` does NOT
   roll back the DB.** The system clock is correct after `date -s`;
   rolling back the DB would leave wall_now = jumped_clock + old_offset

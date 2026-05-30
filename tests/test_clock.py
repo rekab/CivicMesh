@@ -416,6 +416,7 @@ class TestEligibilityVoteEpoch(_TempDBTest):
         # re-seeds the report; the post-bump epoch is what excludes it.)
         write_external_step_correction(
             self.db_cfg, source_summary_json="{}",
+            applied_boot_id="boot-T",
         )
         # Re-seed using the SAME stale epoch via raw SQL to exercise
         # the epoch gate independently of the NULL sweep (belt-and-
@@ -524,6 +525,7 @@ class TestExternalStepWriter(_TempDBTest):
         )
         new_id = write_external_step_correction(
             self.db_cfg, source_summary_json='{"reason":"test"}',
+            applied_boot_id="boot-1",
         )
         self.assertGreater(new_id, 0)
         with _connect(self.db_cfg) as conn:
@@ -554,43 +556,103 @@ class TestExternalStepWriter(_TempDBTest):
 
 
 class TestFirstCorrectionDone(_TempDBTest):
-    def test_consensus_row_counts(self):
-        # Seed a consensus row in the current boot epoch.
+    """Boot-scoping for first_correction_done uses applied_boot_id, not
+    monotonic comparison.
+
+    The monotonic-only predicate (`applied_at_monotonic <= mono_now`)
+    only proves "could be current boot," not "is current boot."  A
+    prior-boot consensus row with a small monotonic value silently
+    passes once the current process has been up long enough, which
+    would incorrectly consume the first-correction privilege and force
+    a legitimate large correction through the post-first-correction
+    max_nudge_sec cap. Boot-id equality has no such gap.
+    """
+
+    def test_current_boot_consensus_row_counts(self):
         write_consensus_correction(
             self.db_cfg,
             new_offset=864_000,
             voter_count=3,
             median_offset_vote_sec=864_000,
             source_summary_json="{}",
+            applied_boot_id="boot-T",
         )
-        # mono_now well above the applied_at_monotonic of the seed.
-        # (Use a very large value so the row's mono is guaranteed <=.)
-        big = time.monotonic() + 100
-        self.assertTrue(has_consensus_correction_in_boot(self.db_cfg, mono_now=big))
+        self.assertTrue(
+            has_consensus_correction_in_boot(self.db_cfg, current_boot_id="boot-T")
+        )
 
     def test_external_step_row_does_not_count(self):
         write_external_step_correction(
             self.db_cfg, source_summary_json="{}",
+            applied_boot_id="boot-T",
         )
-        big = time.monotonic() + 100
-        self.assertFalse(has_consensus_correction_in_boot(self.db_cfg, mono_now=big))
+        self.assertFalse(
+            has_consensus_correction_in_boot(self.db_cfg, current_boot_id="boot-T")
+        )
 
-    def test_consensus_row_from_prior_boot_does_not_count(self):
-        # Seed a consensus row whose applied_at_monotonic is FAR in the
-        # future relative to "now" — simulating a prior boot whose
-        # CLOCK_MONOTONIC reached a high value before OS reboot reset it.
+    def test_prior_boot_consensus_row_does_not_count_even_with_small_monotonic(self):
+        """The regression target.
+
+        A prior-boot consensus row whose CLOCK_MONOTONIC happened to be
+        small (correction applied 60s into that boot) would pass any
+        `applied_at_monotonic <= mono_now` filter taken at e.g.
+        mono_now=1000 in the current boot. Identity comparison must
+        reject it.
+        """
         write_consensus_correction(
             self.db_cfg, new_offset=864_000, voter_count=3,
             median_offset_vote_sec=864_000, source_summary_json="{}",
+            applied_boot_id="old-boot",
+        )
+        # Force the persisted monotonic to be SMALL (i.e. the prior
+        # boot was only briefly up before this correction), the case
+        # the monotonic-only predicate misses.
+        with _connect(self.db_cfg) as conn:
+            conn.execute(
+                "UPDATE clock_corrections SET applied_at_monotonic = 60.0"
+            )
+        self.assertFalse(
+            has_consensus_correction_in_boot(
+                self.db_cfg, current_boot_id="new-boot",
+            ),
+            "prior-boot row with small monotonic must NOT consume "
+            "the first-correction privilege",
+        )
+
+    def test_current_boot_consensus_row_counts_even_with_small_monotonic(self):
+        """Pair to the above: same monotonic value, but boot id matches
+        ⇒ must count."""
+        write_consensus_correction(
+            self.db_cfg, new_offset=864_000, voter_count=3,
+            median_offset_vote_sec=864_000, source_summary_json="{}",
+            applied_boot_id="new-boot",
         )
         with _connect(self.db_cfg) as conn:
             conn.execute(
-                "UPDATE clock_corrections SET applied_at_monotonic = ?",
-                (time.monotonic() + 10_000,),  # "this boot was earlier"
+                "UPDATE clock_corrections SET applied_at_monotonic = 60.0"
             )
-        # Current mono is much smaller than the persisted one ⇒ different boot.
+        self.assertTrue(
+            has_consensus_correction_in_boot(
+                self.db_cfg, current_boot_id="new-boot",
+            )
+        )
+
+    def test_null_applied_boot_id_does_not_count(self):
+        """Rows predating the column (migrated databases) have NULL
+        applied_boot_id and must not match any current boot id."""
+        with _connect(self.db_cfg) as conn:
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, applied_boot_id, "
+                " system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, "
+                " trigger, voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (10.0, NULL, 1000, 1000, 0, 60, 'consensus', 3, 60, '{}')"
+            )
         self.assertFalse(
-            has_consensus_correction_in_boot(self.db_cfg, mono_now=time.monotonic())
+            has_consensus_correction_in_boot(
+                self.db_cfg, current_boot_id="any-boot",
+            )
         )
 
 
@@ -605,6 +667,7 @@ class TestConsensusWriter(_TempDBTest):
         write_consensus_correction(
             self.db_cfg, new_offset=60, voter_count=3,
             median_offset_vote_sec=60, source_summary_json="{}",
+            applied_boot_id="boot-T",
         )
         with _connect(self.db_cfg) as conn:
             ve = conn.execute(
@@ -723,11 +786,13 @@ class TestConsensusTickAtomicity(_TempDBTest):
                 )
                 conn.execute(
                     "INSERT INTO clock_corrections "
-                    "(applied_at_monotonic, system_time_before, system_time_after, "
+                    "(applied_at_monotonic, applied_boot_id, "
+                    " system_time_before, system_time_after, "
                     " offset_before_sec, offset_after_sec, trigger, "
                     " voter_count, median_offset_vote_sec, source_summary) "
-                    "VALUES (?, ?, ?, ?, 0, 'admin', NULL, NULL, '{}')",
-                    (time.monotonic(), 1_700_000_100, 1_700_000_100 + 864_000, 864_000),
+                    "VALUES (?, ?, ?, ?, ?, 0, 'admin', NULL, NULL, '{}')",
+                    (time.monotonic(), "boot-T",
+                     1_700_000_100, 1_700_000_100 + 864_000, 864_000),
                 )
                 conn.execute("COMMIT")
             finally:
@@ -1428,14 +1493,16 @@ class TestSenderTsRawTimePin(unittest.TestCase):
 
 
 class TestStatsClockAge(unittest.TestCase):
-    """`_format_clock_last_correction` uses applied_at_monotonic for the
-    age, not the system_time_* columns.
+    """`_format_clock_last_correction` uses applied_boot_id for identity
+    (this-boot vs prior-boot) and applied_at_monotonic for age.
 
-    The system_time_* columns are in different reference frames per
-    trigger (raw for 'consensus' / 'external_step', wall-after-jump for
-    'admin'), so a cross-trigger age comparison would silently mix
-    frames. Monotonic only advances within a boot, so a stored value
-    greater than current monotonic must be from a prior boot.
+    Earlier revisions used `applied_at_monotonic > mono_now` to detect
+    prior boot, but that test is only sufficient: a prior-boot row
+    whose CLOCK_MONOTONIC was small (e.g. correction applied 60s into
+    that boot) silently passes the test in the current boot once the
+    process has been up >60s. Identity comparison against the Linux
+    boot ID has no such gap. See AGENTS.md § "Clock-correction
+    invariants" and docs/clock_consensus.md.
     """
 
     def test_current_boot_correction_renders_age_in_seconds(self):
@@ -1443,49 +1510,81 @@ class TestStatsClockAge(unittest.TestCase):
         mono_now = 1000.5
         out = _format_clock_last_correction(
             trigger="consensus",
+            applied_boot_id="boot-X",
             applied_at_monotonic=mono_now - 60,
+            current_boot_id="boot-X",
             mono_now=mono_now,
         )
-        self.assertTrue(out.startswith("consensus@"), out)
         # Allow ±1s for the int cast.
-        self.assertTrue(
-            out in ("consensus@60s_ago", "consensus@59s_ago"),
+        self.assertIn(
+            out, ("consensus@60s_ago", "consensus@59s_ago"),
             f"expected ~60s, got {out!r}",
         )
 
     def test_prior_boot_correction_renders_as_prior_boot(self):
         from civicmesh import _format_clock_last_correction
         out = _format_clock_last_correction(
-            # applied_at_monotonic 10_000 ahead of current — only
-            # possible if monotonic has reset, i.e. a prior boot.
             trigger="admin",
+            applied_boot_id="old-boot",
             applied_at_monotonic=15_000.0,
+            current_boot_id="new-boot",
             mono_now=5_000.0,
         )
         self.assertEqual(out, "admin@prior_boot")
-        # No bogus age.
         self.assertNotIn("s_ago", out)
+
+    def test_prior_boot_with_small_monotonic_does_not_render_bogus_age(self):
+        """The regression target: a prior-boot row whose monotonic was
+        small (correction applied 60s into that boot) must not look
+        current. Without applied_boot_id, the helper would have rendered
+        `admin@940s_ago`."""
+        from civicmesh import _format_clock_last_correction
+        out = _format_clock_last_correction(
+            trigger="admin",
+            applied_boot_id="old-boot",
+            applied_at_monotonic=60.0,
+            current_boot_id="new-boot",
+            mono_now=1_000.0,
+        )
+        self.assertEqual(out, "admin@prior_boot")
+        self.assertNotIn("940", out, "no bogus age from frame-mixed monotonic")
+
+    def test_null_applied_boot_id_renders_as_prior_boot(self):
+        """Migrated rows (predating the column) have NULL applied_boot_id."""
+        from civicmesh import _format_clock_last_correction
+        out = _format_clock_last_correction(
+            trigger="consensus",
+            applied_boot_id=None,
+            applied_at_monotonic=60.0,
+            current_boot_id="boot-X",
+            mono_now=1_000.0,
+        )
+        self.assertEqual(out, "consensus@prior_boot")
 
     def test_no_rows_renders_none(self):
         from civicmesh import _format_clock_last_correction
         self.assertEqual(
             _format_clock_last_correction(
-                trigger=None, applied_at_monotonic=None, mono_now=0.0,
+                trigger=None, applied_boot_id=None,
+                applied_at_monotonic=None,
+                current_boot_id="boot-X", mono_now=0.0,
             ),
             "none",
         )
 
     def test_missing_monotonic_renders_unknown(self):
-        """Defensive: a row predating the column being populated should
-        not invent an age."""
+        """Defensive: a same-boot row with a NULL monotonic shouldn't
+        invent an age. (Very unlikely in practice — every writer
+        captures both columns at the same instant — but covered.)"""
         from civicmesh import _format_clock_last_correction
-        self.assertEqual(
-            _format_clock_last_correction(
-                trigger="consensus", applied_at_monotonic=None,
-                mono_now=1000.0,
-            ),
-            "consensus@unknown",
+        out = _format_clock_last_correction(
+            trigger="consensus",
+            applied_boot_id="boot-X",
+            applied_at_monotonic=None,
+            current_boot_id="boot-X",
+            mono_now=1000.0,
         )
+        self.assertEqual(out, "consensus@unknown")
 
 
 class TestPlatformAndProdGuards(unittest.TestCase):
