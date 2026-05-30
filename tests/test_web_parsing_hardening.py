@@ -312,7 +312,7 @@ class TestVoteBody(_ParseTestBase):
         # Prime the DB with a real message so message_id passes; vote_type
         # garbage is what we're checking.
         oid, mid = queue_outbox_and_message(
-            self.db_cfg, ts=1_700_000_010,
+            self.db_cfg, _ts_for_test=1_700_000_010,
             channel=_CHANNEL, sender="seed", content="vote-target",
             session_id=_SID, fingerprint=None,
             max_queue_depth=100_000,

@@ -34,7 +34,12 @@ from database import (
     init_db,
     increment_outbox_retry,
     insert_heard_packet,
-    insert_message,
+    compute_and_persist_sender_ts,
+    cross_boot_storage_hygiene,
+    get_eligible_clock_reports,
+    get_latest_clock_correction,
+    has_consensus_correction_in_boot,
+    insert_message_wall,
     insert_telemetry_event,
     mark_outbox_failed,
     prune_heard_packets,
@@ -42,10 +47,13 @@ from database import (
     prune_terminal_outbox,
     reconcile_message_status,
     record_outbox_send,
-    update_outbox_sender_ts,
     upsert_status,
+    write_consensus_correction,
+    write_external_step_correction,
 )
 import telemetry
+import clock
+from clock import wall_now
 from logger import setup_logging
 from outbox_echoes import ActiveOutboxIndex
 from recovery import RecoveryController, RecoveryState, liveness_task, recovery_task
@@ -72,10 +80,12 @@ def _executor_db(fn, *args, **kwargs):
     fut.add_done_callback(_on_executor_done)
 
 
-def _now_ts() -> int:
-    return int(time.time())
-
-
+# Retention cutoffs and any other comparison against wall-corrected ts
+# columns go through wall_now (not raw time.time()) so the cutoff is in
+# the same reference frame as the stored ts. After CIV-99 the stored ts
+# is `int(time.time()) + clock_state.offset_seconds`; a raw cutoff would
+# be too aggressive when offset > 0 and not aggressive enough when
+# offset < 0.
 async def _retention_task(cfg, db_cfg: DBConfig, log):
     while True:
         try:
@@ -88,20 +98,20 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                     log.info("retention:channel=%s deleted=%d", ch, deleted)
             # Prune heard_packets older than 8 days (1 week + 1 day slack)
             try:
-                prune_heard_packets(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
+                prune_heard_packets(db_cfg, cutoff_ts=wall_now(db_cfg) - 8 * 86400, log=log)
             except Exception as e:
                 log.error("retention:heard_packets_error %s", e, exc_info=True)
             # Prune terminal outbox rows older than 8 days
             try:
-                prune_terminal_outbox(db_cfg, cutoff_ts=_now_ts() - 8 * 86400, log=log)
+                prune_terminal_outbox(db_cfg, cutoff_ts=wall_now(db_cfg) - 8 * 86400, log=log)
             except Exception as e:
                 log.error("retention:outbox_error %s", e, exc_info=True)
             # Prune telemetry: samples after 7 days, events after 30 days
             try:
                 prune_telemetry(
                     db_cfg,
-                    samples_cutoff_ts=_now_ts() - 7 * 86400,
-                    events_cutoff_ts=_now_ts() - 30 * 86400,
+                    samples_cutoff_ts=wall_now(db_cfg) - 7 * 86400,
+                    events_cutoff_ts=wall_now(db_cfg) - 30 * 86400,
                     log=log,
                 )
             except Exception as e:
@@ -109,6 +119,162 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
+
+
+async def _clock_task(cfg, db_cfg: DBConfig, log):
+    """Wall-clock consensus task (CIV-99).
+
+    Periodically evaluates client clock reports stored on the sessions
+    table and updates clock_state.offset_seconds via the pure math in
+    clock.evaluate_consensus. Also detects external clock steps (NTP
+    re-enabling, manual `date`, etc.) by watching the wall-monotonic
+    signal and rebases offset to 0 when one occurs without an
+    attributable admin row.
+
+    Design contract (see docs/clock_consensus.md):
+
+      - This is the SOLE auto-path writer of clock_state.offset_seconds.
+        The civicmesh-set-clock admin command writes too, but as a
+        separate root process under BEGIN EXCLUSIVE.
+      - vote_epoch is bumped only on admin/external_step writes. Consensus
+        applies votes, it doesn't invalidate them.
+      - first_correction_done is derived from 'consensus' rows in the
+        current boot epoch ONLY. 'admin' and 'external_step' rows do NOT
+        consume the privilege.
+      - nudge == 0 acceptances are suppressed (no audit row, no telemetry).
+    """
+    boot_id = clock.get_boot_id()
+    cross_boot_storage_hygiene(db_cfg, current_boot_id=boot_id, log=log)
+
+    cc = cfg.clock
+    consensus_cfg = clock.ConsensusConfig(
+        quorum_min_cookies=cc.quorum_min_cookies,
+        sanity_floor_epoch=cc.sanity_floor_epoch,
+        sanity_ceiling_epoch=cc.sanity_ceiling_epoch,
+        max_nudge_sec=cc.max_nudge_sec,
+    )
+
+    latest = get_latest_clock_correction(db_cfg, log=log)
+    last_seen_id = int(latest["id"]) if latest else 0
+
+    # Wall-monotonic signal baseline. Used to detect external clock
+    # steps via |Δsignal| > external_step_threshold_sec.
+    wall_at_last_tick = int(time.time())
+    mono_at_last_tick = time.monotonic()
+
+    log.info(
+        "clock:task_started boot_id=%s last_seen_correction_id=%d",
+        boot_id, last_seen_id,
+    )
+
+    while True:
+        try:
+            wall_t = int(time.time())
+            mono_t = time.monotonic()
+            signal_now = wall_t - mono_t
+            signal_last = wall_at_last_tick - mono_at_last_tick
+
+            # --- External-step detection ---
+            if abs(signal_now - signal_last) > cc.external_step_threshold_sec:
+                # Was this step attributable to a fresh admin row? The
+                # admin command writes its own clock_corrections row
+                # under BEGIN EXCLUSIVE; we just need to refresh the
+                # baseline silently in that case (no double audit, no
+                # second cleanup).
+                latest = get_latest_clock_correction(db_cfg, log=log)
+                attributed = (
+                    latest is not None
+                    and int(latest["id"]) > last_seen_id
+                    and latest.get("trigger") == "admin"
+                )
+                if attributed:
+                    last_seen_id = int(latest["id"])
+                    log.info(
+                        "clock:external_step_attributed_to_admin id=%d", last_seen_id,
+                    )
+                else:
+                    new_id = write_external_step_correction(
+                        db_cfg,
+                        source_summary_json=clock.summary_to_json({
+                            "signal_delta_sec": signal_now - signal_last,
+                            "wall_now": wall_t,
+                            "wall_at_last_tick": wall_at_last_tick,
+                            "mono_now": mono_t,
+                            "mono_at_last_tick": mono_at_last_tick,
+                        }),
+                        log=log,
+                    )
+                    last_seen_id = new_id
+                wall_at_last_tick = wall_t
+                mono_at_last_tick = mono_t
+                # Skip consensus this tick; state just changed under us.
+                await asyncio.sleep(cc.eval_interval_sec)
+                continue
+
+            # --- Consensus ---
+            first_correction_done = has_consensus_correction_in_boot(
+                db_cfg, mono_now=mono_t, log=log,
+            )
+            current_offset = clock.get_offset(db_cfg)
+            current_vote_epoch = clock.get_vote_epoch(db_cfg)
+            corrected_now = wall_t + current_offset
+            reports_rows = get_eligible_clock_reports(
+                db_cfg,
+                boot_id=boot_id,
+                vote_epoch=current_vote_epoch,
+                mono_now=mono_t,
+                max_report_age_sec=cc.max_report_age_sec,
+                wall_now_ts=corrected_now,
+                min_cookie_age_sec=cc.min_cookie_age_sec,
+                log=log,
+            )
+
+            if reports_rows:
+                reports = [
+                    clock.Report(
+                        session_id=r["session_id"],
+                        mac_address=r.get("mac_address"),
+                        offset_vote_sec=int(r["clock_offset_vote_sec"]),
+                    )
+                    for r in reports_rows
+                ]
+                decision = clock.evaluate_consensus(
+                    reports,
+                    current_offset=current_offset,
+                    raw_now=wall_t,
+                    first_correction_done=first_correction_done,
+                    cfg=consensus_cfg,
+                )
+                # No-op suppression: nothing to write when nudge == 0.
+                if decision is not None and decision.nudge != 0:
+                    new_id = write_consensus_correction(
+                        db_cfg,
+                        new_offset=decision.new_offset,
+                        voter_count=decision.voter_count,
+                        median_offset_vote_sec=decision.median_offset_vote_sec,
+                        source_summary_json=clock.summary_to_json(decision.source_summary),
+                        log=log,
+                    )
+                    last_seen_id = new_id
+                    insert_telemetry_event(
+                        db_cfg,
+                        kind="clock_consensus_accepted",
+                        detail={
+                            "offset_before_sec": current_offset,
+                            "offset_after_sec": decision.new_offset,
+                            "nudge_sec": decision.nudge,
+                            "voter_count": decision.voter_count,
+                            "median_offset_vote_sec": decision.median_offset_vote_sec,
+                            "accept_reason": decision.accept_reason,
+                        },
+                        log=log,
+                    )
+
+            wall_at_last_tick = wall_t
+            mono_at_last_tick = mono_t
+        except Exception as e:
+            log.error("clock:task_error %s", e, exc_info=True)
+        await asyncio.sleep(cc.eval_interval_sec)
 
 
 async def _heartbeat_task(cfg, db_cfg: DBConfig, log, controller: RecoveryController):
@@ -201,7 +367,10 @@ async def _outbox_task(
                 await asyncio.sleep(1)
                 continue
 
-            now = time.time()
+            # CIV-99: monotonic for elapsed-time math. An admin command or
+            # external NTP step that jumps the wall clock must not retro-
+            # actively shrink the idle window or extend the backoff delay.
+            now = time.monotonic()
             # If we've been idle long enough, reset the backoff so the next
             # message can go out immediately.
             if last_send_time is not None and now - last_send_time > idle_reset_sec:
@@ -233,11 +402,10 @@ async def _outbox_task(
                 if not in_paused_state:
                     queue_depth, queue_oldest_age_s = await asyncio.to_thread(
                         get_outbox_snapshot, db_cfg,
-                        now_ts=int(time.time()), log=log,
+                        now_ts=wall_now(db_cfg), log=log,
                     )
                     await asyncio.to_thread(
                         insert_telemetry_event, db_cfg,
-                        ts=int(time.time()),
                         kind="egress_bucket_throttled",
                         detail={
                             "wait_sec": round(wait_sec, 1),
@@ -262,7 +430,6 @@ async def _outbox_task(
                 paused_sec = now_mono - pause_started_mono
                 await asyncio.to_thread(
                     insert_telemetry_event, db_cfg,
-                    ts=int(time.time()),
                     kind="egress_bucket_resumed",
                     detail={"paused_sec": round(paused_sec, 1)},
                     log=log,
@@ -300,18 +467,17 @@ async def _outbox_task(
                             consecutive_send_failures = 0
                             continue
 
-                    # Capture the wall-clock second we expect the
-                    # firmware to stamp on the outgoing packet, before
-                    # the call. The match logic in active_outbox uses
-                    # ±1s tolerance to handle second boundaries.
-                    sender_ts = int(time.time())
-                    # Persist sender_ts so echo-confirmed retries can
-                    # reference the original timestamp. IS NULL guard
-                    # in the query prevents retries from overwriting.
-                    await asyncio.to_thread(
-                        update_outbox_sender_ts,
-                        db_cfg, outbox_id=int(item["id"]),
-                        sender_ts=sender_ts, log=log,
+                    # Capture and persist the sender_ts the firmware
+                    # will stamp on the outgoing packet. Uses RAW
+                    # time.time() (not wall_now) to match what the
+                    # firmware's own time(NULL) read produces — see the
+                    # docstring on compute_and_persist_sender_ts in
+                    # database.py. ±1s tolerance in active_outbox absorbs
+                    # second-boundary drift between this read and the
+                    # firmware's.
+                    sender_ts = await asyncio.to_thread(
+                        compute_and_persist_sender_ts,
+                        db_cfg, outbox_id=int(item["id"]), log=log,
                     )
                     # Register for echo matching BEFORE the send so
                     # echoes arriving during a no_event_received timeout
@@ -410,7 +576,8 @@ async def _outbox_task(
                     consecutive_send_failures = 0
             finally:
                 # Advance backoff after each attempt to avoid flooding on large backlogs.
-                last_send_time = time.time()
+                # CIV-99: monotonic — must not be affected by wall-clock jumps.
+                last_send_time = time.monotonic()
                 backoff_level = min(backoff_level + 1, 3)
         except Exception as e:
             log.error("outbox:error %s", e, exc_info=True)
@@ -452,7 +619,12 @@ async def _announce_identity(mesh_client, cfg, log, advert_state, EventType):
         log.warning("mesh:set_name_exception err=%s", e, exc_info=True)
         return
 
-    now = time.time()
+    # CIV-99: monotonic — advert cooldown is elapsed time; an admin or
+    # NTP step must not reset or extend it. advert_state's "last_ts" is
+    # now monotonic across reconnects (it's an in-process dict, so the
+    # frame change at OS reboot — which clears in-process state anyway —
+    # is moot).
+    now = time.monotonic()
     last_callsign = advert_state.get("last_callsign")
     last_ts = advert_state.get("last_ts")
     if last_callsign is None:
@@ -637,7 +809,6 @@ async def _setup_mesh_client(
                 outbox_id=outbox_id,
                 path_len=p.get("path_len"),
                 snr=p.get("snr"),
-                ts=_now_ts(),
                 log=log,
             )
             log.debug(
@@ -672,7 +843,7 @@ async def _setup_mesh_client(
             rssi = p.get("rssi")
             _executor_db(
                 insert_heard_packet,
-                db_cfg, ts=_now_ts(),
+                db_cfg,
                 payload_type=payload_type, route_type=route_type,
                 path_len=path_len, last_path_byte=last_path_byte,
                 snr=snr, rssi=rssi, log=log,
@@ -701,7 +872,7 @@ async def _setup_mesh_client(
                     sender = name
                     content = rest
             log.debug("mesh:rx channel=%s sender=%s len=%d", channel, sender, len(content))
-            _executor_db(insert_message, db_cfg, ts=_now_ts(), channel=channel, sender=sender, content=content, source="mesh", log=log)
+            _executor_db(insert_message_wall, db_cfg, channel=channel, sender=sender, content=content, source="mesh", log=log)
         except Exception as e:
             log.error("mesh:rx_error %s", e, exc_info=True)
 
@@ -801,6 +972,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         ),
         _retention_task(cfg, db_cfg, log),
         _heartbeat_task(cfg, db_cfg, log, controller),
+        _clock_task(cfg, db_cfg, log),
         telemetry.telemetry_loop(db_cfg, log),
         liveness_task(controller, log),
         recovery_task(controller, _setup_fn, log),

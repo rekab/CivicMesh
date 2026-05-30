@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from config import AppConfig
 from database import (
     DBConfig,
+    _connect,
     cancel_outbox_message,
     clear_pending_outbox,
     get_outbox_message,
@@ -593,6 +594,43 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         print("civicmesh: apply requires root; re-run with sudo", file=sys.stderr)
         sys.exit(1)
 
+    # CIV-99: apply refuses to proceed unless systemd-timesyncd (and
+    # chrony, if installed) are masked. The clock-correction design
+    # depends on the invariant "no other process touches the system
+    # clock" — see docs/clock_consensus.md. If timesyncd ever runs (Pi
+    # gets internet briefly, a package upgrade re-enables it), an NTP
+    # step will trigger the consensus task's external-step detector
+    # and rebase the offset to 0. That's by design as a runtime safety
+    # net, but the structural defense is to keep the unit masked. Dry
+    # runs skip this — the operator may legitimately want to preview
+    # the apply plan before fixing the masking state.
+    if not args.dry_run:
+        for unit in ("systemd-timesyncd.service", "chrony.service"):
+            try:
+                result = _sub.run(
+                    ["systemctl", "is-enabled", "--quiet", unit],
+                    capture_output=True,
+                )
+            except FileNotFoundError:
+                # systemctl missing — non-systemd host (CI / tests). Skip.
+                break
+            # is-enabled returns 0 for enabled / static / alias, 1 for
+            # disabled, 2 for not-installed (some versions). "masked"
+            # returns 0 with a different stdout that is-enabled prints
+            # WITHOUT --quiet; with --quiet it returns non-zero only
+            # for masked/disabled/missing. Treat 0 (active/enabled) as
+            # the failure case — we want it masked or absent.
+            if result.returncode == 0:
+                print(
+                    f"civicmesh: apply: {unit} is enabled. CIV-99 requires "
+                    "this unit to be masked so it does not step the system "
+                    "clock out from under the consensus task. Run:\n"
+                    f"  sudo systemctl mask {unit}\n"
+                    "and re-run `civicmesh apply`. See docs/clock_consensus.md.",
+                    file=sys.stderr,
+                )
+                sys.exit(7)
+
     try:
         cfg = load_config(str(_resolve_config_path(args)))
     except (ValueError, KeyError, OSError) as e:
@@ -782,6 +820,185 @@ def _cmd_promote(args: argparse.Namespace) -> None:
     ))
 
 
+def _cmd_set_clock(args: argparse.Namespace) -> None:
+    """CIV-99 admin command: promote the corrected display time into the OS.
+
+    Reads `clock_state.offset_seconds`, sets the system clock to
+    `int(time.time()) + offset`, saves to `fake-hwclock`, then commits
+    `offset_seconds=0`, bumps `vote_epoch`, clears per-session clock
+    report fields, and appends an `'admin'` audit row. All DB writes
+    run under one `BEGIN EXCLUSIVE` so concurrent inserts from
+    web_server / mesh_bot serialize correctly via busy_timeout
+    (see database._connect).
+
+    `fake-hwclock save` failure does NOT roll back the DB. The system
+    clock is already correct; rolling back the DB would leave the
+    running node double-corrected (wall_now = jumped_clock + old_offset)
+    until reboot — far worse than the only remaining risk after a
+    fake-hwclock failure (correction lost on reboot, observable via
+    `source_summary.fake_hwclock_save_failed=true` and a CRITICAL log).
+    Exits non-zero so the operator notices and re-runs after fixing
+    fake-hwclock.
+
+    Refuses to run unless invoked as root. SSH-only by design — there
+    is no sudoers rule and no setuid helper.
+    """
+    import subprocess as _sub
+    import json as _json
+    from logger import setup_logging as _setup_logging
+    if os.geteuid() != 0:
+        print(
+            "civicmesh: set-clock requires root (run via SSH as root or with sudo)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: set-clock: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    db_cfg = DBConfig(path=cfg.db_path)
+    log, _sec = _setup_logging("civicmesh-set-clock", cfg.logging)
+
+    conn = _connect(db_cfg)
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()
+            current_offset = int(row["value"]) if row else 0
+            original_system_time = int(time.time())
+            target = original_system_time + current_offset
+            mono = time.monotonic()
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+        # Step 4: date -s @<target>. Atomic w.r.t. fake-hwclock failure —
+        # if this fails the system clock is unchanged and we ROLLBACK
+        # leaving the DB in its prior state.
+        log.info(
+            "set-clock:date_attempt original=%d offset=%d target=%d",
+            original_system_time, current_offset, target,
+        )
+        try:
+            _sub.run(["date", "-s", f"@{target}"], check=True, capture_output=True)
+        except _sub.CalledProcessError as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            stderr = (e.stderr or b"").decode("utf-8", "replace").strip()
+            log.error("set-clock:date_failed err=%s stderr=%s", e, stderr)
+            print(
+                f"civicmesh: set-clock: `date -s` failed: {stderr or e}; "
+                "system clock and database left unchanged.",
+                file=sys.stderr,
+            )
+            conn.close()
+            sys.exit(3)
+
+        # Step 5: fake-hwclock save. Failure here does NOT roll back the
+        # DB. See docstring for the rationale.
+        fake_hwclock_save_failed = False
+        fake_hwclock_stderr = ""
+        try:
+            _sub.run(["fake-hwclock", "save"], check=True, capture_output=True)
+        except _sub.CalledProcessError as e:
+            fake_hwclock_save_failed = True
+            fake_hwclock_stderr = (e.stderr or b"").decode("utf-8", "replace").strip()
+            log.error(
+                "set-clock:fake_hwclock_save_failed err=%s stderr=%s",
+                e, fake_hwclock_stderr,
+            )
+        except FileNotFoundError as e:
+            fake_hwclock_save_failed = True
+            fake_hwclock_stderr = f"fake-hwclock not on PATH: {e}"
+            log.error("set-clock:fake_hwclock_not_found err=%s", e)
+
+        # Steps 6-9: persist offset=0, bump vote_epoch, clear session
+        # clock fields, append audit row. Whether fake-hwclock succeeded
+        # or not — see docstring.
+        try:
+            conn.execute(
+                "UPDATE clock_state SET value='0' WHERE key='offset_seconds'"
+            )
+            conn.execute(
+                "UPDATE clock_state SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) "
+                "WHERE key='vote_epoch'"
+            )
+            conn.execute(
+                """
+                UPDATE sessions SET
+                  clock_offset_vote_sec=NULL,
+                  clock_reported_system_ts=NULL,
+                  clock_report_mono=NULL,
+                  clock_report_boot_id=NULL,
+                  clock_vote_epoch=NULL
+                """
+            )
+            source_summary = _json.dumps({
+                "target_epoch": target,
+                "original_system_time": original_system_time,
+                "offset_before_sec": current_offset,
+                "fake_hwclock_save_failed": fake_hwclock_save_failed,
+                "fake_hwclock_stderr": fake_hwclock_stderr,
+            }, sort_keys=True, separators=(",", ":"))
+            conn.execute(
+                """
+                INSERT INTO clock_corrections
+                  (applied_at_monotonic, system_time_before, system_time_after,
+                   offset_before_sec, offset_after_sec,
+                   trigger, voter_count, median_offset_vote_sec, source_summary)
+                VALUES (?, ?, ?, ?, 0, 'admin', NULL, NULL, ?)
+                """,
+                (mono, original_system_time, target,
+                 current_offset, source_summary),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if fake_hwclock_save_failed:
+        # Live node is now correctly timed (offset=0 against the freshly-
+        # jumped system clock), but the correction will be LOST on next
+        # reboot because fake-hwclock retains the pre-jump file. Operator
+        # must investigate and re-run `civicmesh set-clock` after fixing.
+        log.critical(
+            "set-clock:fake_hwclock_save_failed wall_runtime=correct "
+            "reboot_risk=correction_will_be_lost stderr=%r",
+            fake_hwclock_stderr,
+        )
+        print(
+            "civicmesh: set-clock: system clock corrected and DB committed, "
+            f"BUT `fake-hwclock save` failed ({fake_hwclock_stderr or 'unknown error'}). "
+            "Runtime timestamps are correct, but the correction will be lost on next "
+            "reboot. Investigate fake-hwclock (permissions / disk space / package "
+            "install) and re-run `civicmesh set-clock`.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+
+    log.info("set-clock:ok offset_now=0 target=%d", target)
+    print(f"set-clock: ok (system clock set to epoch {target}; offset_seconds=0)")
+    sys.exit(0)
+
+
 def _stub(name: str, phase: str) -> Callable[[argparse.Namespace], None]:
     def handler(args: argparse.Namespace) -> None:
         print(f"civicmesh: {name}: not implemented; arrives in Phase {phase} (CIV-56)", file=sys.stderr)
@@ -881,6 +1098,10 @@ def main():
     p_config_show.add_argument("--format", choices=["toml", "json"], default="toml")
     sub_config.add_parser("validate")
 
+    # CIV-99: promote corrected display time into the OS clock. Runs as
+    # root over SSH; refuses unless geteuid()==0. See _cmd_set_clock.
+    sub.add_parser("set-clock")
+
     args = ap.parse_args()
 
     _check_refusals(mode=mode, project_root=project_root, args=args)
@@ -915,6 +1136,7 @@ def main():
         "promote": _cmd_promote,
         "install-hub-docs": _cmd_install_hub_docs,
         "rollback-hub-docs": _cmd_rollback_hub_docs,
+        "set-clock": _cmd_set_clock,
     }[args.cmd](args)
 
 

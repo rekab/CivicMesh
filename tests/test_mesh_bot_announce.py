@@ -73,7 +73,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         client = _make_client()
         cfg = _make_cfg("civic1")
         state: dict = {"last_callsign": None, "last_ts": None}
-        with patch("mesh_bot.time.time", return_value=1000.0):
+        with patch("mesh_bot.time.monotonic", return_value=1000.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
         # send_appstart must run after a successful set_name to refresh
@@ -88,7 +88,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         cfg = _make_cfg("civic1")
         state: dict = {"last_callsign": "civic1", "last_ts": 1000.0}
         # 60 seconds later — well inside the 6h cooldown.
-        with patch("mesh_bot.time.time", return_value=1060.0):
+        with patch("mesh_bot.time.monotonic", return_value=1060.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
         client.commands.send_advert.assert_not_called()
@@ -101,7 +101,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         cfg = _make_cfg("civic1")
         state: dict = {"last_callsign": "civic1", "last_ts": 1000.0}
         elapsed = 1000.0 + mesh_bot._ADVERT_COOLDOWN_SEC + 1
-        with patch("mesh_bot.time.time", return_value=elapsed):
+        with patch("mesh_bot.time.monotonic", return_value=elapsed):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
         client.commands.send_advert.assert_called_once_with(flood=False)
@@ -113,7 +113,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         cfg = _make_cfg("fremont1")
         # Recent ts but a different callsign.
         state: dict = {"last_callsign": "civic1", "last_ts": 1000.0}
-        with patch("mesh_bot.time.time", return_value=1060.0):
+        with patch("mesh_bot.time.monotonic", return_value=1060.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("fremont1")
         client.commands.send_advert.assert_called_once_with(flood=False)
@@ -124,7 +124,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         client = _make_client(set_name_result=_err("set_name no"))
         cfg = _make_cfg("civic1")
         state: dict = {"last_callsign": None, "last_ts": None}
-        with patch("mesh_bot.time.time", return_value=1000.0):
+        with patch("mesh_bot.time.monotonic", return_value=1000.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
         # set_name failure: don't refresh self_info (firmware name
@@ -139,7 +139,7 @@ class AnnounceIdentityTest(unittest.TestCase):
         client = _make_client(send_advert_result=_err("advert no"))
         cfg = _make_cfg("civic1")
         state: dict = {"last_callsign": None, "last_ts": None}
-        with patch("mesh_bot.time.time", return_value=1000.0):
+        with patch("mesh_bot.time.monotonic", return_value=1000.0):
             _run(mesh_bot._announce_identity(client, cfg, self.log, state, _ET))
         client.commands.set_name.assert_called_once_with("civic1")
         client.commands.send_advert.assert_called_once_with(flood=False)

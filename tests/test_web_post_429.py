@@ -228,7 +228,7 @@ class TestPostQueueCap(_PostTestBase):
         # exact expected shape and the row-count does not advance.
         for i in range(self.OUTBOX_MAX_DEPTH):
             queue_outbox_and_message(
-                self.db_cfg, ts=1_700_000_000 + i,
+                self.db_cfg, _ts_for_test=1_700_000_000 + i,
                 channel=_CHANNEL, sender="seed", content=f"seed-{i}",
                 session_id=_SID, fingerprint=None,
                 max_queue_depth=100_000,
@@ -251,7 +251,7 @@ class TestPostQueueCap(_PostTestBase):
         # the two gates are independent.
         for i in range(self.OUTBOX_MAX_DEPTH):
             queue_outbox_and_message(
-                self.db_cfg, ts=1_700_000_000 + i,
+                self.db_cfg, _ts_for_test=1_700_000_000 + i,
                 channel=_CHANNEL, sender="seed", content=f"seed-{i}",
                 session_id=_SID, fingerprint=None,
                 max_queue_depth=100_000,

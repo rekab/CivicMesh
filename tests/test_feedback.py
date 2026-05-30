@@ -25,9 +25,18 @@ class TestRecentFeedbackBytes(unittest.TestCase):
 
     def setUp(self):
         self.log = logging.getLogger("test_feedback")
+        from database import DBConfig
+        import tempfile, os as _os
+        # _recent_feedback_bytes calls wall_now(); use a tmp db file path.
+        # get_offset is graceful when clock_state is missing (returns 0),
+        # so we don't need init_db here.
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        _os.close(fd)
+        self.db_cfg = DBConfig(path=self._db_path)
+        self.addCleanup(_os.unlink, self._db_path)
 
     def test_missing_file_returns_zero(self):
-        result = _recent_feedback_bytes("/nonexistent/feedback.jsonl", self.log)
+        result = _recent_feedback_bytes("/nonexistent/feedback.jsonl", self.log, self.db_cfg)
         self.assertEqual(result, 0)
 
     def test_counts_recent_entries(self):
@@ -39,7 +48,7 @@ class TestRecentFeedbackBytes(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(line1)
                 f.write(line2)
-            result = _recent_feedback_bytes(path, self.log)
+            result = _recent_feedback_bytes(path, self.log, self.db_cfg)
             expected = len(line1.encode("utf-8")) + len(line2.encode("utf-8"))
             self.assertEqual(result, expected)
 
@@ -54,7 +63,7 @@ class TestRecentFeedbackBytes(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(old_line)
                 f.write(recent_line)
-            result = _recent_feedback_bytes(path, self.log)
+            result = _recent_feedback_bytes(path, self.log, self.db_cfg)
             self.assertEqual(result, len(recent_line.encode("utf-8")))
 
     def test_unparseable_lines_logged_not_counted(self):
@@ -67,7 +76,7 @@ class TestRecentFeedbackBytes(unittest.TestCase):
                 f.write('{"ts": "bad-date", "text": "x"}\n')
                 f.write(good_line)
             with self.assertLogs("test_feedback", level="WARNING") as cm:
-                result = _recent_feedback_bytes(path, self.log)
+                result = _recent_feedback_bytes(path, self.log, self.db_cfg)
             # Only the valid recent line should be counted
             self.assertEqual(result, len(good_line.encode("utf-8")))
             # Two unparseable lines should produce two warnings

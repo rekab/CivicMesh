@@ -38,6 +38,7 @@ def _var_dir() -> pathlib.Path:
     return here.parent / "var"
 
 from config import load_config
+from clock import get_boot_id, get_vote_epoch, sanity_check_wall, wall_now
 from database import (
     DBConfig,
     compute_stats,
@@ -50,11 +51,12 @@ from database import (
     get_user_vote,
     get_vote_counts,
     init_db,
-    insert_message,
+    insert_message_wall,
     insert_telemetry_event,
     posts_in_last_window,
     queue_outbox_and_message,
     reconcile_message_status,
+    record_clock_report,
     record_post_for_session,
     touch_session_last_seen,
     update_vote,
@@ -90,14 +92,20 @@ def _state_value(server, name: str, real_value):
 # wall-clock timestamp in the response body (e.g. a "now" or "as_of"
 # field), route it through _now_ts_with_skew(self.server) so the
 # diagnostics skew override applies consistently. Internal time use —
-# telemetry inserts, rate-limit windows, DB row timestamps, anything
-# operators won't see in an API payload — stays on plain _now_ts() so
-# real wall-clock semantics are preserved where they matter. There is
-# no type-system signal pointing you here; this comment is the signal.
+# telemetry inserts, rate-limit windows, DB row timestamps — must go
+# through the centralized wall-clock write helpers in database.py
+# (insert_message_wall, queue_outbox_and_message, etc.) which read raw
+# time + offset inside their own write transaction. There is no
+# type-system signal pointing you here; this comment is the signal.
+#
+# CIV-99: the underlying clock is now wall_now (raw + offset), so the
+# skew layers on top of corrected wall time. Diagnostics that want to
+# simulate "the system clock jumped forward 1 hour relative to truth"
+# still apply skew on top of whatever consensus has decided.
 def _now_ts_with_skew(server) -> int:
     overrides = getattr(server, "_test_state_overrides", None) or {}
     skew = overrides.get("server_time_skew_seconds", 0)
-    return _now_ts() + int(skew)
+    return wall_now(server.db_cfg) + int(skew)
 
 
 # /api/_test/state allowlist. Anything outside this set is a 400 with the
@@ -153,9 +161,10 @@ def _validate_override(name: str, value):
 
 
 def _record_telemetry_event(db_cfg, kind, detail=None):
-    """Fire-and-forget telemetry event insert."""
+    """Fire-and-forget telemetry event insert. CIV-99: ts stamped inside
+    insert_telemetry_event's own write transaction."""
     try:
-        insert_telemetry_event(db_cfg, ts=_now_ts(), kind=kind, detail=detail)
+        insert_telemetry_event(db_cfg, kind=kind, detail=detail)
     except Exception:
         pass
 
@@ -192,9 +201,15 @@ class _HTTPError(Exception):
         self.message = message
 
 
-def _recent_feedback_bytes(path, log, window_s=_FEEDBACK_WINDOW_S):
-    """Sum line lengths of feedback entries with ts within the last window_s seconds."""
-    cutoff = time.time() - window_s
+def _recent_feedback_bytes(path, log, db_cfg, window_s=_FEEDBACK_WINDOW_S):
+    """Sum line lengths of feedback entries with ts within the last window_s seconds.
+
+    CIV-99: cutoff uses wall_now (corrected) so it lines up with the
+    wall-corrected `ts` we write into the feedback entries. A raw cutoff
+    against wall-stamped entries would produce frame-mixed comparisons
+    after any consensus or admin correction.
+    """
+    cutoff = wall_now(db_cfg) - window_s
     total = 0
     try:
         with open(path, "rb") as f:
@@ -843,7 +858,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
         if path.startswith("/api/"):
             _sid = self._get_session_id()
             if _sid:
-                touch_session_last_seen(self.server.db_cfg, _sid, _now_ts())
+                touch_session_last_seen(self.server.db_cfg, _sid)
         else:
             client_ip = self._client_ip()
             _mac, dev = get_link_from_ip(client_ip)
@@ -1091,12 +1106,15 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             # inkplate/README.md "Server endpoints consumed" before
             # renaming or retyping fields used by the renderer
             # (inkplate/render/src/stats.cpp pinpoints which).
-            now = time.time()
-            if _stats_cache["data"] is not None and now - _stats_cache["ts"] < 20:
+            # Cache freshness checks elapsed time, so use monotonic — wall
+            # jumps from civicmesh-set-clock or NTP must not invalidate the
+            # cache to nothing or extend its life beyond the 20s window.
+            now_mono = time.monotonic()
+            if _stats_cache["data"] is not None and now_mono - _stats_cache["ts"] < 20:
                 _json(self, 200, _stats_cache["data"])
                 return
-            data = compute_stats(self.server.db_cfg, _now_ts(), log=log)
-            _stats_cache["ts"] = now
+            data = compute_stats(self.server.db_cfg, wall_now(self.server.db_cfg), log=log)
+            _stats_cache["ts"] = now_mono
             _stats_cache["data"] = data
             _json(self, 200, data)
             return
@@ -1123,7 +1141,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             sid = sess["session_id"]
             # Web-server rate limit: governs ingest from WiFi clients into the DB/outbox.
             # Mesh transmit rate limiting/backoff is handled separately in mesh_bot.py.
-            count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=_now_ts(), log=log)
+            count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=wall_now(self.server.db_cfg), log=log)
             limit = self.server.cfg.limits.posts_per_hour
             remaining = max(0, limit - count)
             debug_mode = bool(self.server.cfg.debug.allow_eth0 and get_link_from_ip(ip)[1] == "eth0")
@@ -1227,6 +1245,54 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             _json(self, 200, dict(self.server._test_state_overrides))
             return
 
+        if path == "/api/clock":
+            # CIV-99 clock-consensus report. Body: {"client_time": <epoch sec>}.
+            # Stores client_time - int(time.time()) on the session row; the
+            # mesh_bot consensus task medians these votes to derive
+            # clock_state.offset_seconds. See docs/clock_consensus.md.
+            sess, ip, mac = self._require_session()
+            if not sess:
+                _json(self, 403, {"error": "session invalid"})
+                return
+            sid = sess["session_id"]
+            data = _read_json(self)
+            ct_raw = data.get("client_time")
+            if ct_raw is None:
+                _json(self, 400, {"error": "client_time required"})
+                return
+            try:
+                client_time = int(ct_raw)
+            except (TypeError, ValueError):
+                _json(self, 400, {"error": "client_time must be an integer (epoch seconds)"})
+                return
+            # Absolute sanity bound. Both ends are absolute (not raw-relative)
+            # because the very scenario this feature targets is a stale raw
+            # clock — a relative ceiling would reject correct client reports.
+            cc = self.server.cfg.clock
+            err = sanity_check_wall(client_time, cc.sanity_floor_epoch, cc.sanity_ceiling_epoch)
+            if err is not None:
+                if sec:
+                    sec.error(
+                        "ClockReportRejected", ip=ip, mac=mac,
+                        msg=err, session_id=sid, client_time=client_time,
+                    )
+                _json(self, 400, {"error": err})
+                return
+            try:
+                vote = record_clock_report(
+                    self.server.db_cfg,
+                    session_id=sid,
+                    client_time=client_time,
+                    boot_id=get_boot_id(),
+                    log=log,
+                )
+            except Exception as e:
+                log.error("clock:report_write_failed session=%s err=%s", sid, e, exc_info=True)
+                _json(self, 500, {"error": "could not record clock report"})
+                return
+            _json(self, 200, {"ok": True, "offset_vote_sec": vote})
+            return
+
         if path == "/api/post":
             sess, ip, mac = self._require_session()
             if not sess:
@@ -1262,7 +1328,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 return
             # Web-server rate limit: throttles client posts before they hit the DB/outbox.
             # Mesh-side send throttling/backoff (for radio transmission) is enforced in mesh_bot.py.
-            count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=_now_ts(), log=log)
+            count = posts_in_last_window(self.server.db_cfg, session_id=sid, window_sec=3600, now_ts=wall_now(self.server.db_cfg), log=log)
             limit = self.server.cfg.limits.posts_per_hour
             if count >= limit:
                 if sec:
@@ -1284,9 +1350,8 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             )
 
             if channel in self.server.cfg.local.names:
-                mid = insert_message(
+                mid = insert_message_wall(
                     self.server.db_cfg,
-                    ts=_now_ts(),
                     channel=channel,
                     sender=name,
                     content=content,
@@ -1295,15 +1360,13 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     fingerprint=fingerprint or None,
                     log=log,
                 )
-                record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=_now_ts(), log=log)
+                record_post_for_session(self.server.db_cfg, session_id=sid, log=log)
                 log.info("post:local id=%d channel=%s session=%s len=%d", mid, channel, sid, len(content))
                 _json(self, 200, {"ok": True, "message_id": mid, "local": True})
                 return
 
-            now = _now_ts()
             result = queue_outbox_and_message(
                 self.server.db_cfg,
-                ts=now,
                 channel=channel,
                 sender=name,
                 content=content,
@@ -1339,7 +1402,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 return
             oid, mid = result
-            record_post_for_session(self.server.db_cfg, session_id=sid, now_ts=now, log=log)
+            record_post_for_session(self.server.db_cfg, session_id=sid, log=log)
             log.info("post:queued outbox_id=%d message_id=%d channel=%s session=%s len=%d", oid, mid, channel, sid, len(content))
             _json(self, 200, {"ok": True, "outbox_id": oid, "message_id": mid})
             return
@@ -1367,7 +1430,7 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 if msg and msg.get("session_id") == sid and vt != 0:
                     _json(self, 400, {"error": "cannot vote on your own post"})
                     return
-                update_vote(self.server.db_cfg, message_id=mid, session_id=sid, vote_type=vt, ts=_now_ts(), log=log)
+                update_vote(self.server.db_cfg, message_id=mid, session_id=sid, vote_type=vt, log=log)
                 up, down = get_vote_counts(self.server.db_cfg, message_id=mid, log=log)
                 uv = get_user_vote(self.server.db_cfg, message_id=mid, session_id=sid, log=log)
                 _json(self, 200, {"ok": True, "message_id": mid, "upvotes": up, "downvotes": down, "user_vote": uv})
@@ -1438,14 +1501,20 @@ a{{color:#0f4c81}}</style></head><body><div class="wrap">
                 return
 
             fb_path = self.server.feedback_path
-            recent = _recent_feedback_bytes(fb_path, log)
+            recent = _recent_feedback_bytes(fb_path, log, self.server.db_cfg)
             if recent > _FEEDBACK_BUDGET_BYTES:
                 log.warning("feedback:circuit_breaker recent_bytes=%d path=%s", recent, fb_path)
                 _feedback_error(503, "Temporarily unavailable", "Feedback temporarily unavailable \u2014 please try again later.")
                 return
 
             entry = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                # CIV-99: wall_now (raw + offset) so the feedback log's ts
+                # is in the corrected reference frame the operator expects,
+                # matching the messages table and _recent_feedback_bytes
+                # cutoff.
+                "ts": datetime.fromtimestamp(
+                    wall_now(self.server.db_cfg), timezone.utc,
+                ).isoformat(),
                 "ip": self._client_ip(),
                 "location": self.server.cfg.node.site_name,
                 "text": text.strip(),

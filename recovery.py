@@ -222,12 +222,13 @@ class RecoveryController:
     def _emit_telemetry(self, kind: str, detail: dict) -> None:
         try:
             loop = asyncio.get_running_loop()
+            # CIV-99: ts stamped inside insert_telemetry_event's own
+            # BEGIN IMMEDIATE write txn; no caller-side time capture.
             loop.run_in_executor(
                 None,
                 functools.partial(
                     insert_telemetry_event,
                     self._db_cfg,
-                    ts=int(time.time()),
                     kind=kind,
                     detail=detail,
                     log=self._log,

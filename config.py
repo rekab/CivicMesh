@@ -147,6 +147,46 @@ class ExternalDisplayConfig:
 
 
 @dataclass(frozen=True)
+class ClockConfig:
+    """CIV-99 wall-clock-correction tuning.
+
+    The hub stamps timestamps via wall_now = int(time.time()) + offset, and
+    the mesh_bot consensus task derives offset from walk-up phones'
+    /api/clock reports. See docs/clock_consensus.md for the full design.
+    """
+    # How often _clock_task evaluates consensus. 60s is the SPA-load
+    # to first-tick latency a walk-up will experience after they hit a
+    # quorum-completing report.
+    eval_interval_sec: int = 60
+    # Distinct cookies (after MAC dedupe) required to accept a correction.
+    # 3 absorbs one outlier vote via the median while still being achievable
+    # at a small site (few walk-ups).
+    quorum_min_cookies: int = 3
+    # A cookie must be at least this old before its vote counts. Filters
+    # out first-second walk-ups whose clock state is least known and lets
+    # the user's device settle.
+    min_cookie_age_sec: int = 300
+    # Reports older than this are ignored. Aging is against time.monotonic()
+    # (not wall) so a within-tick frame change doesn't flip eligibility.
+    max_report_age_sec: int = 1800
+    # ABSOLUTE epoch bounds on corrected wall time. Not raw-relative
+    # because the very scenario this feature exists for is a stale raw
+    # clock — a relative ceiling would reject correct phone reports.
+    # Floor: 2024-01-01 UTC. Ceiling: 2029-01-01 UTC. Bump as the
+    # deployment ages.
+    sanity_floor_epoch: int = 1704067200
+    sanity_ceiling_epoch: int = 1862006400
+    # Cap on bidirectional nudges after the first consensus correction
+    # in a boot epoch. 120s easily absorbs a week+ of Pi-Zero RC drift in
+    # a single tick while keeping per-tick changes bounded.
+    max_nudge_sec: int = 120
+    # |Δ(time.time() - time.monotonic())| above which the consensus task
+    # declares an external clock step. 30s > normal scheduling jitter and
+    # smaller-than-meaningful NTP step.
+    external_step_threshold_sec: int = 30
+
+
+@dataclass(frozen=True)
 class DiagnosticsConfig:
     # Default false so prod hubs cannot accidentally have the mesh-sim
     # injector or future /api/_test/* endpoints active. The flag is
@@ -176,6 +216,7 @@ class AppConfig:
     recovery: RecoveryConfig
     external_display: ExternalDisplayConfig
     diagnostics: DiagnosticsConfig
+    clock: ClockConfig
     # Required, no default. The previous "civic_mesh.db" fallback resolved
     # against cwd and silently landed on whatever sat in the working
     # directory — exactly the trapdoor that let a misconfigured test
@@ -376,6 +417,16 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
         "debug": {"allow_eth0": cfg.debug.allow_eth0},
         "external_display": {"enabled": cfg.external_display.enabled},
         "diagnostics": {"enabled": cfg.diagnostics.enabled},
+        "clock": {
+            "eval_interval_sec": cfg.clock.eval_interval_sec,
+            "quorum_min_cookies": cfg.clock.quorum_min_cookies,
+            "min_cookie_age_sec": cfg.clock.min_cookie_age_sec,
+            "max_report_age_sec": cfg.clock.max_report_age_sec,
+            "sanity_floor_epoch": cfg.clock.sanity_floor_epoch,
+            "sanity_ceiling_epoch": cfg.clock.sanity_ceiling_epoch,
+            "max_nudge_sec": cfg.clock.max_nudge_sec,
+            "external_step_threshold_sec": cfg.clock.external_step_threshold_sec,
+        },
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
             "liveness_timeout_sec": cfg.recovery.liveness_timeout_sec,
@@ -443,6 +494,7 @@ def load_config(path: str) -> AppConfig:
     recovery_raw = raw.get("recovery", {})
     external_display_raw = raw.get("external_display", {})
     diagnostics_raw = raw.get("diagnostics", {})
+    clock_raw = raw.get("clock", {})
 
     # Strict: unknown keys in [diagnostics] are rejected loudly. This is
     # tighter than the rest of the loader (which silently ignores unknown
@@ -607,6 +659,16 @@ def load_config(path: str) -> AppConfig:
         ),
         diagnostics=DiagnosticsConfig(
             enabled=bool(diagnostics_raw.get("enabled", False)),
+        ),
+        clock=ClockConfig(
+            eval_interval_sec=int(clock_raw.get("eval_interval_sec", 60)),
+            quorum_min_cookies=int(clock_raw.get("quorum_min_cookies", 3)),
+            min_cookie_age_sec=int(clock_raw.get("min_cookie_age_sec", 300)),
+            max_report_age_sec=int(clock_raw.get("max_report_age_sec", 1800)),
+            sanity_floor_epoch=int(clock_raw.get("sanity_floor_epoch", 1704067200)),
+            sanity_ceiling_epoch=int(clock_raw.get("sanity_ceiling_epoch", 1862006400)),
+            max_nudge_sec=int(clock_raw.get("max_nudge_sec", 120)),
+            external_step_threshold_sec=int(clock_raw.get("external_step_threshold_sec", 30)),
         ),
         db_path=db_path,
     )

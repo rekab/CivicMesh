@@ -6,6 +6,7 @@ const API = {
   session: "/api/session",
   status: "/api/status",
   stats: "/api/stats",
+  clock: "/api/clock",
 };
 
 function $(id) {
@@ -78,6 +79,23 @@ async function sendFingerprint(fp) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fingerprint: fp }),
+    });
+  } catch {
+    // Best-effort only.
+  }
+}
+
+// CIV-99: report this client's wall-clock to the server once per session
+// load so the hub's consensus task can derive its offset_seconds.
+// client_time is INTEGER epoch seconds (matches the server's int(time.time())
+// frame). Fire-and-forget: a 4xx (rate-limit, sanity, etc) is intentionally
+// not surfaced to the user — clock reporting is opportunistic.
+async function sendClockReport() {
+  try {
+    await fetchJSON("/api/clock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_time: Math.floor(Date.now() / 1000) }),
     });
   } catch {
     // Best-effort only.
@@ -1749,6 +1767,9 @@ async function init() {
   // Session + fingerprint
   state.fingerprint = await computeFingerprint();
   await sendFingerprint(state.fingerprint);
+  // CIV-99: opportunistic clock report. Fire-and-forget; not awaited so a
+  // 4xx (sanity reject, rate limit) doesn't block portal load.
+  sendClockReport();
   await refreshSession();
 
   // Decide initial view: show welcome on first visit, channels on return

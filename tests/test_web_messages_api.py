@@ -145,7 +145,7 @@ class TestApiMessagesShape(unittest.TestCase):
         # landed; this is fixture data.
         cls.poster_oid, cls.poster_mid = queue_outbox_and_message(
             cls.db_cfg,
-            ts=1_700_000_000,
+            _ts_for_test=1_700_000_000,
             channel=_CHANNEL,
             sender="poster",
             content="hello from poster",
@@ -155,7 +155,7 @@ class TestApiMessagesShape(unittest.TestCase):
         )
         cls.other_oid, cls.other_mid = queue_outbox_and_message(
             cls.db_cfg,
-            ts=1_700_000_001,
+            _ts_for_test=1_700_000_001,
             channel=_CHANNEL,
             sender="other",
             content="hello from other",

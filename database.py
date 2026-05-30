@@ -26,7 +26,13 @@ from logger import _sanitize_for_log
 @dataclass(frozen=True)
 class DBConfig:
     path: str = "civic_mesh.db"
-    timeout_sec: float = 5.0
+    # 10s gives admin command's BEGIN EXCLUSIVE room to wait on a
+    # concurrent insert's BEGIN IMMEDIATE without failing fast. The Python
+    # sqlite3 `timeout=` kwarg sets sqlite3_busy_timeout under the hood;
+    # _connect ALSO issues `PRAGMA busy_timeout=10000` explicitly for
+    # belt-and-suspenders (the connect-time setting can be silently
+    # overridden by future code, the PRAGMA is harder to lose).
+    timeout_sec: float = 10.0
 
 
 SCHEMA_SQL = """
@@ -97,6 +103,39 @@ CREATE TABLE IF NOT EXISTS status (
     radio_connected INTEGER NOT NULL DEFAULT 0,
     state TEXT
 );
+
+-- Clock-correction state. clock_state is a KV singleton: 'offset_seconds'
+-- is the integer added to raw time.time() to get corrected wall time, and
+-- 'vote_epoch' is a monotonically-increasing generation counter bumped on
+-- admin and external-step events to invalidate stale per-session clock
+-- reports without scanning timestamps across reference frames. See
+-- docs/clock_consensus.md.
+CREATE TABLE IF NOT EXISTS clock_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Audit log: consensus acceptance + admin command + external-step
+-- detection. system_time_before/after are stored in the *raw* clock
+-- frame at the moment of the event (system_time_after is what
+-- time.time() reads immediately after the event, so for the admin
+-- command this equals the wall-time target). voter_count and
+-- median_offset_vote_sec are NULL for non-consensus triggers.
+-- source_summary holds JSON: voter cookies/MACs, individual offset votes,
+-- and trigger-specific flags like fake_hwclock_save_failed.
+CREATE TABLE IF NOT EXISTS clock_corrections (
+    id INTEGER PRIMARY KEY,
+    applied_at_monotonic    REAL,
+    system_time_before      INTEGER,
+    system_time_after       INTEGER,
+    offset_before_sec       INTEGER,
+    offset_after_sec        INTEGER,
+    trigger                 TEXT,
+    voter_count             INTEGER,
+    median_offset_vote_sec  INTEGER,
+    source_summary          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_clock_corrections_id ON clock_corrections(id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(pinned, pin_order);
@@ -174,6 +213,13 @@ def _connect(cfg: DBConfig) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(cfg.path) or ".", exist_ok=True)
     conn = sqlite3.connect(cfg.path, timeout=cfg.timeout_sec, isolation_level=None)  # autocommit
     conn.row_factory = sqlite3.Row
+    # Belt-and-suspenders explicit busy_timeout. sqlite3.connect(timeout=)
+    # already installs sqlite3_busy_timeout, but the explicit PRAGMA is
+    # more visible to readers and harder to silently override. Without
+    # busy_timeout, the admin command's BEGIN EXCLUSIVE would fail fast
+    # against any concurrent BEGIN IMMEDIATE from web_server / mesh_bot
+    # instead of waiting. See docs/clock_consensus.md § concurrency.
+    conn.execute(f"PRAGMA busy_timeout={int(cfg.timeout_sec * 1000)}")
     return conn
 
 
@@ -336,6 +382,150 @@ def init_db(cfg: DBConfig, log=None) -> None:
             if log:
                 log.info("db:migrate add status.state")
             conn.execute("ALTER TABLE status ADD COLUMN state TEXT")
+
+        # -- clock-correction migrations (CIV-99) --
+        # sessions gets four columns to hold per-client wall-clock reports.
+        # clock_offset_vote_sec is the ABSOLUTE raw-system offset endorsed
+        # by the client: client_epoch - int(time.time()), NOT a residual
+        # against corrected wall time. The consensus task medians votes
+        # directly (candidate = median(votes)); double-applying the offset
+        # tick-over-tick is the bug this naming exists to prevent.
+        # clock_report_boot_id holds /proc/sys/kernel/random/boot_id at the
+        # moment of capture and gates eligibility across OS reboots; the
+        # within-boot generation counter clock_vote_epoch handles admin
+        # and external-step invalidations.
+        sessions_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "clock_offset_vote_sec" not in sessions_cols2:
+            if log:
+                log.info("db:migrate add sessions.clock_offset_vote_sec")
+            conn.execute("ALTER TABLE sessions ADD COLUMN clock_offset_vote_sec INTEGER")
+        if "clock_reported_system_ts" not in sessions_cols2:
+            if log:
+                log.info("db:migrate add sessions.clock_reported_system_ts")
+            conn.execute("ALTER TABLE sessions ADD COLUMN clock_reported_system_ts INTEGER")
+        if "clock_report_mono" not in sessions_cols2:
+            if log:
+                log.info("db:migrate add sessions.clock_report_mono")
+            conn.execute("ALTER TABLE sessions ADD COLUMN clock_report_mono REAL")
+        if "clock_report_boot_id" not in sessions_cols2:
+            if log:
+                log.info("db:migrate add sessions.clock_report_boot_id")
+            conn.execute("ALTER TABLE sessions ADD COLUMN clock_report_boot_id TEXT")
+        if "clock_vote_epoch" not in sessions_cols2:
+            if log:
+                log.info("db:migrate add sessions.clock_vote_epoch")
+            conn.execute("ALTER TABLE sessions ADD COLUMN clock_vote_epoch INTEGER")
+
+        # Seed clock_state singletons. INSERT OR IGNORE so a re-run never
+        # overwrites a live offset or vote_epoch.
+        conn.execute(
+            "INSERT OR IGNORE INTO clock_state (key, value) VALUES ('offset_seconds', '0')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO clock_state (key, value) VALUES ('vote_epoch', '0')"
+        )
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Centralized wall-clock write helpers (CIV-99)
+#
+# INVARIANT for stamped DB writes: read raw `time.time()` AND
+# `clock_state.offset_seconds` INSIDE the same write transaction (BEGIN
+# IMMEDIATE) that issues the INSERT/UPDATE. The admin command
+# (`civicmesh-set-clock`) uses BEGIN EXCLUSIVE to atomically step the
+# system clock and reset offset to 0; the BEGIN IMMEDIATE here serializes
+# against it via busy_timeout, so any given write lands fully in the old
+# reference frame (old time.time(), old offset) or fully in the new (new
+# time.time(), offset=0) — never a mix. This is the actor-vs-actor race
+# the centralization defends. Production callers MUST go through these
+# `*_wall` helpers; passing a pre-computed `ts` would reintroduce the
+# race. The non-`_wall` siblings (insert_message, queue_outbox_and_message,
+# upsert_status, etc.) remain for test fixtures and migration tooling that
+# need explicit timestamps.
+#
+# See docs/clock_consensus.md § "Centralized write helpers" and the
+# verification test in tests/test_clock.py.
+# ---------------------------------------------------------------------------
+
+
+def _read_offset_for_wall_write(conn) -> int:
+    """Read clock_state.offset_seconds for in-txn stamping.
+
+    Caller MUST already hold the writer lock (BEGIN IMMEDIATE) so the
+    offset value is consistent with the raw time.time() reads that pair
+    with it under this transaction. Returns 0 if the row is missing
+    (fresh DB pre-init) or unparseable, which is the safe default —
+    `wall = raw + 0` keeps writes consistent with no-correction state.
+    """
+    row = conn.execute(
+        "SELECT value FROM clock_state WHERE key='offset_seconds'"
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wall_ts_in_txn(conn) -> int:
+    """Inside an open write transaction, return `int(time.time()) + offset`.
+
+    Reads raw time and offset under the caller's BEGIN IMMEDIATE so an
+    admin BEGIN EXCLUSIVE can't slip between the two reads.
+    """
+    offset = _read_offset_for_wall_write(conn)
+    return int(time.time()) + offset
+
+
+@_retry_on_locked()
+def insert_message_wall(
+    cfg: DBConfig,
+    *,
+    channel: str,
+    sender: str,
+    content: str,
+    source: str,
+    session_id: Optional[str] = None,
+    fingerprint: Optional[str] = None,
+    outbox_id: Optional[int] = None,
+    status: Optional[str] = None,
+    log=None,
+) -> int:
+    """Insert a row into messages, stamping ts inside a BEGIN IMMEDIATE.
+
+    Production callers in web_server (local posts) and mesh_bot (mesh rx)
+    use this. The signature deliberately does NOT accept `ts` — see the
+    section header above.
+    """
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug(
+                "db:insert_message_wall channel=%s sender=%s source=%s len=%d",
+                channel, sender, source, len(content),
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = _wall_ts_in_txn(conn)
+            cur = conn.execute(
+                "INSERT INTO messages (ts, channel, sender, content, source, "
+                "session_id, fingerprint, outbox_id, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, channel, sender, content, source, session_id,
+                 fingerprint, outbox_id, status),
+            )
+            mid = int(cur.lastrowid)
+            conn.execute("COMMIT")
+            return mid
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -355,6 +545,12 @@ def insert_message(
     status: Optional[str] = None,
     log=None,
 ) -> int:
+    """Lower-level message INSERT accepting an explicit `ts`.
+
+    Used by test fixtures and migration tooling. Production callers
+    MUST use insert_message_wall instead (see the section header on
+    centralized wall-clock write helpers above).
+    """
     conn = _connect(cfg)
     try:
         if log:
@@ -583,26 +779,43 @@ def upsert_status(
     process: str,
     radio_connected: bool,
     state: Optional[str] = None,
-    now_ts: Optional[int] = None,
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> None:
-    now_ts = int(now_ts or time.time())
+    """Upsert the process-liveness row in `status`.
+
+    CIV-99: `last_seen_ts` is stamped as `wall_now()` (raw + offset) read
+    INSIDE the BEGIN IMMEDIATE that holds the write lock — so an admin
+    `civicmesh-set-clock` command's BEGIN EXCLUSIVE serializes correctly
+    and the heartbeat row lands fully in either the pre- or post-jump
+    frame, never a mix. Production callers MUST NOT pass `_ts_for_test`.
+    """
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("status:upsert process=%s connected=%s state=%s ts=%d",
-                       process, bool(radio_connected), state, now_ts)
-        conn.execute(
-            """
-            INSERT INTO status(process, last_seen_ts, radio_connected, state)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(process) DO UPDATE SET
-                last_seen_ts=excluded.last_seen_ts,
-                radio_connected=excluded.radio_connected,
-                state=COALESCE(excluded.state, status.state)
-            """,
-            (process, now_ts, 1 if radio_connected else 0, state),
-        )
+            log.debug("status:upsert process=%s connected=%s state=%s",
+                       process, bool(radio_connected), state)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                """
+                INSERT INTO status(process, last_seen_ts, radio_connected, state)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(process) DO UPDATE SET
+                    last_seen_ts=excluded.last_seen_ts,
+                    radio_connected=excluded.radio_connected,
+                    state=COALESCE(excluded.state, status.state)
+                """,
+                (process, now_ts, 1 if radio_connected else 0, state),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -646,7 +859,6 @@ def queue_outbox(
 def queue_outbox_and_message(
     cfg: DBConfig,
     *,
-    ts: int,
     channel: str,
     sender: str,
     content: str,
@@ -654,18 +866,27 @@ def queue_outbox_and_message(
     fingerprint: Optional[str] = None,
     max_queue_depth: int,
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> Optional[tuple[int, int]]:
     """Atomically create an outbox row and its linked messages row.
 
-    Uses an explicit transaction so mesh_bot cannot see the outbox row
-    before the messages row exists — prevents the race where
-    update_message_status matches 0 rows.
+    Uses an explicit BEGIN IMMEDIATE so (a) mesh_bot cannot see the
+    outbox row before the messages row exists — prevents the race
+    where update_message_status matches 0 rows — and (b) ts is read
+    from raw `time.time()` and `clock_state.offset_seconds` UNDER the
+    same write lock the INSERTs hold, so an admin-command BEGIN
+    EXCLUSIVE serializes correctly (see the centralized-wall-writer
+    section header above and docs/clock_consensus.md).
 
     Refuses the insert and returns None if the queued depth is already
     at max_queue_depth (the relay-wide outbox cap, distinct from the
     per-session post quota). The depth check + INSERT run inside a
     single BEGIN IMMEDIATE transaction so two ThreadingHTTPServer
-    workers cannot both pass the cap check concurrently."""
+    workers cannot both pass the cap check concurrently.
+
+    `_ts_for_test` is a fixture-only escape hatch for tests that need
+    deterministic timestamps; production callers must never pass it.
+    """
     conn = _connect(cfg)
     try:
         if log:
@@ -688,6 +909,7 @@ def queue_outbox_and_message(
                     depth, max_queue_depth, channel, session_id,
                 )
             return None
+        ts = _ts_for_test if _ts_for_test is not None else _wall_ts_in_txn(conn)
         cur = conn.execute(
             "INSERT INTO outbox (ts, channel, sender, content, session_id, fingerprint, sent) VALUES (?,?,?,?,?,?,0)",
             (ts, channel, sender, content, session_id, fingerprint),
@@ -701,7 +923,10 @@ def queue_outbox_and_message(
         conn.execute("COMMIT")
         return oid, mid
     except:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
         raise
     finally:
         conn.close()
@@ -823,7 +1048,10 @@ def mark_outbox_sent(cfg: DBConfig, *, outbox_ids: list[int], log=None) -> None:
 def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, log=None) -> None:
     """Persist sender_ts on first send attempt so echo-confirmed retries
     can reference the original timestamp. The IS NULL guard ensures
-    retries don't overwrite the timestamp from the first attempt."""
+    retries don't overwrite the timestamp from the first attempt.
+
+    Lower-level than compute_and_persist_sender_ts; production callers
+    should prefer the latter (see CIV-99 docstring there)."""
     conn = _connect(cfg)
     try:
         conn.execute(
@@ -832,6 +1060,50 @@ def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, lo
         )
     finally:
         conn.close()
+
+
+@_retry_on_locked()
+def compute_and_persist_sender_ts(cfg: DBConfig, *, outbox_id: int, log=None) -> int:
+    """Capture int(time.time()) as the outgoing packet's sender_ts and persist.
+
+    CIV-99: this is the ONE timestamp helper that uses RAW system time
+    rather than wall_now. The MeshCore firmware stamps each outgoing
+    packet with time(NULL) — the unmodified Pi system clock value — so
+    for our stored sender_ts to match the firmware's stamp (which the
+    echo carries back via RX_LOG_DATA.payload.sender_timestamp) we MUST
+    also use raw time.time(), not the corrected wall_now. Echo-match
+    tolerance (±1s, see outbox_echoes.py) absorbs the small gap between
+    this read and the firmware's own read.
+
+    Two consequences:
+
+      1. An admin command (`civicmesh-set-clock`) stepping the system
+         clock between this COMMIT and the firmware's encode loop costs
+         at most one missed echo match for the in-flight send (the
+         packet's stamp lands in the new frame, our stored sender_ts is
+         in the old). Vanishingly rare; documented in
+         docs/clock_consensus.md.
+      2. sender_ts is NEVER used for human display or row ordering —
+         only as an echo-match key. So the "raw system time" choice
+         does not pollute the wall-corrected `ts` columns we use for
+         message display.
+
+    Returns the captured sender_ts so the caller can hand it to the
+    firmware send call. IS NULL guard preserves the first-send value
+    across retries.
+    """
+    sender_ts = int(time.time())
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:compute_and_persist_sender_ts id=%d sender_ts=%d", outbox_id, sender_ts)
+        conn.execute(
+            "UPDATE outbox SET sender_ts = ? WHERE id = ? AND sender_ts IS NULL",
+            (sender_ts, int(outbox_id)),
+        )
+    finally:
+        conn.close()
+    return sender_ts
 
 
 @_retry_on_locked()
@@ -875,10 +1147,14 @@ def increment_heard(
     outbox_id: int,
     path_len: Optional[int],
     snr: Optional[float],
-    ts: int,
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> None:
     """Record one observed echo against an outbox row.
+
+    CIV-99: first_heard_ts / last_heard_ts stamped from wall_now read
+    inside this BEGIN IMMEDIATE. Production callers MUST NOT pass
+    `_ts_for_test`.
 
     Increments heard_count by 1; updates first_heard_ts (if NULL),
     last_heard_ts, min_path_len (if smaller or NULL), best_snr (if
@@ -892,32 +1168,42 @@ def increment_heard(
                 "db:increment_heard outbox_id=%d path_len=%s snr=%s",
                 outbox_id, path_len, snr,
             )
-        conn.execute(
-            """
-            UPDATE outbox
-            SET
-              heard_count    = heard_count + 1,
-              first_heard_ts = COALESCE(first_heard_ts, ?),
-              last_heard_ts  = ?,
-              min_path_len   = CASE
-                  WHEN ? IS NULL THEN min_path_len
-                  WHEN min_path_len IS NULL OR ? < min_path_len THEN ?
-                  ELSE min_path_len
-              END,
-              best_snr       = CASE
-                  WHEN ? IS NULL THEN best_snr
-                  WHEN best_snr IS NULL OR ? > best_snr THEN ?
-                  ELSE best_snr
-              END
-            WHERE id = ?
-            """,
-            (
-                int(ts), int(ts),
-                path_len, path_len, path_len,
-                snr, snr, snr,
-                int(outbox_id),
-            ),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                """
+                UPDATE outbox
+                SET
+                  heard_count    = heard_count + 1,
+                  first_heard_ts = COALESCE(first_heard_ts, ?),
+                  last_heard_ts  = ?,
+                  min_path_len   = CASE
+                      WHEN ? IS NULL THEN min_path_len
+                      WHEN min_path_len IS NULL OR ? < min_path_len THEN ?
+                      ELSE min_path_len
+                  END,
+                  best_snr       = CASE
+                      WHEN ? IS NULL THEN best_snr
+                      WHEN best_snr IS NULL OR ? > best_snr THEN ?
+                      ELSE best_snr
+                  END
+                WHERE id = ?
+                """,
+                (
+                    int(ts), int(ts),
+                    path_len, path_len, path_len,
+                    snr, snr, snr,
+                    int(outbox_id),
+                ),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -980,26 +1266,41 @@ def create_or_update_session(
     location: str,
     mac_address: Optional[str],
     fingerprint: Optional[str] = None,
-    now_ts: Optional[int] = None,
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> None:
-    now_ts = int(now_ts or time.time())
+    """Upsert a row in `sessions`.
+
+    CIV-99: `created_ts` is stamped as wall_now read inside the BEGIN
+    IMMEDIATE write txn. See the centralized-wall-writer section header
+    above. Production callers MUST NOT pass `_ts_for_test`.
+    """
     conn = _connect(cfg)
     try:
         if log:
             log.debug("db:create_or_update_session session=%s mac=%s", session_id, mac_address or "")
-        conn.execute(
-            """
-            INSERT INTO sessions(session_id, name, location, mac_address, fingerprint, created_ts, last_post_ts, post_count_hour)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, 0)
-            ON CONFLICT(session_id) DO UPDATE SET
-              name=excluded.name,
-              location=excluded.location,
-              mac_address=excluded.mac_address,
-              fingerprint=excluded.fingerprint
-            """,
-            (session_id, name, location, mac_address, fingerprint, now_ts),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                """
+                INSERT INTO sessions(session_id, name, location, mac_address, fingerprint, created_ts, last_post_ts, post_count_hour)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, 0)
+                ON CONFLICT(session_id) DO UPDATE SET
+                  name=excluded.name,
+                  location=excluded.location,
+                  mac_address=excluded.mac_address,
+                  fingerprint=excluded.fingerprint
+                """,
+                (session_id, name, location, mac_address, fingerprint, now_ts),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1025,21 +1326,35 @@ def get_session(cfg: DBConfig, *, session_id: str, log=None) -> Optional[dict[st
         conn.close()
 
 
-def record_post_for_session(cfg: DBConfig, *, session_id: str, now_ts: Optional[int] = None, log=None) -> None:
-    now_ts = int(now_ts or time.time())
+def record_post_for_session(cfg: DBConfig, *, session_id: str, log=None, _ts_for_test: Optional[int] = None) -> None:
+    """Increment a session's hourly post counter and stamp last_post_ts.
+
+    CIV-99: `last_post_ts` is wall_now read inside the BEGIN IMMEDIATE
+    write txn. Production callers MUST NOT pass `_ts_for_test`.
+    """
     conn = _connect(cfg)
     try:
         if log:
-            log.debug("db:record_post_for_session session=%s ts=%d", session_id, now_ts)
-        conn.execute(
-            """
-            UPDATE sessions
-            SET last_post_ts=?,
-                post_count_hour=COALESCE(post_count_hour,0)+1
-            WHERE session_id=?
-            """,
-            (now_ts, session_id),
-        )
+            log.debug("db:record_post_for_session session=%s", session_id)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                """
+                UPDATE sessions
+                SET last_post_ts=?,
+                    post_count_hour=COALESCE(post_count_hour,0)+1
+                WHERE session_id=?
+                """,
+                (now_ts, session_id),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1070,9 +1385,12 @@ def posts_in_last_window(cfg: DBConfig, *, session_id: str, window_sec: int = 36
     return count
 
 
-def update_vote(cfg: DBConfig, *, message_id: int, session_id: str, vote_type: int, ts: int, log=None) -> None:
+def update_vote(cfg: DBConfig, *, message_id: int, session_id: str, vote_type: int, log=None, _ts_for_test: Optional[int] = None) -> None:
     """
     vote_type: 1=upvote, -1=downvote, 0=remove
+
+    CIV-99: votes.ts stamped from wall_now inside this BEGIN IMMEDIATE.
+    Production callers MUST NOT pass `_ts_for_test`.
     """
     if vote_type not in (-1, 0, 1):
         raise ValueError("vote_type must be -1, 0, or 1")
@@ -1080,18 +1398,28 @@ def update_vote(cfg: DBConfig, *, message_id: int, session_id: str, vote_type: i
     try:
         if log:
             log.debug("db:update_vote msg=%d session=%s vote=%d", message_id, session_id, vote_type)
-        if vote_type == 0:
-            conn.execute("DELETE FROM votes WHERE message_id=? AND session_id=?", (message_id, session_id))
-        else:
-            conn.execute(
-                """
-                INSERT INTO votes(message_id, session_id, vote_type, ts)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(message_id, session_id) DO UPDATE SET vote_type=excluded.vote_type, ts=excluded.ts
-                """,
-                (message_id, session_id, vote_type, ts),
-            )
-        _recount_votes(conn, message_id)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            if vote_type == 0:
+                conn.execute("DELETE FROM votes WHERE message_id=? AND session_id=?", (message_id, session_id))
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO votes(message_id, session_id, vote_type, ts)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(message_id, session_id) DO UPDATE SET vote_type=excluded.vote_type, ts=excluded.ts
+                    """,
+                    (message_id, session_id, vote_type, ts),
+                )
+            _recount_votes(conn, message_id)
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1239,15 +1567,27 @@ def search_messages(
         conn.close()
 
 
-def insert_heard_packet(cfg: DBConfig, *, ts, payload_type, route_type, path_len,
-                        last_path_byte=None, snr=None, rssi=None, log=None):
+def insert_heard_packet(cfg: DBConfig, *, payload_type, route_type, path_len,
+                        last_path_byte=None, snr=None, rssi=None, log=None,
+                        _ts_for_test: Optional[int] = None):
+    """Insert one row into heard_packets. CIV-99: ts inside the txn."""
     conn = _connect(cfg)
     try:
-        conn.execute(
-            "INSERT INTO heard_packets (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "INSERT INTO heard_packets (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ts, payload_type, route_type, path_len, last_path_byte, snr, rssi),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1255,14 +1595,25 @@ def insert_heard_packet(cfg: DBConfig, *, ts, payload_type, route_type, path_len
 TOUCH_DEBOUNCE_SEC = 30  # skip write if last_seen_ts is already within this window
 
 
-def touch_session_last_seen(cfg: DBConfig, session_id, ts, log=None):
+def touch_session_last_seen(cfg: DBConfig, session_id, log=None, _ts_for_test: Optional[int] = None):
+    """Debounced update of sessions.last_seen_ts. CIV-99: ts inside the txn."""
     conn = _connect(cfg)
     try:
-        conn.execute(
-            "UPDATE sessions SET last_seen_ts = ? "
-            "WHERE session_id = ? AND (last_seen_ts IS NULL OR last_seen_ts < ? - ?)",
-            (ts, session_id, ts, TOUCH_DEBOUNCE_SEC),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "UPDATE sessions SET last_seen_ts = ? "
+                "WHERE session_id = ? AND (last_seen_ts IS NULL OR last_seen_ts < ? - ?)",
+                (ts, session_id, ts, TOUCH_DEBOUNCE_SEC),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1388,7 +1739,6 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
 def insert_telemetry_sample(
     cfg: DBConfig,
     *,
-    ts: int,
     uptime_s: Optional[int],
     load_1m: Optional[float],
     cpu_temp_c: Optional[float],
@@ -1402,19 +1752,34 @@ def insert_telemetry_sample(
     outbox_oldest_age_s: Optional[int],
     throttled_bitmask: Optional[int],
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> None:
+    """Insert a telemetry sample row. CIV-99: ts stamped inside the txn.
+
+    Production callers MUST NOT pass `_ts_for_test`.
+    """
     conn = _connect(cfg)
     try:
-        conn.execute(
-            "INSERT INTO telemetry_samples "
-            "(ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb, "
-            "disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes, "
-            "outbox_depth, outbox_oldest_age_s, throttled_bitmask) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb,
-             disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes,
-             outbox_depth, outbox_oldest_age_s, throttled_bitmask),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "INSERT INTO telemetry_samples "
+                "(ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb, "
+                "disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes, "
+                "outbox_depth, outbox_oldest_age_s, throttled_bitmask) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb,
+                 disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes,
+                 outbox_depth, outbox_oldest_age_s, throttled_bitmask),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1422,18 +1787,32 @@ def insert_telemetry_sample(
 def insert_telemetry_event(
     cfg: DBConfig,
     *,
-    ts: int,
     kind: str,
     detail: Optional[dict] = None,
     log=None,
+    _ts_for_test: Optional[int] = None,
 ) -> None:
+    """Insert a telemetry event row. CIV-99: ts stamped inside the txn.
+
+    Production callers MUST NOT pass `_ts_for_test`.
+    """
     conn = _connect(cfg)
     try:
         detail_json = json.dumps(detail) if detail is not None else None
-        conn.execute(
-            "INSERT INTO telemetry_events (ts, kind, detail) VALUES (?,?,?)",
-            (ts, kind, detail_json),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "INSERT INTO telemetry_events (ts, kind, detail) VALUES (?,?,?)",
+                (ts, kind, detail_json),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
     finally:
         conn.close()
 
@@ -1726,3 +2105,360 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
             "http_errors": http_errors,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Clock-correction helpers (CIV-99)
+#
+# /api/clock writes go through record_clock_report. The mesh_bot consensus
+# task reads via get_eligible_clock_reports + read_clock_state_for_task,
+# and writes via write_consensus_correction / write_external_step_correction.
+# The civicmesh-set-clock admin command uses write_admin_clock_correction
+# (under BEGIN EXCLUSIVE). All three writer functions bump vote_epoch for
+# admin/external_step (within-boot invalidation); consensus does NOT bump
+# vote_epoch because it doesn't invalidate reports — it applies them.
+#
+# See clock.py for the boot ID + offset + epoch read helpers used by callers
+# OUTSIDE a write transaction, and docs/clock_consensus.md for the design.
+# ---------------------------------------------------------------------------
+
+
+@_retry_on_locked()
+def record_clock_report(
+    cfg: DBConfig,
+    *,
+    session_id: str,
+    client_time: int,
+    boot_id: str,
+    log=None,
+    _ts_for_test: Optional[int] = None,
+    _mono_for_test: Optional[float] = None,
+) -> int:
+    """Persist one client clock report onto the session row.
+
+    Stores:
+      clock_offset_vote_sec    = client_time - int(time.time())    # raw delta
+      clock_reported_system_ts = int(time.time())                  # for audit
+      clock_report_mono        = time.monotonic()                  # for aging
+      clock_report_boot_id     = boot_id                           # cross-boot gate
+      clock_vote_epoch         = current clock_state.vote_epoch    # within-boot gate
+
+    The raw time read happens INSIDE the BEGIN IMMEDIATE so an admin
+    command's BEGIN EXCLUSIVE can't slip between the read and the UPDATE.
+    Returns the computed offset vote (for logging / response).
+    """
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("db:record_clock_report session=%s client_time=%d", session_id, client_time)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            raw_now = int(_ts_for_test) if _ts_for_test is not None else int(time.time())
+            mono = float(_mono_for_test) if _mono_for_test is not None else time.monotonic()
+            vote = int(client_time) - raw_now
+            # vote_epoch read inside the txn so an admin/external_step
+            # bump-and-NULL doesn't land between our read of the epoch
+            # and our UPDATE (which would write the old epoch onto a
+            # row the admin just cleared, defeating the gate).
+            row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='vote_epoch'"
+            ).fetchone()
+            vote_epoch = int(row["value"]) if row else 0
+            conn.execute(
+                """
+                UPDATE sessions
+                SET clock_offset_vote_sec=?,
+                    clock_reported_system_ts=?,
+                    clock_report_mono=?,
+                    clock_report_boot_id=?,
+                    clock_vote_epoch=?
+                WHERE session_id=?
+                """,
+                (vote, raw_now, mono, boot_id, vote_epoch, session_id),
+            )
+            conn.execute("COMMIT")
+            return vote
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+def get_latest_clock_correction(cfg: DBConfig, *, log=None) -> Optional[dict[str, Any]]:
+    """Return the most recent clock_corrections row, or None.
+
+    Used by the consensus task at startup to seed last_seen_id and at each
+    tick to detect newer rows since the last observation.
+    """
+    conn = _connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT * FROM clock_corrections ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def has_consensus_correction_in_boot(cfg: DBConfig, *, mono_now: float, log=None) -> bool:
+    """True iff a 'consensus' clock_corrections row exists this boot epoch.
+
+    Per the design (docs/clock_consensus.md), `first_correction_done` is
+    driven by 'consensus' rows only. 'admin' and 'external_step' rows do
+    NOT consume the first-correction privilege — after either, the next
+    consensus may legitimately need a large jump.
+
+    Boot-epoch scope: filtered by applied_at_monotonic <= mono_now. A row
+    with applied_at_monotonic > mono_now was written by a prior boot
+    (monotonic resets at OS reboot but survives process restart), so it
+    doesn't count toward THIS boot's first-correction privilege.
+    """
+    conn = _connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM clock_corrections "
+            "WHERE trigger='consensus' AND applied_at_monotonic <= ? LIMIT 1",
+            (float(mono_now),),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def get_eligible_clock_reports(
+    cfg: DBConfig,
+    *,
+    boot_id: str,
+    vote_epoch: int,
+    mono_now: float,
+    max_report_age_sec: int,
+    wall_now_ts: int,
+    min_cookie_age_sec: int,
+    log=None,
+) -> list[dict[str, Any]]:
+    """Return per-session clock reports eligible for consensus this tick.
+
+    Eligibility (all four must hold — see docs/clock_consensus.md):
+
+      1. clock_offset_vote_sec IS NOT NULL.
+      2. clock_report_boot_id = current boot id (cross-boot identity gate
+         — pure equality on /proc/sys/kernel/random/boot_id captured at
+         report time).
+      3. clock_vote_epoch = current vote_epoch (within-boot generation
+         gate — admin/external_step bump invalidates).
+      4. clock_report_mono >= mono_now - max_report_age_sec (aging —
+         compared against monotonic, not wall, so within-tick frame
+         changes don't matter).
+      5. wall_now_ts - created_ts >= min_cookie_age_sec (cookie age, wall
+         frame — created_ts is wall-stamped).
+
+    Result rows are ordered by clock_report_mono ASC so the caller's MAC
+    dedupe (most-recent-wins) picks the freshest report per device.
+    """
+    conn = _connect(cfg)
+    try:
+        rows = conn.execute(
+            """
+            SELECT session_id, mac_address, clock_offset_vote_sec,
+                   clock_report_mono, clock_reported_system_ts, created_ts
+            FROM sessions
+            WHERE clock_offset_vote_sec IS NOT NULL
+              AND clock_report_boot_id = ?
+              AND clock_vote_epoch = ?
+              AND clock_report_mono >= ?
+              AND (? - COALESCE(created_ts, 0)) >= ?
+            ORDER BY clock_report_mono ASC
+            """,
+            (
+                boot_id, int(vote_epoch),
+                float(mono_now) - int(max_report_age_sec),
+                int(wall_now_ts), int(min_cookie_age_sec),
+            ),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@_retry_on_locked()
+def write_consensus_correction(
+    cfg: DBConfig,
+    *,
+    new_offset: int,
+    voter_count: int,
+    median_offset_vote_sec: int,
+    source_summary_json: str,
+    log=None,
+) -> int:
+    """Apply a consensus-accepted correction: bump offset, append audit row.
+
+    Runs under BEGIN IMMEDIATE. Caller MUST have already verified
+    `nudge != 0` (no-op suppression policy) before calling — this
+    function unconditionally writes when invoked.
+
+    Does NOT bump vote_epoch (consensus applies votes, doesn't
+    invalidate them). Returns the new clock_corrections.id.
+    """
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()
+            offset_before = int(row["value"]) if row else 0
+            system_time_before = int(time.time())
+            system_time_after = system_time_before + (int(new_offset) - offset_before)
+            mono = time.monotonic()
+            conn.execute(
+                "UPDATE clock_state SET value=? WHERE key='offset_seconds'",
+                (str(int(new_offset)),),
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO clock_corrections
+                  (applied_at_monotonic, system_time_before, system_time_after,
+                   offset_before_sec, offset_after_sec,
+                   trigger, voter_count, median_offset_vote_sec, source_summary)
+                VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
+                """,
+                (mono, system_time_before, system_time_after,
+                 offset_before, int(new_offset),
+                 int(voter_count), int(median_offset_vote_sec), source_summary_json),
+            )
+            new_id = int(cur.lastrowid)
+            conn.execute("COMMIT")
+            if log:
+                log.info(
+                    "clock:consensus_accepted id=%d offset_before=%d offset_after=%d voter_count=%d",
+                    new_id, offset_before, int(new_offset), int(voter_count),
+                )
+            return new_id
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+@_retry_on_locked()
+def write_external_step_correction(
+    cfg: DBConfig,
+    *,
+    source_summary_json: str,
+    log=None,
+) -> int:
+    """Apply an external-clock-step rebase: offset->0, vote_epoch bump,
+    NULL session vote columns, append audit row.
+
+    Runs under BEGIN IMMEDIATE on the consensus task's connection.
+    Returns the new clock_corrections.id.
+    """
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()
+            offset_before = int(row["value"]) if row else 0
+            system_time_before = int(time.time())
+            mono = time.monotonic()
+            conn.execute(
+                "UPDATE clock_state SET value='0' WHERE key='offset_seconds'"
+            )
+            conn.execute(
+                "UPDATE clock_state SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) "
+                "WHERE key='vote_epoch'"
+            )
+            conn.execute(
+                """
+                UPDATE sessions SET
+                  clock_offset_vote_sec=NULL,
+                  clock_reported_system_ts=NULL,
+                  clock_report_mono=NULL,
+                  clock_report_boot_id=NULL,
+                  clock_vote_epoch=NULL
+                """
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO clock_corrections
+                  (applied_at_monotonic, system_time_before, system_time_after,
+                   offset_before_sec, offset_after_sec,
+                   trigger, voter_count, median_offset_vote_sec, source_summary)
+                VALUES (?, ?, ?, ?, 0, 'external_step', NULL, NULL, ?)
+                """,
+                (mono, system_time_before, system_time_before,
+                 offset_before, source_summary_json),
+            )
+            new_id = int(cur.lastrowid)
+            conn.execute("COMMIT")
+            if log:
+                log.warning(
+                    "clock:external_step id=%d offset_before=%d", new_id, offset_before,
+                )
+            return new_id
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+def cross_boot_storage_hygiene(
+    cfg: DBConfig,
+    *,
+    current_boot_id: str,
+    log=None,
+) -> int:
+    """NULL session clock-report columns on rows whose boot_id ≠ current.
+
+    Optional storage hygiene; the boot-id eligibility filter
+    (get_eligible_clock_reports) already excludes prior-boot rows from
+    consensus, so this is purely about keeping the table tidy across
+    reboots. Does NOT bump vote_epoch — boot_id mismatch alone gates
+    cross-boot reports, no within-boot generation change is needed.
+
+    Returns the number of rows updated.
+    """
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                """
+                UPDATE sessions SET
+                  clock_offset_vote_sec=NULL,
+                  clock_reported_system_ts=NULL,
+                  clock_report_mono=NULL,
+                  clock_report_boot_id=NULL,
+                  clock_vote_epoch=NULL
+                WHERE clock_report_boot_id IS NOT NULL
+                  AND clock_report_boot_id != ?
+                """,
+                (current_boot_id,),
+            )
+            n = int(cur.rowcount or 0)
+            conn.execute("COMMIT")
+            if n and log:
+                log.info("clock:cross_boot_hygiene cleared=%d", n)
+            return n
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()

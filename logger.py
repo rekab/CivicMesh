@@ -45,7 +45,10 @@ class _RateLimitedSecurityLogger:
         self._buckets: dict[tuple[str, str, str], tuple[float, int]] = {}
 
     def error(self, event_type: str, ip: str = "", mac: str = "", msg: str = "", **fields: object) -> None:
-        now = time.time()
+        # CIV-99: monotonic for the elapsed-time window. A wall-clock
+        # jump (civicmesh-set-clock, NTP) must not retroactively shrink
+        # or extend the rate-limit bucket.
+        now = time.monotonic()
         key = (event_type, ip or "", mac or "")
         start, count = self._buckets.get(key, (now, 0))
         if now - start > self._window:

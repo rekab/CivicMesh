@@ -132,7 +132,7 @@ def _decode_throttle_bits(bitmask: int) -> list[str]:
     return [label for bit, label in sorted(_THROTTLE_BITS.items()) if bitmask & (1 << bit)]
 
 
-def _check_throttle_change(db_cfg: DBConfig, ts: int, new_bitmask: Optional[int], log=None) -> None:
+def _check_throttle_change(db_cfg: DBConfig, new_bitmask: Optional[int], log=None) -> None:
     global _last_throttled_bitmask
 
     if new_bitmask is None:
@@ -161,7 +161,8 @@ def _check_throttle_change(db_cfg: DBConfig, ts: int, new_bitmask: Optional[int]
         "changed_bits": changed,
         "active_now": _decode_throttle_bits(new_bitmask),
     }
-    insert_telemetry_event(db_cfg, ts=ts, kind="throttle_change", detail=detail, log=log)
+    # CIV-99: ts stamped inside insert_telemetry_event's write txn.
+    insert_telemetry_event(db_cfg, kind="throttle_change", detail=detail, log=log)
     if log:
         log.info("telemetry:throttle_change old=0x%x new=0x%x changed=%s", old, new_bitmask, changed)
 
@@ -171,8 +172,6 @@ def _check_throttle_change(db_cfg: DBConfig, ts: int, new_bitmask: Optional[int]
 # ---------------------------------------------------------------------------
 
 def sample_once(db_cfg: DBConfig, log=None, sample_throttled: bool = False) -> None:
-    ts = int(time.time())
-
     uptime = read_uptime_sec()
     loadavg = read_loadavg()
     cpu_temp = read_cpu_temp_c()
@@ -182,11 +181,13 @@ def sample_once(db_cfg: DBConfig, log=None, sample_throttled: bool = False) -> N
 
     throttled = read_throttled() if sample_throttled else None
 
-    depth, oldest_age_s = get_outbox_snapshot(db_cfg, now_ts=ts, log=log)
+    # get_outbox_snapshot's `now_ts` is for age computation (now_ts - row.ts).
+    # Use wall_now so it lines up with the wall-corrected `ts` column.
+    from clock import wall_now
+    depth, oldest_age_s = get_outbox_snapshot(db_cfg, now_ts=wall_now(db_cfg), log=log)
 
     insert_telemetry_sample(
         db_cfg,
-        ts=ts,
         uptime_s=uptime,
         load_1m=loadavg[0] if loadavg else None,
         cpu_temp_c=cpu_temp,
@@ -203,7 +204,7 @@ def sample_once(db_cfg: DBConfig, log=None, sample_throttled: bool = False) -> N
     )
 
     if sample_throttled:
-        _check_throttle_change(db_cfg, ts, throttled, log=log)
+        _check_throttle_change(db_cfg, throttled, log=log)
 
 
 # ---------------------------------------------------------------------------
