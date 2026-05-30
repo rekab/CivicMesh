@@ -1427,55 +1427,65 @@ class TestSenderTsRawTimePin(unittest.TestCase):
         )
 
 
-class TestClockCorrectionsRetention(_TempDBTest):
-    """Pruning of clock_corrections per cfg.clock.clock_corrections_retention_days."""
+class TestStatsClockAge(unittest.TestCase):
+    """`_format_clock_last_correction` uses applied_at_monotonic for the
+    age, not the system_time_* columns.
 
-    def test_prune_removes_rows_older_than_cutoff(self):
-        from database import prune_clock_corrections
-        # Seed three rows: two old, one fresh.
-        with _connect(self.db_cfg) as conn:
-            conn.execute(
-                "INSERT INTO clock_corrections "
-                "(applied_at_monotonic, system_time_before, system_time_after, "
-                " offset_before_sec, offset_after_sec, trigger, "
-                " voter_count, median_offset_vote_sec, source_summary) "
-                "VALUES (1.0, 1000, 1000, 0, 0, 'consensus', 3, 60, '{}')"
-            )
-            conn.execute(
-                "INSERT INTO clock_corrections "
-                "(applied_at_monotonic, system_time_before, system_time_after, "
-                " offset_before_sec, offset_after_sec, trigger, "
-                " voter_count, median_offset_vote_sec, source_summary) "
-                "VALUES (2.0, 2000, 2000, 0, 0, 'external_step', NULL, NULL, '{}')"
-            )
-            conn.execute(
-                "INSERT INTO clock_corrections "
-                "(applied_at_monotonic, system_time_before, system_time_after, "
-                " offset_before_sec, offset_after_sec, trigger, "
-                " voter_count, median_offset_vote_sec, source_summary) "
-                "VALUES (3.0, 5000, 5000, 0, 0, 'admin', NULL, NULL, '{}')"
-            )
-        # Cutoff = 3000 → removes the two oldest, keeps the admin row.
-        n = prune_clock_corrections(self.db_cfg, cutoff_ts=3000)
-        self.assertEqual(n, 2)
-        with _connect(self.db_cfg) as conn:
-            rows = conn.execute(
-                "SELECT trigger FROM clock_corrections ORDER BY id"
-            ).fetchall()
-        self.assertEqual([r["trigger"] for r in rows], ["admin"])
+    The system_time_* columns are in different reference frames per
+    trigger (raw for 'consensus' / 'external_step', wall-after-jump for
+    'admin'), so a cross-trigger age comparison would silently mix
+    frames. Monotonic only advances within a boot, so a stored value
+    greater than current monotonic must be from a prior boot.
+    """
 
-    def test_prune_keeps_everything_if_cutoff_predates_oldest(self):
-        from database import prune_clock_corrections
-        with _connect(self.db_cfg) as conn:
-            conn.execute(
-                "INSERT INTO clock_corrections "
-                "(applied_at_monotonic, system_time_before, system_time_after, "
-                " offset_before_sec, offset_after_sec, trigger, "
-                " voter_count, median_offset_vote_sec, source_summary) "
-                "VALUES (1.0, 1000, 1000, 0, 0, 'consensus', 3, 60, '{}')"
-            )
-        n = prune_clock_corrections(self.db_cfg, cutoff_ts=500)
-        self.assertEqual(n, 0)
+    def test_current_boot_correction_renders_age_in_seconds(self):
+        from civicmesh import _format_clock_last_correction
+        mono_now = 1000.5
+        out = _format_clock_last_correction(
+            trigger="consensus",
+            applied_at_monotonic=mono_now - 60,
+            mono_now=mono_now,
+        )
+        self.assertTrue(out.startswith("consensus@"), out)
+        # Allow ±1s for the int cast.
+        self.assertTrue(
+            out in ("consensus@60s_ago", "consensus@59s_ago"),
+            f"expected ~60s, got {out!r}",
+        )
+
+    def test_prior_boot_correction_renders_as_prior_boot(self):
+        from civicmesh import _format_clock_last_correction
+        out = _format_clock_last_correction(
+            # applied_at_monotonic 10_000 ahead of current — only
+            # possible if monotonic has reset, i.e. a prior boot.
+            trigger="admin",
+            applied_at_monotonic=15_000.0,
+            mono_now=5_000.0,
+        )
+        self.assertEqual(out, "admin@prior_boot")
+        # No bogus age.
+        self.assertNotIn("s_ago", out)
+
+    def test_no_rows_renders_none(self):
+        from civicmesh import _format_clock_last_correction
+        self.assertEqual(
+            _format_clock_last_correction(
+                trigger=None, applied_at_monotonic=None, mono_now=0.0,
+            ),
+            "none",
+        )
+
+    def test_missing_monotonic_renders_unknown(self):
+        """Defensive: a row predating the column being populated should
+        not invent an age."""
+        from civicmesh import _format_clock_last_correction
+        self.assertEqual(
+            _format_clock_last_correction(
+                trigger="consensus", applied_at_monotonic=None,
+                mono_now=1000.0,
+            ),
+            "consensus@unknown",
+        )
 
 
 class TestPlatformAndProdGuards(unittest.TestCase):

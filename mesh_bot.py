@@ -41,7 +41,6 @@ from database import (
     insert_message_wall,
     insert_telemetry_event,
     mark_outbox_failed,
-    prune_clock_corrections,
     prune_heard_packets,
     prune_telemetry,
     prune_terminal_outbox,
@@ -115,17 +114,15 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                 )
             except Exception as e:
                 log.error("retention:telemetry_error %s", e, exc_info=True)
-            # Prune clock_corrections per cfg.clock.clock_corrections_retention_days
-            # (default 365). External_step rows can accrue hourly on dev nodes
-            # without timesync masked; production sees a handful per day at most.
-            try:
-                prune_clock_corrections(
-                    db_cfg,
-                    cutoff_ts=wall_now(db_cfg) - cfg.clock.clock_corrections_retention_days * 86400,
-                    log=log,
-                )
-            except Exception as e:
-                log.error("retention:clock_corrections_error %s", e, exc_info=True)
+            # NOTE (CIV-99): no retention on clock_corrections. The
+            # column we'd compare against (system_time_after) is in
+            # different reference frames for different triggers —
+            # raw for 'consensus' and 'external_step', wall-after-jump
+            # for 'admin' — so a single cutoff would silently mix
+            # frames. Production with masked NTP produces only a
+            # handful of rows per day, so unbounded growth is not
+            # urgent. If retention becomes necessary, add an explicit
+            # wall-comparable column first.
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)

@@ -195,12 +195,6 @@ class ClockConfig:
     # step detection, /api/clock consensus) is unchanged. See
     # docs/clock_consensus.md § "Dev / RTC machines".
     require_timesync_masked: bool = True
-    # Retention window for clock_corrections audit rows. 365 days
-    # preserves a year of forensic record (sized for the dev/NTP case
-    # where 'external_step' rows may accrue hourly; production with NTP
-    # masked produces at most a few rows per day). Smaller values save
-    # space at the cost of incident-investigation history.
-    clock_corrections_retention_days: int = 365
 
 
 @dataclass(frozen=True)
@@ -444,7 +438,6 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "max_nudge_sec": cfg.clock.max_nudge_sec,
             "external_step_threshold_sec": cfg.clock.external_step_threshold_sec,
             "require_timesync_masked": cfg.clock.require_timesync_masked,
-            "clock_corrections_retention_days": cfg.clock.clock_corrections_retention_days,
         },
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
@@ -717,7 +710,6 @@ def load_config(path: str) -> AppConfig:
             max_nudge_sec=int(clock_raw.get("max_nudge_sec", 120)),
             external_step_threshold_sec=int(clock_raw.get("external_step_threshold_sec", 30)),
             require_timesync_masked=bool(clock_raw.get("require_timesync_masked", True)),
-            clock_corrections_retention_days=int(clock_raw.get("clock_corrections_retention_days", 365)),
         ),
         db_path=db_path,
     )

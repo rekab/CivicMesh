@@ -362,6 +362,36 @@ def _cmd_unpin(args: argparse.Namespace) -> None:
     print(f"Unpinned message {args.message_id}")
 
 
+def _format_clock_last_correction(
+    trigger, applied_at_monotonic, mono_now: float,
+) -> str:
+    """Format the last_correction age for `civicmesh stats`.
+
+    Uses `applied_at_monotonic` (set on every clock_corrections write)
+    rather than the system_time_* columns: those are in different
+    reference frames for different triggers ('consensus' /
+    'external_step' write raw int(time.time()) while 'admin' writes
+    pre/post the date -s jump), so a single age comparison across
+    triggers would silently mix frames.
+
+    Monotonic only advances within a single boot. A stored value
+    greater than `mono_now` must be from a prior boot; report that
+    instead of a bogus giant age. The predicate mirrors
+    `has_consensus_correction_in_boot`'s boot-scoping check.
+
+    Returns "<trigger>@<N>s_ago" or "<trigger>@prior_boot".
+    """
+    if trigger is None:
+        return "none"
+    if applied_at_monotonic is None:
+        # Defensive: predates the column being populated. Don't
+        # invent an age.
+        return f"{trigger}@unknown"
+    if applied_at_monotonic > mono_now:
+        return f"{trigger}@prior_boot"
+    return f"{trigger}@{int(mono_now - applied_at_monotonic)}s_ago"
+
+
 def _cmd_stats(args: argparse.Namespace) -> None:
     import sqlite3
     import time as _time
@@ -389,22 +419,20 @@ def _cmd_stats(args: argparse.Namespace) -> None:
         ).fetchone()
         vote_epoch = int(ve_row["value"]) if ve_row else 0
         last_row = conn.execute(
-            "SELECT trigger, system_time_after "
+            "SELECT trigger, applied_at_monotonic "
             "FROM clock_corrections ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
     print(f"messages={msg} sessions={sess} outbox_pending={out} votes={votes}")
-    if last_row is not None:
-        # Age computed against raw time.time() because that's what the
-        # `stats` operator's terminal is reading. With offset applied,
-        # an age of "5 minutes ago" stays meaningful even if the Pi
-        # boot clock is years stale.
-        wall_now = int(_time.time()) + offset
-        age_sec = max(0, wall_now - int(last_row["system_time_after"]))
-        last_str = f"{last_row['trigger']}@{age_sec}s_ago"
-    else:
+    if last_row is None:
         last_str = "none"
+    else:
+        last_str = _format_clock_last_correction(
+            last_row["trigger"],
+            last_row["applied_at_monotonic"],
+            _time.monotonic(),
+        )
     print(
         f"clock offset_sec={offset} vote_epoch={vote_epoch} last_correction={last_str}"
     )

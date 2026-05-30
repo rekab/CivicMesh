@@ -25,4 +25,3 @@
 - (CIV-99) `vote_epoch` is bumped on `admin` and `external_step` only — never on consensus acceptance, never on cross-boot hygiene. `first_correction_done` is derived from `'consensus'` rows only, scoped to the current boot epoch.
 - (CIV-99) CivicMesh runs on Linux only (`/proc/sys/kernel/random/boot_id` is the cross-boot identity gate). `clock.ensure_linux_platform()` fails loudly at startup elsewhere.
 - (CIV-99) `[clock] sanity_ceiling_epoch` is an absolute date and needs **annual review** — config load logs WARNING when the ceiling is within 180 days of now; bump it before then.
-- (CIV-99) `clock_corrections` is bounded by `clock_corrections_retention_days` (default 365). External_step rows on a non-masked-NTP dev node can accrue hourly; the retention cap keeps the table from growing without bound.
