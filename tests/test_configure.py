@@ -85,6 +85,7 @@ _ENTER_THROUGH_WALK = [
     "",   # network.country_code
     "",   # external_display.enabled (default False -> Enter accepts)
     "",   # debug.allow_eth0 (default False -> Enter accepts)
+    "",   # clock.require_timesync_masked (default True -> Enter accepts)
     "y",  # confirm write
 ]
 
@@ -141,6 +142,7 @@ class ConfigureRoundTripTest(unittest.TestCase):
                 "",   # network.country_code
                 "y",  # external_display.enabled -> attached
                 "",   # debug.allow_eth0
+                "",   # clock.require_timesync_masked
                 "y",  # confirm write
             ]
             with patch("configure._detect_serial_port", return_value=[]), \
@@ -213,6 +215,7 @@ log_level = "WARNING"
                 "",          # network.country_code
                 "",          # external_display.enabled
                 "",          # debug.allow_eth0
+                "",          # clock.require_timesync_masked
                 "y",         # confirm write
             ]
             with patch("configure._detect_serial_port", return_value=[]), \
@@ -229,6 +232,62 @@ log_level = "WARNING"
             written = cfg_path.read_text()
             self.assertNotIn("\nname = ", written)
             self.assertNotIn("location = ", written)
+
+    def test_default_enter_keeps_require_timesync_masked_true(self) -> None:
+        """CIV-99: the new prompt defaults to the production-strict value.
+        Pressing Enter must leave `clock.require_timesync_masked = true`
+        so a Pi Zero 2W operator who tabs through the walk doesn't
+        accidentally ship a dev opt-out."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(_good_config_text(
+                log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
+            ))
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=_ENTER_THROUGH_WALK):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+            cfg = load_config(str(cfg_path))
+            self.assertTrue(cfg.clock.require_timesync_masked)
+
+    def test_n_at_prompt_opts_out_for_dev(self) -> None:
+        """CIV-99 dev opt-out: answering "n" at the timesync prompt
+        writes `clock.require_timesync_masked = false`, the dev-Pi-4
+        configuration that lets `civicmesh apply` succeed with NTP
+        running."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(_good_config_text(
+                log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
+            ))
+            walk = [
+                "",   # node.site_name
+                "",   # node.callsign
+                "d",  # channels: done
+                "",   # radio.serial_port
+                "",   # ap.ssid
+                "",   # ap.channel
+                "",   # network.iface
+                "",   # network.country_code
+                "",   # external_display.enabled
+                "",   # debug.allow_eth0
+                "n",  # clock.require_timesync_masked -> OPT OUT
+                "y",  # confirm write
+            ]
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=walk):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+            cfg = load_config(str(cfg_path))
+            self.assertFalse(cfg.clock.require_timesync_masked)
 
     def test_live_file_preserved_on_validation_failure(self) -> None:
         """Bad Tier-2 (dhcp_range_start outside subnet) survives Tier-1 walk;

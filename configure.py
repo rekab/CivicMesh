@@ -227,6 +227,7 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
     channels = baseline.get("channels", {})
     debug = baseline.get("debug", {})
     external_display = baseline.get("external_display", {})
+    clock = baseline.get("clock", {})
 
     print("Configuring CivicMesh node. Press Enter to accept defaults shown in brackets.\n")
 
@@ -283,6 +284,21 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "Is this a development machine reachable over wired ethernet?",
         bool(debug.get("allow_eth0", False)),
     )
+    print("\nclock.require_timesync_masked — production default is TRUE. "
+          "When true, `civicmesh apply` refuses to proceed unless "
+          "systemd-timesyncd.service and chrony.service are persistently "
+          "masked (`sudo systemctl mask <unit>`, NOT --runtime). The "
+          "offset-consensus model conflicts with any other process "
+          "stepping the OS clock. Set FALSE for dev / RTC-backed / "
+          "internet-connected nodes that intentionally trust NTP — that "
+          "ONLY skips the apply pre-flight; the runtime offset-on-write "
+          "model and external-step detector are unchanged. Production "
+          "disaster nodes MUST leave this true. See "
+          "docs/clock_consensus.md § 'Dev / RTC machines'.")
+    require_timesync_masked = _prompt_bool(
+        "Enforce persistent NTP-masked check at `civicmesh apply`?",
+        bool(clock.get("require_timesync_masked", True)),
+    )
 
     return {
         "node.site_name": site_name,
@@ -295,6 +311,7 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "network.country_code": country,
         "external_display.enabled": external_display_enabled,
         "debug.allow_eth0": allow_eth0,
+        "clock.require_timesync_masked": require_timesync_masked,
     }
 
 
@@ -373,6 +390,7 @@ def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     baseline["network"]["country_code"] = tier1["network.country_code"]
     baseline.setdefault("debug", {})["allow_eth0"] = tier1["debug.allow_eth0"]
     baseline.setdefault("external_display", {})["enabled"] = tier1["external_display.enabled"]
+    baseline.setdefault("clock", {})["require_timesync_masked"] = tier1["clock.require_timesync_masked"]
 
     # Bake an absolute db_path. config.py refuses any other shape.
     baseline["db_path"] = str(_default_db_path().resolve())
@@ -383,6 +401,7 @@ def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     for section in (
         "logging", "node", "network", "ap", "radio",
         "channels", "local", "web", "limits", "debug", "recovery",
+        "clock",
     ):
         sect = baseline.get(section)
         if isinstance(sect, dict):
