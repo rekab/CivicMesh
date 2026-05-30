@@ -204,3 +204,8 @@ max_nudge_sec = 120
 # external clock step (NTP came back, manual `date`, etc.). 30 is
 # above scheduling jitter and below any meaningful NTP correction.
 external_step_threshold_sec = 30
+# Retention window for clock_corrections audit rows. 365 days preserves
+# a year of forensic record. On dev nodes without timesync masked,
+# external_step rows can accrue hourly; production with NTP masked
+# produces a few per day at most.
+clock_corrections_retention_days = 365

@@ -303,6 +303,29 @@ runs NTP, or where a future package upgrade flips the unit back to
 enabled. It is the safety net; persistent masking is the structural
 defense.
 
+### Annual review: bump `sanity_ceiling_epoch`
+
+`sanity_ceiling_epoch` is an absolute UTC epoch (default
+`1862006400` = 2029-01-01). Consensus rejects any candidate that
+would put corrected wall time after the ceiling. The default
+catches "phone says it's 2099, please advance the offset by 70
+years" as a clear bogus value at deployment time.
+
+**The ceiling does not bump itself.** After 2029-01-01, every
+correct phone report will hit the ceiling and consensus will stop
+accepting corrections. Bump it once a year (or once every few
+years, as you prefer) — the value sets the rejection threshold
+for absurdly-far-future client_time values, so any value
+comfortably ahead of "real now" works.
+
+Mechanical reminder: `config.load_config()` logs a WARNING when
+"now + 180 days" crosses the ceiling. Operators scanning logs at
+startup will see the reminder six months ahead. The warning fires
+on every web_server / mesh_bot / CLI start.
+
+Add an entry to `docs/invariants.md` (it's already there) and a
+calendar reminder for your deployment ops cadence.
+
 ### Dev / RTC machines: opt out of the `apply` check
 
 The production deployment path is optimized for Pi Zero 2W disaster

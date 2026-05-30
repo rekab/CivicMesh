@@ -55,7 +55,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # Make repo importable when run via `python -m unittest tests.test_clock`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1348,6 +1348,176 @@ class TestApplyTimesyncMaskedOptOut(_ApplyTimesyncCheckHarness):
 # ---------------------------------------------------------------------------
 # ClockConfig: default, TOML round-trip, serialization
 # ---------------------------------------------------------------------------
+
+
+def _function_body_source(fn) -> str:
+    """Return the function's body as source, stripped of docstring.
+
+    Uses AST so a docstring that mentions banned tokens (sender_ts's
+    docstring explains WHY we don't use wall_now) doesn't trigger the
+    substring tests below.
+    """
+    import ast
+    import inspect
+    src = inspect.getsource(fn)
+    tree = ast.parse(src)
+    func = tree.body[0]
+    body = list(func.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return "\n".join(ast.unparse(node) for node in body)
+
+
+class TestSenderTsRawTimePin(unittest.TestCase):
+    """Pin compute_and_persist_sender_ts to raw int(time.time()).
+
+    sender_ts is the deliberate exception in the CIV-99 design: it uses
+    raw system time (not wall_now) AND does not wrap the UPDATE in
+    BEGIN IMMEDIATE. The justification is firmware echo-matching — the
+    MeshCore firmware stamps the packet with time(NULL), so our stored
+    sender_ts has to use the same reference for the echo's
+    RX_LOG_DATA.payload.sender_timestamp to match.
+
+    The code has a docstring + design-doc paragraph warning future
+    contributors not to "fix" this to wall_now under BEGIN IMMEDIATE,
+    but a casual consistency-cleanup PR would still pass the existing
+    behavioral tests. These source-level tests use AST to inspect the
+    function body (docstring excluded) so the "DO NOT fix this" prose
+    isn't confused with actual code.
+    """
+
+    def test_uses_raw_time_time_not_wall_now(self):
+        from database import compute_and_persist_sender_ts
+        body = _function_body_source(compute_and_persist_sender_ts)
+        self.assertIn(
+            "int(time.time())", body,
+            "compute_and_persist_sender_ts must stamp raw time.time() — "
+            "see docs/clock_consensus.md § 'sender_ts is the exception' "
+            "and the docstring on the function.",
+        )
+        self.assertNotIn(
+            "wall_now", body,
+            "compute_and_persist_sender_ts must NOT use wall_now — the "
+            "firmware echoes raw time(NULL), and matching against a "
+            "corrected timestamp breaks echo correlation.",
+        )
+        self.assertNotIn(
+            "_wall_ts_in_txn", body,
+            "compute_and_persist_sender_ts must NOT use the wall-txn "
+            "helper — same reason as wall_now above.",
+        )
+
+    def test_does_not_open_begin_immediate(self):
+        """The function also intentionally skips BEGIN IMMEDIATE — see
+        the docstring's "Two consequences" enumeration."""
+        from database import compute_and_persist_sender_ts
+        body = _function_body_source(compute_and_persist_sender_ts)
+        self.assertNotIn(
+            "BEGIN IMMEDIATE", body,
+            "compute_and_persist_sender_ts must NOT wrap its UPDATE in "
+            "BEGIN IMMEDIATE — there's no offset read to pair with the "
+            "time read, so the actor-vs-actor race the txn defends "
+            "against doesn't apply here. Adding BEGIN IMMEDIATE would "
+            "be cargo-culting consistency over the design.",
+        )
+
+
+class TestClockCorrectionsRetention(_TempDBTest):
+    """Pruning of clock_corrections per cfg.clock.clock_corrections_retention_days."""
+
+    def test_prune_removes_rows_older_than_cutoff(self):
+        from database import prune_clock_corrections
+        # Seed three rows: two old, one fresh.
+        with _connect(self.db_cfg) as conn:
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, trigger, "
+                " voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (1.0, 1000, 1000, 0, 0, 'consensus', 3, 60, '{}')"
+            )
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, trigger, "
+                " voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (2.0, 2000, 2000, 0, 0, 'external_step', NULL, NULL, '{}')"
+            )
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, trigger, "
+                " voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (3.0, 5000, 5000, 0, 0, 'admin', NULL, NULL, '{}')"
+            )
+        # Cutoff = 3000 → removes the two oldest, keeps the admin row.
+        n = prune_clock_corrections(self.db_cfg, cutoff_ts=3000)
+        self.assertEqual(n, 2)
+        with _connect(self.db_cfg) as conn:
+            rows = conn.execute(
+                "SELECT trigger FROM clock_corrections ORDER BY id"
+            ).fetchall()
+        self.assertEqual([r["trigger"] for r in rows], ["admin"])
+
+    def test_prune_keeps_everything_if_cutoff_predates_oldest(self):
+        from database import prune_clock_corrections
+        with _connect(self.db_cfg) as conn:
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, trigger, "
+                " voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (1.0, 1000, 1000, 0, 0, 'consensus', 3, 60, '{}')"
+            )
+        n = prune_clock_corrections(self.db_cfg, cutoff_ts=500)
+        self.assertEqual(n, 0)
+
+
+class TestPlatformAndProdGuards(unittest.TestCase):
+    """ensure_linux_platform fails loudly off Linux;
+    warn_if_prod_opt_out_of_timesync_mask emits CRITICAL when the
+    caller's file is under /usr/local/civicmesh/."""
+
+    def test_non_linux_raises_with_actionable_message(self):
+        import clock as _clock
+        with patch.object(_clock.sys, "platform", "darwin"):
+            with self.assertRaises(RuntimeError) as ctx:
+                _clock.ensure_linux_platform()
+        msg = str(ctx.exception)
+        self.assertIn("Linux", msg)
+        self.assertIn("boot_id", msg)
+        self.assertIn("CIV-99", msg)
+
+    def test_linux_passes(self):
+        import clock as _clock
+        with patch.object(_clock.sys, "platform", "linux"):
+            _clock.ensure_linux_platform()  # no raise
+
+    def test_prod_warning_fires_when_caller_file_is_in_prod_tree(self):
+        import logging
+        import clock as _clock
+        log = MagicMock(spec=logging.Logger)
+        _clock.warn_if_prod_opt_out_of_timesync_mask(
+            log, caller_file="/usr/local/civicmesh/app/web_server.py",
+        )
+        self.assertTrue(log.critical.called, "expected CRITICAL log")
+        msg = log.critical.call_args[0][0]
+        self.assertIn("require_timesync_masked", msg)
+        self.assertIn("prod tree", msg)
+
+    def test_no_warning_for_dev_caller(self):
+        import logging
+        import clock as _clock
+        log = MagicMock(spec=logging.Logger)
+        _clock.warn_if_prod_opt_out_of_timesync_mask(
+            log, caller_file="/home/james/code/CivicMesh/web_server.py",
+        )
+        log.critical.assert_not_called()
 
 
 class TestClockConfigSerialization(unittest.TestCase):

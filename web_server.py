@@ -1539,6 +1539,12 @@ a{{color:#0f4c81}}</style></head><body><div class="wrap">
 
 
 def run():
+    # CIV-99: hard-fail on non-Linux before anything else (clock-consensus
+    # depends on /proc/sys/kernel/random/boot_id; the rest of the server
+    # would explode at the first /api/clock POST otherwise).
+    from clock import ensure_linux_platform
+    ensure_linux_platform()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument(
@@ -1551,6 +1557,12 @@ def run():
     cfg = load_config(args.config)
     log, sec = setup_logging("web_server", cfg.logging, level_override=args.log_level)
     log.info("Civic Mesh web_server starting")
+
+    # CIV-99: loud CRITICAL log if a prod-tree deployment has the dev
+    # opt-out flag set in its config. See warn_if_prod_opt_out_of_timesync_mask.
+    if not cfg.clock.require_timesync_masked:
+        from clock import warn_if_prod_opt_out_of_timesync_mask
+        warn_if_prod_opt_out_of_timesync_mask(log, caller_file=__file__)
 
     db_cfg = DBConfig(path=cfg.db_path)
     init_db(db_cfg, log=log)

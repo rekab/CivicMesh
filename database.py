@@ -2608,6 +2608,40 @@ def write_external_step_correction(
         conn.close()
 
 
+def prune_clock_corrections(
+    cfg: DBConfig,
+    *,
+    cutoff_ts: int,
+    log=None,
+) -> int:
+    """Delete clock_corrections rows older than `cutoff_ts` (wall-corrected).
+
+    Called from mesh_bot's _retention_task with cutoff =
+    wall_now() - clock_corrections_retention_days*86400. The window
+    defaults to 365 days, sized for the dev/NTP case where
+    'external_step' rows may accrue hourly without masked timesync.
+
+    Rows are matched by system_time_after, which is the WALL frame
+    at the moment of the event for consensus / admin rows and the
+    detection moment for external_step rows. See the schema comment
+    in SCHEMA_SQL for the per-trigger meaning.
+
+    Returns the number of rows deleted.
+    """
+    conn = _connect(cfg)
+    try:
+        cur = conn.execute(
+            "DELETE FROM clock_corrections WHERE system_time_after < ?",
+            (int(cutoff_ts),),
+        )
+        n = int(cur.rowcount or 0)
+        if n and log:
+            log.info("retention:clock_corrections deleted=%d", n)
+        return n
+    finally:
+        conn.close()
+
+
 def cross_boot_storage_hygiene(
     cfg: DBConfig,
     *,

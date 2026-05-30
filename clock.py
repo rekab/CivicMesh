@@ -41,12 +41,41 @@ offset on every tick after the first acceptance.
 """
 
 import json
+import sys
 import time
 from dataclasses import dataclass
 from statistics import median
 from typing import NamedTuple, Optional
 
 from database import DBConfig, _connect
+
+
+def ensure_linux_platform() -> None:
+    """Hard-fail at process startup if we're not on Linux.
+
+    CivicMesh's clock-correction design (CIV-99) reads
+    `/proc/sys/kernel/random/boot_id` for the cross-boot eligibility
+    gate. That file is Linux-specific — macOS, BSD, Windows, and
+    container runtimes without a /proc/sys mount do not provide it,
+    and no equivalent UUID-per-boot exists in the stdlib.
+
+    Failing here, loudly, beats letting the bot run and then explode
+    on the first /api/clock report or the first consensus tick with
+    `FileNotFoundError: /proc/sys/kernel/random/boot_id`. Dev users
+    on a Mac get a clear, actionable error at the entry point;
+    production on Linux Pi is unaffected.
+
+    Tests can stub this by patching `clock.ensure_linux_platform`.
+    """
+    if sys.platform != "linux":
+        raise RuntimeError(
+            "CivicMesh requires Linux (sys.platform == 'linux'). "
+            f"Detected sys.platform={sys.platform!r}. The clock-consensus "
+            "design (CIV-99) depends on /proc/sys/kernel/random/boot_id "
+            "for cross-boot eligibility; that file is Linux-only. "
+            "Production runs on Raspberry Pi OS; dev runs on a Linux VM "
+            "or container. See docs/clock_consensus.md and AGENTS.md."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +175,46 @@ def _reset_boot_id_cache_for_tests() -> None:
     """Test-only: clear the process-wide boot-id cache between fixtures."""
     global _cached_boot_id
     _cached_boot_id = None
+
+
+_PROD_TREE_PREFIX = "/usr/local/civicmesh/"
+
+
+def warn_if_prod_opt_out_of_timesync_mask(log, *, caller_file: Optional[str] = None) -> None:
+    """Log CRITICAL if running from the prod tree with the dev opt-out set.
+
+    The `[clock] require_timesync_masked = false` opt-out is intended for
+    dev / RTC-backed / internet-connected machines that intentionally
+    trust NTP. Shipping that flag to a production disaster node (e.g.
+    by copying a dev config.toml into prod) would silently disable the
+    `civicmesh apply` mask gate — operator never sees the safety
+    refusal that's supposed to catch unmasked timesyncd.
+
+    Heuristic: production deployments live under /usr/local/civicmesh/.
+    If `web_server.py` or `mesh_bot.py` is running from that tree AND
+    the opt-out is set, log loudly at every process start.
+
+    `caller_file` lets tests inject a fake path. Production callers
+    pass None (the default), which inspects the calling frame's
+    __file__. clock.py is in both dev and prod trees, so we can't
+    use clock.__file__ for the check — we want the entry point's.
+    """
+    if caller_file is None:
+        import inspect
+        caller_frame = inspect.stack()[1]
+        caller_file = caller_frame.filename
+    if not caller_file.startswith(_PROD_TREE_PREFIX):
+        return
+    log.critical(
+        "CIV-99: running from the prod tree (%s) with "
+        "[clock] require_timesync_masked = false. This opt-out is meant "
+        "for dev / RTC / internet-connected hosts that trust NTP. On a "
+        "production disaster node it disables the `civicmesh apply` "
+        "mask gate that's supposed to refuse unmasked timesyncd. If "
+        "this is a deliberate hybrid deployment, fine — otherwise flip "
+        "require_timesync_masked back to true in config.toml.",
+        caller_file,
+    )
 
 
 # ---------------------------------------------------------------------------

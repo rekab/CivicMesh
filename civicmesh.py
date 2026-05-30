@@ -364,18 +364,50 @@ def _cmd_unpin(args: argparse.Namespace) -> None:
 
 def _cmd_stats(args: argparse.Namespace) -> None:
     import sqlite3
+    import time as _time
 
     cfg, log, db_cfg = _load_runtime(args)
     init_db(db_cfg, log=log)
     conn = sqlite3.connect(cfg.db_path)
+    conn.row_factory = sqlite3.Row
     try:
         msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         sess = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         out = conn.execute("SELECT COUNT(*) FROM outbox WHERE status='queued'").fetchone()[0]
         votes = conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
+        # CIV-99: surface clock-correction state so operators see drift
+        # / admin events without dropping into SQL. Three values:
+        #   offset_seconds — current correction applied on every write
+        #   last_correction — trigger + age of the most recent row
+        #   vote_epoch — generation counter (bumped by admin / external_step)
+        offset_row = conn.execute(
+            "SELECT value FROM clock_state WHERE key='offset_seconds'"
+        ).fetchone()
+        offset = int(offset_row["value"]) if offset_row else 0
+        ve_row = conn.execute(
+            "SELECT value FROM clock_state WHERE key='vote_epoch'"
+        ).fetchone()
+        vote_epoch = int(ve_row["value"]) if ve_row else 0
+        last_row = conn.execute(
+            "SELECT trigger, system_time_after "
+            "FROM clock_corrections ORDER BY id DESC LIMIT 1"
+        ).fetchone()
     finally:
         conn.close()
     print(f"messages={msg} sessions={sess} outbox_pending={out} votes={votes}")
+    if last_row is not None:
+        # Age computed against raw time.time() because that's what the
+        # `stats` operator's terminal is reading. With offset applied,
+        # an age of "5 minutes ago" stays meaningful even if the Pi
+        # boot clock is years stale.
+        wall_now = int(_time.time()) + offset
+        age_sec = max(0, wall_now - int(last_row["system_time_after"]))
+        last_str = f"{last_row['trigger']}@{age_sec}s_ago"
+    else:
+        last_str = "none"
+    print(
+        f"clock offset_sec={offset} vote_epoch={vote_epoch} last_correction={last_str}"
+    )
 
 
 def _cmd_cleanup(args: argparse.Namespace) -> None:

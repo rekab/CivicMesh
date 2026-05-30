@@ -195,6 +195,12 @@ class ClockConfig:
     # step detection, /api/clock consensus) is unchanged. See
     # docs/clock_consensus.md § "Dev / RTC machines".
     require_timesync_masked: bool = True
+    # Retention window for clock_corrections audit rows. 365 days
+    # preserves a year of forensic record (sized for the dev/NTP case
+    # where 'external_step' rows may accrue hourly; production with NTP
+    # masked produces at most a few rows per day). Smaller values save
+    # space at the cost of incident-investigation history.
+    clock_corrections_retention_days: int = 365
 
 
 @dataclass(frozen=True)
@@ -438,6 +444,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "max_nudge_sec": cfg.clock.max_nudge_sec,
             "external_step_threshold_sec": cfg.clock.external_step_threshold_sec,
             "require_timesync_masked": cfg.clock.require_timesync_masked,
+            "clock_corrections_retention_days": cfg.clock.clock_corrections_retention_days,
         },
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
@@ -593,6 +600,34 @@ def load_config(path: str) -> AppConfig:
             "Check /usr/share/zoneinfo or `timedatectl list-timezones`."
         ) from None
 
+    # CIV-99: warn if the sanity_ceiling_epoch is approaching now. The
+    # default ceiling is 2029-01-01 UTC; on a hub running long after
+    # 2028-07, consensus reports near present-time would start hitting
+    # the ceiling and getting rejected as "too far in the future." The
+    # warning fires at every config load (web_server, mesh_bot,
+    # civicmesh CLI) so an operator scanning logs sees it well before
+    # silent feature breakage. See docs/clock_consensus.md § "Annual
+    # review" and AGENTS.md.
+    _CEILING_HORIZON_SEC = 180 * 86400  # 180 days
+    clock_ceiling = int(clock_raw.get("sanity_ceiling_epoch", 1862006400))
+    # Use raw time.time() here, not wall_now: this check runs at config
+    # load time, BEFORE the offset has been applied to anything, and we
+    # only care about "is the absolute ceiling close to now on this
+    # machine's clock." A stale Pi-Zero clock means we under-warn, not
+    # over-warn — acceptable.
+    import time as _time
+    if _time.time() + _CEILING_HORIZON_SEC > clock_ceiling:
+        logger.warning(
+            "config: clock.sanity_ceiling_epoch=%d (%s) is within %d days of now "
+            "(current=%d). After the ceiling, consensus will reject correct phone "
+            "reports and the offset will stop tracking real time. Bump the ceiling "
+            "in config.toml ANNUALLY; see docs/clock_consensus.md § 'Annual review'.",
+            clock_ceiling,
+            _time.strftime("%Y-%m-%d UTC", _time.gmtime(clock_ceiling)),
+            _CEILING_HORIZON_SEC // 86400,
+            int(_time.time()),
+        )
+
     return AppConfig(
         node=NodeConfig(
             site_name=site_name,
@@ -682,6 +717,7 @@ def load_config(path: str) -> AppConfig:
             max_nudge_sec=int(clock_raw.get("max_nudge_sec", 120)),
             external_step_threshold_sec=int(clock_raw.get("external_step_threshold_sec", 30)),
             require_timesync_masked=bool(clock_raw.get("require_timesync_masked", True)),
+            clock_corrections_retention_days=int(clock_raw.get("clock_corrections_retention_days", 365)),
         ),
         db_path=db_path,
     )

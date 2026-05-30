@@ -41,6 +41,7 @@ from database import (
     insert_message_wall,
     insert_telemetry_event,
     mark_outbox_failed,
+    prune_clock_corrections,
     prune_heard_packets,
     prune_telemetry,
     prune_terminal_outbox,
@@ -114,6 +115,17 @@ async def _retention_task(cfg, db_cfg: DBConfig, log):
                 )
             except Exception as e:
                 log.error("retention:telemetry_error %s", e, exc_info=True)
+            # Prune clock_corrections per cfg.clock.clock_corrections_retention_days
+            # (default 365). External_step rows can accrue hourly on dev nodes
+            # without timesync masked; production sees a handful per day at most.
+            try:
+                prune_clock_corrections(
+                    db_cfg,
+                    cutoff_ts=wall_now(db_cfg) - cfg.clock.clock_corrections_retention_days * 86400,
+                    log=log,
+                )
+            except Exception as e:
+                log.error("retention:clock_corrections_error %s", e, exc_info=True)
         except Exception as e:
             log.error("retention:error %s", e, exc_info=True)
         await asyncio.sleep(3600)
@@ -861,6 +873,12 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
     log, sec = setup_logging("mesh_bot", cfg.logging)
     log.info("Civic Mesh mesh_bot starting")
 
+    # CIV-99: loud CRITICAL if running from /usr/local/civicmesh/ with
+    # `[clock] require_timesync_masked = false` — the dev opt-out
+    # shouldn't reach a production disaster node.
+    if not cfg.clock.require_timesync_masked:
+        clock.warn_if_prod_opt_out_of_timesync_mask(log, caller_file=__file__)
+
     db_cfg = DBConfig(path=cfg.db_path)
     init_db(db_cfg, log=log)
     reconcile_message_status(db_cfg, log=log)
@@ -962,6 +980,11 @@ def main() -> None:
     """
     Console-script entrypoint (sync wrapper).
     """
+    # CIV-99: hard-fail on non-Linux before anything else (clock-consensus
+    # depends on /proc/sys/kernel/random/boot_id; _clock_task would
+    # explode at startup otherwise).
+    clock.ensure_linux_platform()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--meshcore-debug", action="store_true", help="Enable meshcore library debug logging")

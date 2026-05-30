@@ -46,17 +46,54 @@ uv run python -m unittest tests.test_admin_outbox_list       # single test modul
   cookies, MAC-based abuse prevention, rate limiting. Queues outbound
   messages.
 - **mesh_bot.py** — Async process using `meshcore`. Connects to the
-  Heltec V3 radio over USB serial. Three concurrent async tasks:
-  outbox sender (with exponential backoff), retention pruner, and
-  heartbeat recorder.
+  Heltec V3 radio over USB serial. Concurrent async tasks: outbox
+  sender (with exponential backoff), retention pruner, heartbeat
+  recorder, and clock-consensus task.
 - **database.py** — Schema and query functions. Tables: `messages`,
-  `outbox`, `votes`, `sessions`, `status`, `heard_packets`. The DB is
-  the sole IPC channel between the two processes; see
-  `docs/message_lifecycle.md` for the outbox state machine and
-  atomicity rules.
+  `outbox`, `votes`, `sessions`, `status`, `heard_packets`,
+  `clock_state`, `clock_corrections`. The DB is the sole IPC channel
+  between the two processes; see `docs/message_lifecycle.md` for the
+  outbox state machine and atomicity rules and
+  `docs/clock_consensus.md` for the clock model.
+- **clock.py** — Wall-clock correction primitives (CIV-99). Pure
+  consensus math + `get_boot_id`, `wall_now`, `get_offset`,
+  `ensure_linux_platform`. See "Clock model" below.
 - **config.py** — Loads and validates `config.toml`.
 - **civicmesh.py** — Operator CLI (SSH-only): pin/unpin, stats, outbox
-  management, session queries.
+  management, session queries, `set-clock` admin command.
+
+### Clock model (CIV-99)
+
+CivicMesh hubs run without internet, often on a Pi Zero 2W with no
+RTC. The OS clock starts stale every cold boot. CivicMesh keeps an
+integer `clock_state.offset_seconds` derived from walk-up phone reports
+and adds it to raw `time.time()` on every stamped DB write. We never
+set the OS clock from bot code; promotion is a separate root-only
+`civicmesh set-clock` admin command.
+
+There are **three time sources** in this codebase. Pick the right one:
+
+| Source | Use it for |
+|---|---|
+| `wall_now(cfg)` (`int(time.time()) + offset`) | Stamping a moment a human or another process will read — message ts, session timestamps, retention cutoffs, response payloads, log audit rows. |
+| `time.monotonic()` | Measuring elapsed time — backoff delays, advert cooldowns, rate-limit windows, cache TTLs. Must not be perturbed by admin/NTP wall jumps. |
+| Raw `int(time.time())` | Almost nowhere. The one exception is `compute_and_persist_sender_ts`, which matches the firmware's `time(NULL)` stamp for echo correlation. New code should default to one of the two above. |
+
+Wrong choice doesn't usually fail a test — it silently produces wrong
+message timestamps, wrong rate-limit windows, or breaks consensus race
+protection. The full design is in `docs/clock_consensus.md`.
+
+**Production prereq**: `systemd-timesyncd.service` and `chrony.service`
+must be persistently masked (`sudo systemctl mask <unit>`, NOT
+`--runtime`). `civicmesh apply` enforces this by default; dev nodes
+that intentionally trust NTP can set `[clock] require_timesync_masked
+= false`.
+
+**Annual review**: `sanity_ceiling_epoch` (default 2029-01-01) is an
+absolute date. After it, all consensus reports get rejected as "too
+far in the future." Bump it once a year. The config loader logs a
+WARNING when "now + 180 days" crosses the ceiling so operators see
+the reminder.
 
 ## Invariants
 
@@ -78,6 +115,59 @@ These constraints must be preserved across all changes:
 - Provisioning must run `apt full-upgrade` and reboot before deployment
   (older kernels have a `brcmfmac` P2P crash from nearby iOS devices).
 
+### Clock-correction invariants (CIV-99)
+
+Sharp edges around the clock model — they are easy to miss in review
+and silent-breakage when you do:
+
+- **Wall-stamped DB writes never call `time.time()` inline at the
+  caller.** They go through the centralized helpers in `database.py`
+  (`insert_message_wall`, `queue_outbox_and_message`,
+  `record_post_for_session`, `upsert_status`, `insert_telemetry_*`,
+  `update_vote`, `touch_session_last_seen`, `increment_heard`,
+  `insert_heard_packet`, `create_or_update_session`,
+  `record_clock_report`). Each one reads raw `time.time()` AND
+  `clock_state.offset_seconds` INSIDE its own `BEGIN IMMEDIATE` so
+  the admin command's `BEGIN EXCLUSIVE` can't slip between the two
+  and produce a double-corrected stamp. Production callers must NOT
+  pass `ts=` or `_ts_for_test=` (the latter is a test-fixture escape
+  hatch).
+- **`compute_and_persist_sender_ts` is the one exception** — raw
+  `int(time.time())`, no `BEGIN IMMEDIATE`. The MeshCore firmware
+  stamps outgoing packets with `time(NULL)`, so our stored sender_ts
+  has to use the same reference for echo matching to work. Do NOT
+  "fix" this into `wall_now` under a transaction; it looks
+  inconsistent on purpose. A source-level test in
+  `tests/test_clock.py::TestSenderTsRawTimePin` will catch the
+  refactor.
+- **`evaluate_and_maybe_apply_consensus` is meaningful as one
+  transaction.** Its body — read offset + vote_epoch + reports,
+  evaluate, write — is held under a single `BEGIN IMMEDIATE`. Do NOT
+  split it for readability; the admin command's `BEGIN EXCLUSIVE`
+  serializes against this lock, and any read/eval/write split
+  reintroduces the race where admin invalidates the snapshot between
+  the bot's read and write. There's a threading test guarding this.
+- **`vote_epoch` is bumped only on `admin` and `external_step`.**
+  Never on consensus acceptance (consensus consumes votes, doesn't
+  invalidate them) and never on cross-boot hygiene (boot ID already
+  excludes prior-boot rows). The three rules are distinct; don't
+  rationalize them into one.
+- **`first_correction_done` is derived from `'consensus'` rows
+  only**, scoped to the current boot epoch via `applied_at_monotonic`.
+  `'admin'` and `'external_step'` rows do NOT consume the
+  first-correction privilege — after either, the next consensus may
+  legitimately need a large jump.
+- **`fake-hwclock save` failure in `civicmesh set-clock` does NOT
+  roll back the DB.** The system clock is correct after `date -s`;
+  rolling back the DB would leave wall_now = jumped_clock + old_offset
+  (double-corrected) at runtime. The audit row carries
+  `fake_hwclock_save_failed=true`, CRITICAL is logged, exit non-zero.
+  The only residual risk is reboot reversion, recoverable by re-running
+  the command after fixing fake-hwclock.
+- **CivicMesh runs on Linux only.** `/proc/sys/kernel/random/boot_id`
+  is the cross-boot identity gate. `clock.ensure_linux_platform()`
+  fails loudly at process startup on macOS/BSD/Windows.
+
 ## Style and commits
 
 - 4-space indentation, Python 3.13+ syntax. No linter or formatter
@@ -90,3 +180,10 @@ These constraints must be preserved across all changes:
 
 Runtime config is in `config.toml`. When editing config values or
 defaults in code, add a comment explaining why the change was made.
+
+`config.toml` is per-deployment (gitignored). Be careful copying a
+dev config to a prod node — `[clock] require_timesync_masked = false`
+is fine on a dev Pi 4 with internet but disables the production NTP
+mask gate. `web_server` and `mesh_bot` log CRITICAL at startup if
+they detect the opt-out flag while running from `/usr/local/civicmesh/`
+to catch this.
