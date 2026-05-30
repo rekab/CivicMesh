@@ -74,6 +74,7 @@ from database import (
     DBConfig,
     _connect,
     cross_boot_storage_hygiene,
+    evaluate_and_maybe_apply_consensus,
     get_eligible_clock_reports,
     get_latest_clock_correction,
     has_consensus_correction_in_boot,
@@ -610,6 +611,215 @@ class TestConsensusWriter(_TempDBTest):
                 "SELECT value FROM clock_state WHERE key='vote_epoch'"
             ).fetchone()["value"]
         self.assertEqual(ve, "0", "consensus must NOT bump vote_epoch")
+
+
+# ---------------------------------------------------------------------------
+# Atomicity regression: consensus tick + concurrent admin command.
+# ---------------------------------------------------------------------------
+
+
+class TestConsensusTickAtomicity(_TempDBTest):
+    """The race that prompted evaluate_and_maybe_apply_consensus.
+
+    The naive implementation read offset / vote_epoch / reports through
+    SEPARATE connections, evaluated, then called write_consensus_correction
+    on a FOURTH connection. The admin command's BEGIN EXCLUSIVE could
+    commit between the read phase and the write phase — invalidating
+    the votes — but the bot's write proceeded anyway with stale data
+    and silently undid the admin correction.
+
+    With the atomic helper, the bot's BEGIN IMMEDIATE blocks the
+    admin's BEGIN EXCLUSIVE until the bot commits. Either:
+      - Bot commits first: writes offset=864000, admin then overwrites
+        with offset=0.
+      - Admin commits first: bot sees NULL reports + new vote_epoch ⇒
+        no eligible reports ⇒ no decision ⇒ no write.
+    Either way, the final offset is 0 (admin's intent preserved).
+
+    The test forces interleave with threading + a patch on
+    clock.evaluate_consensus that signals an event AFTER the reads
+    have happened but BEFORE the helper commits. While the helper
+    holds the lock, the admin thread tries BEGIN EXCLUSIVE — that
+    must block, not race ahead.
+    """
+
+    def _seed_eligible_reports(self):
+        import threading as _t  # noqa: F401 (suppress flake if unused)
+        for sid in ("sA", "sB", "sC"):
+            with _connect(self.db_cfg) as conn:
+                conn.execute(
+                    "INSERT INTO sessions(session_id, name, location, mac_address, "
+                    "fingerprint, created_ts, last_post_ts, post_count_hour) "
+                    "VALUES (?, 'x', 'x', NULL, NULL, 0, NULL, 0)",
+                    (sid,),
+                )
+            # Each vote is +864000 (raw_now=1_700_000_000, client=2_564_000_000)
+            record_clock_report(
+                self.db_cfg, session_id=sid,
+                client_time=1_700_000_000 + 864_000, boot_id="boot-T",
+                _ts_for_test=1_700_000_000, _mono_for_test=5.0,
+            )
+
+    def test_admin_landing_between_read_and_commit_does_not_lose(self):
+        import threading
+        import clock as _clock_mod
+        self._seed_eligible_reports()
+
+        # Synchronization. consensus_in_txn fires once the helper has
+        # read all of offset/vote_epoch/reports and is about to commit;
+        # the admin thread waits for it before attempting BEGIN EXCLUSIVE.
+        consensus_in_txn = threading.Event()
+        bot_result = {}
+        admin_done = threading.Event()
+
+        original_eval = _clock_mod.evaluate_consensus
+
+        def signaling_eval(*a, **kw):
+            decision = original_eval(*a, **kw)
+            consensus_in_txn.set()
+            # Hold here briefly so admin gets to attempt BEGIN EXCLUSIVE
+            # WHILE the helper still holds the lock. Without atomicity,
+            # admin would race ahead.
+            time.sleep(0.4)
+            return decision
+
+        consensus_cfg = ConsensusConfig(
+            quorum_min_cookies=3,
+            sanity_floor_epoch=1_000_000_000,
+            sanity_ceiling_epoch=3_000_000_000,
+            max_nudge_sec=120,
+        )
+
+        def bot_thread():
+            with patch("clock.evaluate_consensus", side_effect=signaling_eval):
+                bot_result["applied"] = evaluate_and_maybe_apply_consensus(
+                    self.db_cfg,
+                    boot_id="boot-T",
+                    max_report_age_sec=3600,
+                    min_cookie_age_sec=0,
+                    consensus_cfg=consensus_cfg,
+                )
+
+        def admin_thread():
+            consensus_in_txn.wait(timeout=5)
+            # Run an admin-equivalent under BEGIN EXCLUSIVE. With the
+            # atomic helper holding BEGIN IMMEDIATE, this MUST block
+            # until the helper commits.
+            conn = _connect(self.db_cfg)
+            try:
+                conn.execute("BEGIN EXCLUSIVE")
+                conn.execute(
+                    "UPDATE clock_state SET value='0' WHERE key='offset_seconds'"
+                )
+                conn.execute(
+                    "UPDATE clock_state SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) "
+                    "WHERE key='vote_epoch'"
+                )
+                conn.execute(
+                    "UPDATE sessions SET "
+                    " clock_offset_vote_sec=NULL, clock_reported_system_ts=NULL, "
+                    " clock_report_mono=NULL, clock_report_boot_id=NULL, "
+                    " clock_vote_epoch=NULL"
+                )
+                conn.execute(
+                    "INSERT INTO clock_corrections "
+                    "(applied_at_monotonic, system_time_before, system_time_after, "
+                    " offset_before_sec, offset_after_sec, trigger, "
+                    " voter_count, median_offset_vote_sec, source_summary) "
+                    "VALUES (?, ?, ?, ?, 0, 'admin', NULL, NULL, '{}')",
+                    (time.monotonic(), 1_700_000_100, 1_700_000_100 + 864_000, 864_000),
+                )
+                conn.execute("COMMIT")
+            finally:
+                conn.close()
+                admin_done.set()
+
+        t_bot = threading.Thread(target=bot_thread)
+        t_admin = threading.Thread(target=admin_thread)
+        t_bot.start()
+        t_admin.start()
+        t_bot.join(timeout=10)
+        t_admin.join(timeout=10)
+        self.assertFalse(t_bot.is_alive(), "bot thread hung")
+        self.assertFalse(t_admin.is_alive(), "admin thread hung")
+
+        # Admin's intent must be preserved: final offset is 0, and
+        # vote_epoch reflects the admin bump regardless of which thread
+        # committed first.
+        with _connect(self.db_cfg) as conn:
+            offset = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()["value"]
+            ve = conn.execute(
+                "SELECT value FROM clock_state WHERE key='vote_epoch'"
+            ).fetchone()["value"]
+            triggers = [
+                r["trigger"] for r in conn.execute(
+                    "SELECT trigger FROM clock_corrections ORDER BY id"
+                ).fetchall()
+            ]
+
+        self.assertEqual(offset, "0", "admin's correction must persist")
+        self.assertGreaterEqual(int(ve), 1, "admin must have bumped vote_epoch")
+        self.assertIn("admin", triggers, "admin row must be present")
+        # Either the bot committed first (and admin overwrote) or admin
+        # committed first (and the bot saw an empty eligibility set).
+        # Both outcomes are acceptable; the invariant is offset == 0.
+
+    def test_admin_first_makes_bot_a_noop(self):
+        """If admin commits BEFORE the consensus tick starts, the tick
+        sees the post-admin state (NULL reports, new vote_epoch) and
+        writes nothing."""
+        self._seed_eligible_reports()
+        # Apply an admin-equivalent first.
+        with _connect(self.db_cfg) as conn:
+            conn.execute("BEGIN EXCLUSIVE")
+            conn.execute(
+                "UPDATE clock_state SET value='0' WHERE key='offset_seconds'"
+            )
+            conn.execute(
+                "UPDATE clock_state SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) "
+                "WHERE key='vote_epoch'"
+            )
+            conn.execute(
+                "UPDATE sessions SET "
+                " clock_offset_vote_sec=NULL, clock_reported_system_ts=NULL, "
+                " clock_report_mono=NULL, clock_report_boot_id=NULL, "
+                " clock_vote_epoch=NULL"
+            )
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, trigger, "
+                " voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (?, ?, ?, ?, 0, 'admin', NULL, NULL, '{}')",
+                (time.monotonic(), 1_700_000_100, 1_700_000_100 + 864_000, 864_000),
+            )
+            conn.execute("COMMIT")
+
+        consensus_cfg = ConsensusConfig(
+            quorum_min_cookies=3,
+            sanity_floor_epoch=1_000_000_000,
+            sanity_ceiling_epoch=3_000_000_000,
+            max_nudge_sec=120,
+        )
+        applied = evaluate_and_maybe_apply_consensus(
+            self.db_cfg,
+            boot_id="boot-T",
+            max_report_age_sec=3600,
+            min_cookie_age_sec=0,
+            consensus_cfg=consensus_cfg,
+        )
+        self.assertIsNone(
+            applied,
+            "consensus must see no eligible reports after admin's NULL+epoch bump",
+        )
+        # And the offset must remain 0.
+        with _connect(self.db_cfg) as conn:
+            offset = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()["value"]
+        self.assertEqual(offset, "0")
 
 
 # ---------------------------------------------------------------------------

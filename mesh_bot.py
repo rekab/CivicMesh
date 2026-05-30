@@ -36,9 +36,8 @@ from database import (
     insert_heard_packet,
     compute_and_persist_sender_ts,
     cross_boot_storage_hygiene,
-    get_eligible_clock_reports,
+    evaluate_and_maybe_apply_consensus,
     get_latest_clock_correction,
-    has_consensus_correction_in_boot,
     insert_message_wall,
     insert_telemetry_event,
     mark_outbox_failed,
@@ -48,7 +47,6 @@ from database import (
     reconcile_message_status,
     record_outbox_send,
     upsert_status,
-    write_consensus_correction,
     write_external_step_correction,
 )
 import telemetry
@@ -212,63 +210,36 @@ async def _clock_task(cfg, db_cfg: DBConfig, log):
                 continue
 
             # --- Consensus ---
-            first_correction_done = has_consensus_correction_in_boot(
-                db_cfg, mono_now=mono_t, log=log,
-            )
-            current_offset = clock.get_offset(db_cfg)
-            current_vote_epoch = clock.get_vote_epoch(db_cfg)
-            corrected_now = wall_t + current_offset
-            reports_rows = get_eligible_clock_reports(
+            # ATOMIC tick: read offset + vote_epoch + reports, evaluate,
+            # and (if accepted) write the correction — all under one
+            # BEGIN IMMEDIATE inside the helper. A naive split across
+            # separate connections races against the admin command's
+            # BEGIN EXCLUSIVE; see the docstring on
+            # evaluate_and_maybe_apply_consensus and
+            # docs/clock_consensus.md § "Centralized write helpers."
+            applied = evaluate_and_maybe_apply_consensus(
                 db_cfg,
                 boot_id=boot_id,
-                vote_epoch=current_vote_epoch,
-                mono_now=mono_t,
                 max_report_age_sec=cc.max_report_age_sec,
-                wall_now_ts=corrected_now,
                 min_cookie_age_sec=cc.min_cookie_age_sec,
+                consensus_cfg=consensus_cfg,
                 log=log,
             )
-
-            if reports_rows:
-                reports = [
-                    clock.Report(
-                        session_id=r["session_id"],
-                        mac_address=r.get("mac_address"),
-                        offset_vote_sec=int(r["clock_offset_vote_sec"]),
-                    )
-                    for r in reports_rows
-                ]
-                decision = clock.evaluate_consensus(
-                    reports,
-                    current_offset=current_offset,
-                    raw_now=wall_t,
-                    first_correction_done=first_correction_done,
-                    cfg=consensus_cfg,
+            if applied is not None:
+                last_seen_id = applied["id"]
+                insert_telemetry_event(
+                    db_cfg,
+                    kind="clock_consensus_accepted",
+                    detail={
+                        "offset_before_sec": applied["offset_before_sec"],
+                        "offset_after_sec": applied["offset_after_sec"],
+                        "nudge_sec": applied["nudge_sec"],
+                        "voter_count": applied["voter_count"],
+                        "median_offset_vote_sec": applied["median_offset_vote_sec"],
+                        "accept_reason": applied["accept_reason"],
+                    },
+                    log=log,
                 )
-                # No-op suppression: nothing to write when nudge == 0.
-                if decision is not None and decision.nudge != 0:
-                    new_id = write_consensus_correction(
-                        db_cfg,
-                        new_offset=decision.new_offset,
-                        voter_count=decision.voter_count,
-                        median_offset_vote_sec=decision.median_offset_vote_sec,
-                        source_summary_json=clock.summary_to_json(decision.source_summary),
-                        log=log,
-                    )
-                    last_seen_id = new_id
-                    insert_telemetry_event(
-                        db_cfg,
-                        kind="clock_consensus_accepted",
-                        detail={
-                            "offset_before_sec": current_offset,
-                            "offset_after_sec": decision.new_offset,
-                            "nudge_sec": decision.nudge,
-                            "voter_count": decision.voter_count,
-                            "median_offset_vote_sec": decision.median_offset_vote_sec,
-                            "accept_reason": decision.accept_reason,
-                        },
-                        log=log,
-                    )
 
             wall_at_last_tick = wall_t
             mono_at_last_tick = mono_t

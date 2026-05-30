@@ -116,13 +116,23 @@ CREATE TABLE IF NOT EXISTS clock_state (
 );
 
 -- Audit log: consensus acceptance + admin command + external-step
--- detection. system_time_before/after are stored in the *raw* clock
--- frame at the moment of the event (system_time_after is what
--- time.time() reads immediately after the event, so for the admin
--- command this equals the wall-time target). voter_count and
--- median_offset_vote_sec are NULL for non-consensus triggers.
--- source_summary holds JSON: voter cookies/MACs, individual offset votes,
--- and trigger-specific flags like fake_hwclock_save_failed.
+-- detection. system_time_before/after meaning is per-trigger:
+--
+--   'consensus'     : both = int(time.time()) at event time. Consensus
+--                     never touches the OS clock, only clock_state.offset,
+--                     so before == after.
+--   'admin'         : system_time_before = original time.time() pre-jump;
+--                     system_time_after  = `date -s` target value (the
+--                     new time.time() after the jump). The change here
+--                     is the operator's clock promotion.
+--   'external_step' : both = int(time.time()) when the step was detected.
+--                     We don't know what wall was before the external
+--                     step happened (NTP, manual `date`, etc.) — we
+--                     only know what it is now.
+--
+-- voter_count and median_offset_vote_sec are NULL for non-consensus
+-- triggers. source_summary holds JSON: voter cookies/MACs, individual
+-- offset votes, and trigger-specific flags like fake_hwclock_save_failed.
 CREATE TABLE IF NOT EXISTS clock_corrections (
     id INTEGER PRIMARY KEY,
     applied_at_monotonic    REAL,
@@ -1066,27 +1076,37 @@ def update_outbox_sender_ts(cfg: DBConfig, *, outbox_id: int, sender_ts: int, lo
 def compute_and_persist_sender_ts(cfg: DBConfig, *, outbox_id: int, log=None) -> int:
     """Capture int(time.time()) as the outgoing packet's sender_ts and persist.
 
-    CIV-99: this is the ONE timestamp helper that uses RAW system time
-    rather than wall_now. The MeshCore firmware stamps each outgoing
-    packet with time(NULL) — the unmodified Pi system clock value — so
-    for our stored sender_ts to match the firmware's stamp (which the
-    echo carries back via RX_LOG_DATA.payload.sender_timestamp) we MUST
-    also use raw time.time(), not the corrected wall_now. Echo-match
-    tolerance (±1s, see outbox_echoes.py) absorbs the small gap between
-    this read and the firmware's own read.
+    CIV-99: this is the ONE timestamp helper that intentionally
+    deviates from the centralized-wall-writer discipline. It uses
+    RAW system time and does NOT wrap the UPDATE in BEGIN IMMEDIATE.
+    Reasons:
 
-    Two consequences:
+      1. The MeshCore firmware stamps each outgoing packet with
+         time(NULL) — the unmodified Pi system clock value — so for
+         our stored sender_ts to match the firmware's stamp (which
+         the echo carries back via
+         RX_LOG_DATA.payload.sender_timestamp), we MUST also use raw
+         time.time(), not the corrected wall_now. Echo-match
+         tolerance (±1s, see outbox_echoes.py) absorbs the small
+         gap between this read and the firmware's own read.
 
-      1. An admin command (`civicmesh-set-clock`) stepping the system
-         clock between this COMMIT and the firmware's encode loop costs
-         at most one missed echo match for the in-flight send (the
-         packet's stamp lands in the new frame, our stored sender_ts is
-         in the old). Vanishingly rare; documented in
-         docs/clock_consensus.md.
-      2. sender_ts is NEVER used for human display or row ordering —
-         only as an echo-match key. So the "raw system time" choice
-         does not pollute the wall-corrected `ts` columns we use for
-         message display.
+      2. sender_ts is NEVER used for human display, row ordering, or
+         retention-cutoff comparisons. It is purely an echo-match
+         key. So the "raw, not wall" choice does not pollute the
+         wall-corrected `ts` columns we use everywhere else.
+
+      3. No BEGIN IMMEDIATE because (a) the value being stored is
+         raw time, not derived from offset_seconds, so there is no
+         actor-vs-actor race with the admin command's BEGIN
+         EXCLUSIVE to defend against, and (b) the only failure mode
+         an admin step can introduce is a missed echo match for a
+         packet already in flight — at worst one retransmit, no
+         data integrity issue.
+
+    DO NOT "fix" this into wall_now under BEGIN IMMEDIATE — the
+    docstring above, docs/clock_consensus.md § "sender_ts is the
+    exception," and the unit-test note in tests/test_clock.py
+    all reflect the deliberate choice.
 
     Returns the captured sender_ts so the caller can hand it to the
     firmware send call. IS NULL guard preserves the first-send value
@@ -2285,6 +2305,170 @@ def get_eligible_clock_reports(
 
 
 @_retry_on_locked()
+def evaluate_and_maybe_apply_consensus(
+    cfg: DBConfig,
+    *,
+    boot_id: str,
+    max_report_age_sec: int,
+    min_cookie_age_sec: int,
+    consensus_cfg,  # clock.ConsensusConfig — lazy-imported to avoid circular dep
+    log=None,
+) -> Optional[dict]:
+    """Read state, evaluate consensus, and write the correction — all
+    under ONE BEGIN IMMEDIATE. Returns a dict describing the accepted
+    decision (or None for no-op / no-eligible / quorum fail / etc).
+
+    THE ATOMICITY IS LOAD-BEARING. A naive split — read offset and
+    vote_epoch and reports through separate connections, then call a
+    separate writer — races against `civicmesh-set-clock`'s BEGIN
+    EXCLUSIVE: admin can commit between the bot's reads and write,
+    invalidating the votes and bumping vote_epoch, but the bot's write
+    proceeds anyway with the stale snapshot and silently undoes the
+    admin correction. The only safe serialization is holding the
+    writer lock continuously from the offset read through the audit-
+    row INSERT, so that the admin's BEGIN EXCLUSIVE either runs fully
+    before us (we then see post-admin state — NULL reports, new epoch,
+    no decision) or fully after us (we commit a correction the admin
+    immediately overwrites — but at least we committed against a
+    consistent snapshot).
+
+    raw_now and mono_now are read INSIDE the transaction so they pair
+    with the offset read under the same lock. Eligibility evaluates
+    the boot ID equality, vote_epoch equality, monotonic age, and
+    cookie age (in the corrected wall frame) consistently.
+
+    No-op suppression is enforced here: nudge==0 commits the txn
+    (releasing locks) and writes no audit row. See
+    docs/clock_consensus.md § "Consensus math" and § "Centralized
+    write helpers."
+    """
+    import clock as _clock  # lazy: clock imports DBConfig/_connect from us
+
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            mono_now = time.monotonic()
+            raw_now = int(time.time())
+
+            offset_row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='offset_seconds'"
+            ).fetchone()
+            try:
+                current_offset = int(offset_row["value"]) if offset_row else 0
+            except (TypeError, ValueError):
+                current_offset = 0
+
+            ve_row = conn.execute(
+                "SELECT value FROM clock_state WHERE key='vote_epoch'"
+            ).fetchone()
+            try:
+                current_vote_epoch = int(ve_row["value"]) if ve_row else 0
+            except (TypeError, ValueError):
+                current_vote_epoch = 0
+
+            fcd_row = conn.execute(
+                "SELECT 1 FROM clock_corrections "
+                "WHERE trigger='consensus' AND applied_at_monotonic <= ? LIMIT 1",
+                (float(mono_now),),
+            ).fetchone()
+            first_correction_done = fcd_row is not None
+
+            corrected_wall = raw_now + current_offset
+            report_rows = conn.execute(
+                """
+                SELECT session_id, mac_address, clock_offset_vote_sec
+                FROM sessions
+                WHERE clock_offset_vote_sec IS NOT NULL
+                  AND clock_report_boot_id = ?
+                  AND clock_vote_epoch = ?
+                  AND clock_report_mono >= ?
+                  AND (? - COALESCE(created_ts, 0)) >= ?
+                ORDER BY clock_report_mono ASC
+                """,
+                (
+                    boot_id, current_vote_epoch,
+                    float(mono_now) - int(max_report_age_sec),
+                    corrected_wall, int(min_cookie_age_sec),
+                ),
+            ).fetchall()
+
+            if not report_rows:
+                conn.execute("COMMIT")
+                return None
+
+            reports = [
+                _clock.Report(
+                    session_id=r["session_id"],
+                    mac_address=r["mac_address"],
+                    offset_vote_sec=int(r["clock_offset_vote_sec"]),
+                )
+                for r in report_rows
+            ]
+            decision = _clock.evaluate_consensus(
+                reports,
+                current_offset=current_offset,
+                raw_now=raw_now,
+                first_correction_done=first_correction_done,
+                cfg=consensus_cfg,
+            )
+
+            if decision is None or decision.nudge == 0:
+                conn.execute("COMMIT")
+                return None
+
+            # Apply: bump offset, append audit row. Both system_time_*
+            # columns get raw_now — consensus does not touch the OS clock,
+            # so time.time() reads the same before and after. See the
+            # clock_corrections schema comment for per-trigger meanings.
+            conn.execute(
+                "UPDATE clock_state SET value=? WHERE key='offset_seconds'",
+                (str(int(decision.new_offset)),),
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO clock_corrections
+                  (applied_at_monotonic, system_time_before, system_time_after,
+                   offset_before_sec, offset_after_sec,
+                   trigger, voter_count, median_offset_vote_sec, source_summary)
+                VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
+                """,
+                (mono_now, raw_now, raw_now,
+                 current_offset, int(decision.new_offset),
+                 int(decision.voter_count),
+                 int(decision.median_offset_vote_sec),
+                 _clock.summary_to_json(decision.source_summary)),
+            )
+            new_id = int(cur.lastrowid)
+            conn.execute("COMMIT")
+            if log:
+                log.info(
+                    "clock:consensus_accepted id=%d offset_before=%d offset_after=%d "
+                    "voter_count=%d nudge=%d reason=%s",
+                    new_id, current_offset, int(decision.new_offset),
+                    int(decision.voter_count), int(decision.nudge),
+                    decision.accept_reason,
+                )
+            return {
+                "id": new_id,
+                "offset_before_sec": current_offset,
+                "offset_after_sec": int(decision.new_offset),
+                "nudge_sec": int(decision.nudge),
+                "voter_count": int(decision.voter_count),
+                "median_offset_vote_sec": int(decision.median_offset_vote_sec),
+                "accept_reason": decision.accept_reason,
+            }
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+@_retry_on_locked()
 def write_consensus_correction(
     cfg: DBConfig,
     *,
@@ -2294,14 +2478,23 @@ def write_consensus_correction(
     source_summary_json: str,
     log=None,
 ) -> int:
-    """Apply a consensus-accepted correction: bump offset, append audit row.
+    """Lower-level consensus writer used by tests and the migration path.
+
+    Production callers MUST use `evaluate_and_maybe_apply_consensus`
+    instead — it folds the offset/vote_epoch/reports read AND the
+    write into a single BEGIN IMMEDIATE so the admin command's
+    BEGIN EXCLUSIVE can't invalidate the snapshot between read and
+    write. Splitting them (as this function alone does) reintroduces
+    that race; this helper survives because the unit tests for the
+    schema-level behavior need a direct entry point.
 
     Runs under BEGIN IMMEDIATE. Caller MUST have already verified
     `nudge != 0` (no-op suppression policy) before calling — this
-    function unconditionally writes when invoked.
-
-    Does NOT bump vote_epoch (consensus applies votes, doesn't
-    invalidate them). Returns the new clock_corrections.id.
+    function unconditionally writes when invoked. Does NOT bump
+    vote_epoch (consensus applies votes, doesn't invalidate them).
+    Both system_time_before and system_time_after are stored as
+    int(time.time()) — see the clock_corrections schema comment for
+    per-trigger meaning. Returns the new clock_corrections.id.
     """
     conn = _connect(cfg)
     try:
@@ -2311,8 +2504,7 @@ def write_consensus_correction(
                 "SELECT value FROM clock_state WHERE key='offset_seconds'"
             ).fetchone()
             offset_before = int(row["value"]) if row else 0
-            system_time_before = int(time.time())
-            system_time_after = system_time_before + (int(new_offset) - offset_before)
+            raw_now = int(time.time())
             mono = time.monotonic()
             conn.execute(
                 "UPDATE clock_state SET value=? WHERE key='offset_seconds'",
@@ -2326,7 +2518,7 @@ def write_consensus_correction(
                    trigger, voter_count, median_offset_vote_sec, source_summary)
                 VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?)
                 """,
-                (mono, system_time_before, system_time_after,
+                (mono, raw_now, raw_now,
                  offset_before, int(new_offset),
                  int(voter_count), int(median_offset_vote_sec), source_summary_json),
             )

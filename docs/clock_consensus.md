@@ -249,9 +249,22 @@ concurrently.
 ## NTP coexistence
 
 `civicmesh apply` refuses to proceed unless `systemd-timesyncd` (and
-`chrony`, if installed) is masked. This is the structural defense:
-the deployment invariant is "no other process touches the system
-clock."
+`chrony`, if installed) is **masked** — not merely disabled. This is
+the structural defense: the deployment invariant is "no other
+process touches the system clock."
+
+`disabled` is NOT sufficient. A merely-disabled unit can still be
+started by a manual `systemctl start <unit>`, by another unit's
+`Requires=` dependency, or by `systemd --user` automation that
+operators sometimes layer in. `masked` redirects the unit file to
+`/dev/null`, which causes any start attempt to fail outright.
+Unit-not-installed is also acceptable (no file ⇒ no risk).
+
+`civicmesh apply` accepts only `masked` (and `masked-runtime`), and
+treats `enabled`, `disabled`, `static`, `alias`, `indirect`,
+`generated`, `linked`, and `enabled-runtime` as failures — they all
+allow the unit to be started by something. The exit message points
+at `systemctl mask <unit>` for remediation.
 
 The runtime external-step detector above is the safety net for when
 the structural defense fails (someone re-enables timesyncd manually,
@@ -311,7 +324,11 @@ The helpers are:
 - `insert_heard_packet`
 - `touch_session_last_seen`
 - `update_vote`
-- `compute_and_persist_sender_ts`  *(special — uses RAW time, see below)*
+- `evaluate_and_maybe_apply_consensus` *(the consensus-tick helper —
+  folds read, evaluate, and write into one BEGIN IMMEDIATE so the
+  admin command's BEGIN EXCLUSIVE can't invalidate the snapshot
+  between read and write)*
+- `compute_and_persist_sender_ts`  *(deliberate exception — see below)*
 
 Why this invariant matters: the admin command sets the system clock
 and resets `offset_seconds` to 0 under `BEGIN EXCLUSIVE`. If an
@@ -332,16 +349,32 @@ scanning production source files.
 
 ### sender_ts is the exception
 
-`compute_and_persist_sender_ts` uses **raw `time.time()`**, NOT
-`wall_now`. The MeshCore firmware stamps each outgoing packet with
-`time(NULL)` — the unmodified Pi system clock — so for our stored
-`sender_ts` to match the firmware's stamp (which the echo carries
-back via `RX_LOG_DATA.payload.sender_timestamp`), we must use the
-same reference. Echo-match tolerance (±1s in
-`outbox_echoes.py`) absorbs the small gap between our read and the
-firmware's. `sender_ts` is never used for human display or row
-ordering — only as an echo-match key — so the raw-time choice does
-not pollute the wall-corrected `ts` columns.
+`compute_and_persist_sender_ts` intentionally **deviates from both
+halves** of the centralized-wall-writer discipline: it uses **raw
+`time.time()`** (not `wall_now`) AND it does NOT wrap the UPDATE in
+`BEGIN IMMEDIATE`. Reasons:
+
+- **Raw, not wall**: The MeshCore firmware stamps each outgoing
+  packet with `time(NULL)` — the unmodified Pi system clock — so for
+  our stored `sender_ts` to match the firmware's stamp (which the
+  echo carries back via `RX_LOG_DATA.payload.sender_timestamp`), we
+  must use the same reference. Echo-match tolerance (±1s in
+  `outbox_echoes.py`) absorbs the small gap between our read and the
+  firmware's.
+
+- **No BEGIN IMMEDIATE**: The value being stored is raw time, not
+  `raw + offset`. There is no offset read to pair with the time
+  read, so there is no actor-vs-actor race with the admin command's
+  `BEGIN EXCLUSIVE` to defend against. The only failure mode an
+  admin step can introduce is a missed echo match for a packet
+  already in flight when `date -s` lands — at worst one retransmit,
+  no data-integrity issue.
+
+`sender_ts` is never used for human display, row ordering, or
+retention cutoffs — only as an echo-match key — so the deviation
+does not pollute the wall-corrected `ts` columns. **Do not "fix"
+this into `wall_now` under `BEGIN IMMEDIATE`** — the same warning
+appears at the function's docstring in `database.py`.
 
 ## Elapsed-time discipline
 

@@ -595,41 +595,54 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # CIV-99: apply refuses to proceed unless systemd-timesyncd (and
-    # chrony, if installed) are masked. The clock-correction design
-    # depends on the invariant "no other process touches the system
-    # clock" — see docs/clock_consensus.md. If timesyncd ever runs (Pi
-    # gets internet briefly, a package upgrade re-enables it), an NTP
-    # step will trigger the consensus task's external-step detector
-    # and rebase the offset to 0. That's by design as a runtime safety
-    # net, but the structural defense is to keep the unit masked. Dry
-    # runs skip this — the operator may legitimately want to preview
-    # the apply plan before fixing the masking state.
+    # chrony, if installed) are MASKED — not merely disabled. The
+    # clock-correction design depends on "no other process touches the
+    # system clock" (docs/clock_consensus.md). A masked unit cannot
+    # be started by `systemctl start <unit>` or by another unit's
+    # `Requires=` dependency; a merely-disabled unit can be started by
+    # either, so `disabled` is NOT sufficient. The runtime external-
+    # step detector is a safety net, not a substitute for the
+    # structural defense. Dry runs skip this — operator may want to
+    # preview the apply plan before fixing the masking state.
     if not args.dry_run:
+        # Possible `systemctl is-enabled` outputs we treat as safe:
+        #   "masked", "masked-runtime" — start refused outright
+        #   (handled separately) unit-not-installed: not on disk, so
+        #   no risk of NTP stepping the clock
+        # Everything else — enabled / disabled / static / alias /
+        # indirect / generated / linked / enabled-runtime — must be
+        # rejected, even disabled (a downstream dependency or manual
+        # `systemctl start` could still launch it).
+        _MASKED_OK = ("masked", "masked-runtime")
         for unit in ("systemd-timesyncd.service", "chrony.service"):
             try:
                 result = _sub.run(
-                    ["systemctl", "is-enabled", "--quiet", unit],
-                    capture_output=True,
+                    ["systemctl", "is-enabled", unit],
+                    capture_output=True, text=True, check=False,
                 )
             except FileNotFoundError:
                 # systemctl missing — non-systemd host (CI / tests). Skip.
                 break
-            # is-enabled returns 0 for enabled / static / alias, 1 for
-            # disabled, 2 for not-installed (some versions). "masked"
-            # returns 0 with a different stdout that is-enabled prints
-            # WITHOUT --quiet; with --quiet it returns non-zero only
-            # for masked/disabled/missing. Treat 0 (active/enabled) as
-            # the failure case — we want it masked or absent.
-            if result.returncode == 0:
-                print(
-                    f"civicmesh: apply: {unit} is enabled. CIV-99 requires "
-                    "this unit to be masked so it does not step the system "
-                    "clock out from under the consensus task. Run:\n"
-                    f"  sudo systemctl mask {unit}\n"
-                    "and re-run `civicmesh apply`. See docs/clock_consensus.md.",
-                    file=sys.stderr,
-                )
-                sys.exit(7)
+            state = (result.stdout or "").strip().lower()
+            if state in _MASKED_OK:
+                continue
+            stderr = (result.stderr or "").strip().lower()
+            # "no such file or directory" / "no such unit" => unit isn't
+            # installed on this host. Exit codes vary across systemd
+            # versions (1 on older, 4 on newer); match on stderr text
+            # for portability.
+            if "no such" in stderr or "not-found" in state or "not found" in stderr:
+                continue
+            print(
+                f"civicmesh: apply: {unit} is '{state or '<no state>'}' "
+                f"(exit {result.returncode}). CIV-99 requires this unit to "
+                "be MASKED (not just disabled) so it cannot be started by "
+                "`systemctl start` or by another unit's Requires=. Run:\n"
+                f"  sudo systemctl mask {unit}\n"
+                "and re-run `civicmesh apply`. See docs/clock_consensus.md.",
+                file=sys.stderr,
+            )
+            sys.exit(7)
 
     try:
         cfg = load_config(str(_resolve_config_path(args)))
