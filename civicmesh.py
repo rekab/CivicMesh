@@ -598,6 +598,23 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         print("civicmesh: apply requires root; re-run with sudo", file=sys.stderr)
         sys.exit(1)
 
+    # Load config first — both the strict-validation block below AND
+    # the CIV-99 timesyncd-mask check need cfg in hand. The mask check
+    # is gated on cfg.clock.require_timesync_masked so dev / RTC-backed
+    # machines can opt out (see docs/clock_consensus.md § "Dev / RTC
+    # machines").
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: apply: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    errors = _strict_validation_errors(cfg)
+    if errors:
+        for msg in errors:
+            print(f"civicmesh: apply: {msg}", file=sys.stderr)
+        sys.exit(3)
+
     # CIV-99: apply refuses to proceed unless systemd-timesyncd (and
     # chrony, if installed) are PERSISTENTLY MASKED — not
     # masked-runtime, not merely disabled. The clock-correction design
@@ -621,9 +638,15 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     #   / "generated" / "linked" / "linked-runtime"
     #                       — all permit start.
     #
-    # Dry runs skip this so an operator can preview the plan before
-    # fixing the masking state.
-    if not args.dry_run:
+    # Two opt-outs:
+    #   - dry-run: operator may want to preview the plan before fixing
+    #     the masking state.
+    #   - cfg.clock.require_timesync_masked = false: dev / RTC /
+    #     internet-connected machines that intentionally trust NTP.
+    #     This ONLY skips the apply pre-flight check; the runtime
+    #     offset-on-write model and the external-step detector are
+    #     unchanged.
+    if not args.dry_run and cfg.clock.require_timesync_masked:
         # Only "masked" is acceptable. masked-runtime is NOT — see the
         # block comment above.
         _MASKED_OK = ("masked",)
@@ -675,22 +698,13 @@ def _cmd_apply(args: argparse.Namespace) -> None:
                 f"disabled). {why} Run:\n"
                 f"  sudo systemctl mask {unit}\n"
                 "(no --runtime flag) and re-run `civicmesh apply`. "
+                "If this is a dev / internet-connected / RTC-backed "
+                "machine, set `[clock] require_timesync_masked = false` "
+                "in your config to opt out. "
                 "See docs/clock_consensus.md.",
                 file=sys.stderr,
             )
             sys.exit(7)
-
-    try:
-        cfg = load_config(str(_resolve_config_path(args)))
-    except (ValueError, KeyError, OSError) as e:
-        print(f"civicmesh: apply: {e}", file=sys.stderr)
-        sys.exit(2)
-
-    errors = _strict_validation_errors(cfg)
-    if errors:
-        for msg in errors:
-            print(f"civicmesh: apply: {msg}", file=sys.stderr)
-        sys.exit(3)
 
     # Renderer/plan imports — moved here so the early gates above (mode,
     # root, CIV-99 timesyncd mask) don't pay the cost or risk of

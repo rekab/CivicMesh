@@ -1099,13 +1099,36 @@ class TestCentralizationInvariant(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class _ApplyTimesyncCheckHarness(unittest.TestCase):
-    """Drives civicmesh._cmd_apply just far enough to exercise the
-    timesyncd / chrony masked check, with `systemctl is-enabled` stubbed.
+def _fake_cfg_for_apply(
+    *, require_timesync_masked: bool = True, ap_channel: int = 6,
+):
+    """Build a minimal stand-in for AppConfig that _cmd_apply needs.
 
-    The check runs BEFORE config load and BEFORE driver.plan, so we
-    don't have to construct a real apply plan; we only need to
-    confirm the check's pass/fail behavior for each unit state.
+    Only the fields _cmd_apply touches BEFORE the apply-package import
+    are populated: `clock.require_timesync_masked` (CIV-99 gate) and
+    `ap.channel` (`_strict_validation_errors`). The rest are absent and
+    must not be reached in the tests below.
+    """
+    from unittest.mock import MagicMock
+    cfg = MagicMock(name="AppConfig")
+    cfg.clock = MagicMock(name="ClockConfig")
+    cfg.clock.require_timesync_masked = require_timesync_masked
+    cfg.ap = MagicMock(name="ApConfig")
+    cfg.ap.channel = ap_channel
+    return cfg
+
+
+class _ApplyTimesyncCheckHarness(unittest.TestCase):
+    """Drives civicmesh._cmd_apply through the early gates that need to
+    be exercised under CIV-99 (config load, strict-validation, and the
+    timesyncd / chrony mask check), with `systemctl is-enabled` and
+    `config.load_config` stubbed.
+
+    After the mask check, `_cmd_apply` does `from apply import driver`
+    and calls `driver.plan(cfg)`. We patch `apply.driver.plan` to raise
+    SystemExit(99) so a "test passed through to apply stage" outcome
+    surfaces as exit code 99 — distinct from any of the early-gate
+    rejection codes.
     """
 
     _UNITS = ("systemd-timesyncd.service", "chrony.service")
@@ -1120,11 +1143,14 @@ class _ApplyTimesyncCheckHarness(unittest.TestCase):
             "not-found\n", 4,
             "Failed to get unit file state for chrony.service: No such file or directory\n",
         ),
+        require_timesync_masked: bool = True,
     ):
         """Invoke civicmesh._cmd_apply with subprocess.run stubbed.
 
         Each *_state is (stdout, returncode, stderr) for that unit.
-        Returns (exit_code, captured_stderr).
+        Returns (exit_code, captured_stderr). exit_code == 99 means
+        "passed all early gates (config, strict-validation, timesyncd
+        mask check) and reached apply.driver.plan."
         """
         import civicmesh
         import io
@@ -1151,15 +1177,47 @@ class _ApplyTimesyncCheckHarness(unittest.TestCase):
         ns.no_restart = True
         ns.config = None
 
+        cfg = _fake_cfg_for_apply(
+            require_timesync_masked=require_timesync_masked,
+        )
+
+        # Install a fake `apply` package into sys.modules so the
+        # `from apply import driver, restart, validate` inside
+        # _cmd_apply succeeds regardless of which `apply` the test
+        # runner has on its path. `unittest discover tests` puts
+        # `tests/apply/` ahead of `apply/`, which has no `driver`
+        # attribute and breaks straight `patch("apply.driver.plan")`.
+        # Swapping the whole apply hierarchy via patch.dict is
+        # discovery-mode-agnostic.
+        import sys as _sys
+        import types as _types
+        fake_driver = _types.ModuleType("apply.driver")
+        def _plan(_cfg):
+            raise SystemExit(99)
+        fake_driver.plan = _plan
+        fake_apply = _types.ModuleType("apply")
+        fake_apply.driver = fake_driver
+        fake_apply.restart = _types.ModuleType("apply.restart")
+        fake_apply.validate = _types.ModuleType("apply.validate")
+        fake_apply.__path__ = []  # mark as package for `from apply import …`
+
         buf = io.StringIO()
         exit_code = None
-        # `_cmd_apply` does local `import subprocess as _sub` and
-        # `from config import load_config` — patching the SOURCE
-        # modules is what reaches into the local binding the function
-        # creates at call time.
-        with patch("subprocess.run", side_effect=fake_run), \
+        # `_cmd_apply` does local imports of `subprocess as _sub`,
+        # `config.load_config`, and `from apply import driver, restart,
+        # validate`. Patching the SOURCE modules reaches into the
+        # local bindings the function creates at call time. The fake
+        # apply.driver.plan above raises SystemExit(99) as the
+        # sentinel for "passed through all CIV-99 early gates."
+        with patch.dict(_sys.modules, {
+                "apply": fake_apply,
+                "apply.driver": fake_driver,
+                "apply.restart": fake_apply.restart,
+                "apply.validate": fake_apply.validate,
+             }), \
+             patch("subprocess.run", side_effect=fake_run), \
              patch("os.geteuid", return_value=0), \
-             patch("config.load_config", side_effect=SystemExit(99)), \
+             patch("config.load_config", return_value=cfg), \
              redirect_stderr(buf):
             try:
                 civicmesh._cmd_apply(ns)
@@ -1243,6 +1301,112 @@ class TestApplyTimesyncMaskedCheck(_ApplyTimesyncCheckHarness):
         self.assertEqual(exit_code, 7)
         self.assertIn("chrony.service", stderr)
         self.assertIn("masked-runtime", stderr)
+
+
+class TestApplyTimesyncMaskedOptOut(_ApplyTimesyncCheckHarness):
+    """`[clock] require_timesync_masked = false` skips the check.
+
+    For dev / RTC-backed / internet-connected machines that intentionally
+    trust NTP. ONLY skips the `apply` pre-flight; the runtime
+    offset-on-write model and external-step detector are unchanged.
+    """
+
+    def test_opt_out_skips_check_even_when_enabled(self):
+        """The most aggressive case: timesyncd is fully enabled, the
+        check would otherwise reject with exit 7, but the opt-out
+        bypasses it and lets _cmd_apply continue to the apply stage
+        (which our patch turns into exit 99)."""
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("enabled\n", 0, ""),
+            require_timesync_masked=False,
+        )
+        self.assertEqual(exit_code, 99)
+        # And no mask-related complaint should land in stderr.
+        self.assertNotIn("systemctl mask", stderr)
+        self.assertNotIn("masked-runtime", stderr)
+
+    def test_opt_out_skips_check_for_masked_runtime(self):
+        """Same opt-out covers masked-runtime — the dev opt-out is
+        unconditional once `require_timesync_masked = false`."""
+        exit_code, _ = self._run_apply(
+            timesyncd_state=("masked-runtime\n", 1, ""),
+            require_timesync_masked=False,
+        )
+        self.assertEqual(exit_code, 99)
+
+    def test_failure_message_points_at_opt_out(self):
+        """When the strict check rejects, the message mentions the
+        opt-out for dev / RTC machines so the operator finds it."""
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("enabled\n", 0, ""),
+            require_timesync_masked=True,
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("require_timesync_masked = false", stderr)
+
+
+# ---------------------------------------------------------------------------
+# ClockConfig: default, TOML round-trip, serialization
+# ---------------------------------------------------------------------------
+
+
+class TestClockConfigSerialization(unittest.TestCase):
+    """Ensure require_timesync_masked is loaded, defaulted, and emitted."""
+
+    def _write_config_toml(self, body: str) -> str:
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".toml", delete=False,
+        )
+        f.write(body)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    _MINIMAL_REQUIRED = """\
+db_path = "/tmp/civic_mesh_test.db"
+
+[node]
+site_name = "test"
+callsign = "test"
+
+[network]
+ip = "10.0.0.1"
+subnet_cidr = "10.0.0.0/24"
+iface = "wlan0"
+country_code = "US"
+dhcp_range_start = "10.0.0.10"
+dhcp_range_end = "10.0.0.250"
+dhcp_lease = "15m"
+
+[ap]
+ssid = "test"
+channel = 6
+"""
+
+    def test_default_is_true(self):
+        """Production default. A config that omits the field gets the
+        strict behavior."""
+        from config import load_config
+        cfg = load_config(self._write_config_toml(self._MINIMAL_REQUIRED))
+        self.assertTrue(cfg.clock.require_timesync_masked)
+
+    def test_explicit_false_loads(self):
+        from config import load_config
+        cfg = load_config(self._write_config_toml(
+            self._MINIMAL_REQUIRED + "\n[clock]\nrequire_timesync_masked = false\n"
+        ))
+        self.assertFalse(cfg.clock.require_timesync_masked)
+
+    def test_serializable_dict_includes_field(self):
+        """`civicmesh config show` round-trips the new field."""
+        from config import load_config, to_serializable_dict
+        cfg = load_config(self._write_config_toml(
+            self._MINIMAL_REQUIRED + "\n[clock]\nrequire_timesync_masked = false\n"
+        ))
+        out = to_serializable_dict(cfg)
+        self.assertIn("clock", out)
+        self.assertIn("require_timesync_masked", out["clock"])
+        self.assertEqual(out["clock"]["require_timesync_masked"], False)
 
 
 if __name__ == "__main__":

@@ -149,11 +149,11 @@ Skip this step entirely for a messaging-only deployment.
 
 ### 7a. Mask NTP services
 
-CIV-99 prerequisite — `apply` refuses to proceed without this.
-CivicMesh maintains its own corrected wall time from walk-up phone
-consensus (`docs/clock_consensus.md`); any other process stepping
-the OS clock conflicts. Persistently mask both potential NTP
-daemons:
+CIV-99 prerequisite for production nodes — `apply` refuses to
+proceed without this by default. CivicMesh maintains its own
+corrected wall time from walk-up phone consensus
+(`docs/clock_consensus.md`); any other process stepping the OS
+clock conflicts. Persistently mask both potential NTP daemons:
 
 ```bash
 sudo systemctl mask systemd-timesyncd.service
@@ -170,6 +170,13 @@ won't autostart, but `systemctl start` or another unit's
 `Requires=` can still launch it. `apply` rejects `disabled`,
 `masked-runtime`, and every other state except `masked` or
 "not installed."
+
+**Dev / RTC-backed machines** that intentionally trust NTP can opt
+out by setting `[clock] require_timesync_masked = false` in
+`config.toml`; `apply` will then skip the mask check. Leave the
+default (`true`) for offline production deployments — see
+`docs/clock_consensus.md` § "Dev / RTC machines" for what the
+opt-out does and does not change.
 
 ### 7b. Run apply
 

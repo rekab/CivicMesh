@@ -303,17 +303,40 @@ runs NTP, or where a future package upgrade flips the unit back to
 enabled. It is the safety net; persistent masking is the structural
 defense.
 
-### What about machines with RTCs or trusted NTP?
+### Dev / RTC machines: opt out of the `apply` check
 
-The current production deployment path is optimized for Pi Zero 2W
-disaster nodes without reliable time. On a hub that has a hardware
-RTC or that can trust NTP, the phone-derived offset should converge
-to near zero — but NTP still conflicts with the offset-consensus
-model because it can step the raw system clock under us. There is
-no "trust the system clock / skip phone consensus" config flag
-today; one could be added in a follow-up, but for CIV-99 the path
-is the same on every machine: mask the NTP units, let the
-walk-up-phone consensus run.
+The production deployment path is optimized for Pi Zero 2W disaster
+nodes without reliable time. For internet-connected dev Raspberry
+Pi 4s, RTC-backed hubs, and any other machine where you intentionally
+trust the OS clock / NTP, the persistent-mask requirement gets in the
+way without buying any safety — your raw clock is already correct.
+
+For those cases, `[clock] require_timesync_masked = false` skips the
+`civicmesh apply` mask check:
+
+```toml
+[clock]
+require_timesync_masked = false
+```
+
+This is **only** an `apply` pre-flight bypass. It does NOT change:
+
+- the runtime offset-on-write model (corrected_ts = raw + offset),
+- the `/api/clock` consensus path,
+- the external-step detector (which still fires if NTP steps the
+  clock while the bot is running and will reset `offset_seconds` to
+  zero plus an audit row),
+- the `civicmesh set-clock` admin command.
+
+In practice on a dev box that trusts NTP, the phone-derived offset
+converges to near zero, the external-step detector may fire
+occasionally on NTP corrections (recording an audit row each time
+that operators can ignore), and message timestamps remain accurate
+because raw and corrected are roughly the same. Leave this `true`
+for **all production offline / disaster deployments**.
+
+A future config mode could fully bypass the consensus runtime on
+trusted-clock machines; that is out of scope for CIV-99.
 
 The runtime external-step detector above is the safety net for when
 the structural defense fails (someone re-enables timesyncd manually,

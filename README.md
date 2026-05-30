@@ -326,12 +326,15 @@ sudo -u civicmesh civicmesh configure
 # walk-up phone consensus (see docs/clock_consensus.md); a separate
 # NTP daemon stepping the system clock would conflict. Use a
 # persistent mask, NOT --runtime (runtime masks disappear on reboot).
+# Dev / RTC-backed machines can opt out via `[clock]
+# require_timesync_masked = false` in config.toml.
 sudo systemctl mask systemd-timesyncd.service
 sudo systemctl mask chrony.service 2>/dev/null || true
 
 # Apply: render system files (hostapd, dnsmasq, nftables, networkd,
-# systemd units) and stage AP mode for the next boot. Refuses to
-# proceed unless the NTP services above are persistently masked.
+# systemd units) and stage AP mode for the next boot. By default,
+# refuses to proceed unless the NTP services above are persistently
+# masked; opt out for dev nodes via `require_timesync_masked = false`.
 sudo civicmesh apply
 
 # Reboot: cutover. hostapd takes the radio; the Pi comes back up

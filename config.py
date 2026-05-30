@@ -184,6 +184,17 @@ class ClockConfig:
     # declares an external clock step. 30s > normal scheduling jitter and
     # smaller-than-meaningful NTP step.
     external_step_threshold_sec: int = 30
+    # Whether `civicmesh apply` enforces that systemd-timesyncd /
+    # chrony are PERSISTENTLY MASKED. True is the production default —
+    # the offset-consensus model conflicts with any other process
+    # stepping the OS clock, and persistent masking is the structural
+    # defense (the runtime external-step detector is the safety net).
+    # Set False on dev / internet-connected / RTC-backed machines that
+    # intentionally trust NTP. This ONLY gates `civicmesh apply`'s
+    # pre-flight check; the runtime model (offset-on-write, external-
+    # step detection, /api/clock consensus) is unchanged. See
+    # docs/clock_consensus.md § "Dev / RTC machines".
+    require_timesync_masked: bool = True
 
 
 @dataclass(frozen=True)
@@ -426,6 +437,7 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
             "sanity_ceiling_epoch": cfg.clock.sanity_ceiling_epoch,
             "max_nudge_sec": cfg.clock.max_nudge_sec,
             "external_step_threshold_sec": cfg.clock.external_step_threshold_sec,
+            "require_timesync_masked": cfg.clock.require_timesync_masked,
         },
         "recovery": {
             "liveness_interval_sec": cfg.recovery.liveness_interval_sec,
@@ -669,6 +681,7 @@ def load_config(path: str) -> AppConfig:
             sanity_ceiling_epoch=int(clock_raw.get("sanity_ceiling_epoch", 1862006400)),
             max_nudge_sec=int(clock_raw.get("max_nudge_sec", 120)),
             external_step_threshold_sec=int(clock_raw.get("external_step_threshold_sec", 30)),
+            require_timesync_masked=bool(clock_raw.get("require_timesync_masked", True)),
         ),
         db_path=db_path,
     )
