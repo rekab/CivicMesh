@@ -322,8 +322,16 @@ curl -sSL https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicme
 # and radio settings.
 sudo -u civicmesh civicmesh configure
 
+# Mask NTP — CivicMesh maintains its own corrected wall time from
+# walk-up phone consensus (see docs/clock_consensus.md); a separate
+# NTP daemon stepping the system clock would conflict. Use a
+# persistent mask, NOT --runtime (runtime masks disappear on reboot).
+sudo systemctl mask systemd-timesyncd.service
+sudo systemctl mask chrony.service 2>/dev/null || true
+
 # Apply: render system files (hostapd, dnsmasq, nftables, networkd,
-# systemd units) and stage AP mode for the next boot.
+# systemd units) and stage AP mode for the next boot. Refuses to
+# proceed unless the NTP services above are persistently masked.
 sudo civicmesh apply
 
 # Reboot: cutover. hostapd takes the radio; the Pi comes back up

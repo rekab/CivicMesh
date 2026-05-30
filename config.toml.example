@@ -142,3 +142,52 @@ enabled = false
 # off. [runtime] (consumed by diagnostics tooling only).
 [diagnostics]
 enabled = false
+
+# CIV-99 wall-clock-correction tuning. CivicMesh maintains its own
+# corrected message time using:
+#
+#   corrected_message_time = int(time.time()) + offset_seconds
+#
+# Walk-up phones POST their wall clock to /api/clock; the mesh process
+# medians the votes into a consensus offset and applies it on every
+# stamped DB write. See docs/clock_consensus.md for the full design.
+#
+# DEPLOYMENT PREREQUISITE: systemd-timesyncd.service and chrony.service
+# MUST be persistently masked (`sudo systemctl mask <unit>` — no
+# --runtime flag). `civicmesh apply` refuses to proceed otherwise.
+# CivicMesh's offset model conflicts with any other process stepping
+# the OS clock; persistent masking is the structural defense and the
+# runtime external-step detector is the safety net.
+#
+# Defaults below are reasonable for Pi Zero 2W disaster nodes. Tier 2:
+# don't change without reading the design doc. [runtime] (consumed by
+# mesh_bot, web_server, civicmesh CLI).
+[clock]
+# How often _clock_task evaluates consensus. 60s ≈ the time from a
+# walk-up's report being eligible to the next correction tick.
+eval_interval_sec = 60
+# Distinct cookies (after MAC dedupe) required to accept a correction.
+# 3 absorbs one outlier vote via the median while staying achievable
+# at a small site.
+quorum_min_cookies = 3
+# Cookie age gate before a vote counts. Drops noise from first-second
+# walk-ups whose clock state is least known.
+min_cookie_age_sec = 300
+# Reports older than this drop out of consensus. Compared against
+# time.monotonic() (not wall) so within-tick frame changes don't flip
+# eligibility.
+max_report_age_sec = 1800
+# ABSOLUTE epoch bounds on corrected wall time. NOT raw-relative: the
+# scenario this feature targets is a stale raw clock, so a relative
+# ceiling would reject correct phone reports. Bump as the deployment
+# ages.
+sanity_floor_epoch    = 1704067200  # 2024-01-01 UTC
+sanity_ceiling_epoch  = 1862006400  # 2029-01-01 UTC
+# Cap on bidirectional nudges after the first consensus correction in
+# a boot. 120 absorbs a week+ of Pi-Zero RC drift in a single tick
+# while keeping per-tick changes bounded.
+max_nudge_sec = 120
+# |Δ(time.time() - time.monotonic())| above which the task declares an
+# external clock step (NTP came back, manual `date`, etc.). 30 is
+# above scheduling jitter and below any meaningful NTP correction.
+external_step_threshold_sec = 30

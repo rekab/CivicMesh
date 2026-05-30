@@ -1094,5 +1094,156 @@ class TestCentralizationInvariant(unittest.TestCase):
             )
 
 
+# ---------------------------------------------------------------------------
+# `civicmesh apply` NTP-masked check (CIV-99 timesync invariant)
+# ---------------------------------------------------------------------------
+
+
+class _ApplyTimesyncCheckHarness(unittest.TestCase):
+    """Drives civicmesh._cmd_apply just far enough to exercise the
+    timesyncd / chrony masked check, with `systemctl is-enabled` stubbed.
+
+    The check runs BEFORE config load and BEFORE driver.plan, so we
+    don't have to construct a real apply plan; we only need to
+    confirm the check's pass/fail behavior for each unit state.
+    """
+
+    _UNITS = ("systemd-timesyncd.service", "chrony.service")
+
+    def _run_apply(
+        self,
+        *,
+        timesyncd_state: tuple[str, int, str],
+        # Default chrony state: not installed. Mirrors what newer
+        # systemctl prints for a missing unit.
+        chrony_state: tuple[str, int, str] = (
+            "not-found\n", 4,
+            "Failed to get unit file state for chrony.service: No such file or directory\n",
+        ),
+    ):
+        """Invoke civicmesh._cmd_apply with subprocess.run stubbed.
+
+        Each *_state is (stdout, returncode, stderr) for that unit.
+        Returns (exit_code, captured_stderr).
+        """
+        import civicmesh
+        import io
+        from contextlib import redirect_stderr
+
+        responses = {
+            "systemd-timesyncd.service": timesyncd_state,
+            "chrony.service": chrony_state,
+        }
+
+        def fake_run(args, **kw):
+            if args[:2] == ["systemctl", "is-enabled"]:
+                unit = args[2]
+                stdout, rc, stderr = responses.get(unit, ("", 1, "No such file"))
+                return subprocess.CompletedProcess(args, rc, stdout, stderr)
+            # The check is the first thing `_cmd_apply` does after geteuid
+            # and dry-run gating; if it passes we'd hit load_config next.
+            # For these tests we shouldn't get past the check on failure
+            # paths, and on pass we mock further steps to exit cleanly.
+            raise AssertionError(f"unexpected subprocess: {args!r}")
+
+        ns = type("A", (), {})()
+        ns.dry_run = False
+        ns.no_restart = True
+        ns.config = None
+
+        buf = io.StringIO()
+        exit_code = None
+        # `_cmd_apply` does local `import subprocess as _sub` and
+        # `from config import load_config` — patching the SOURCE
+        # modules is what reaches into the local binding the function
+        # creates at call time.
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("os.geteuid", return_value=0), \
+             patch("config.load_config", side_effect=SystemExit(99)), \
+             redirect_stderr(buf):
+            try:
+                civicmesh._cmd_apply(ns)
+            except SystemExit as e:
+                exit_code = int(e.code) if isinstance(e.code, int) else 0
+        return exit_code, buf.getvalue()
+
+
+class TestApplyTimesyncMaskedCheck(_ApplyTimesyncCheckHarness):
+    """Verify the masked-only contract spelled out in
+    docs/clock_consensus.md § "NTP coexistence."
+    """
+
+    def test_masked_passes(self):
+        exit_code, _ = self._run_apply(
+            timesyncd_state=("masked\n", 1, ""),
+        )
+        # Passes the check; falls through to load_config which our
+        # patch raises SystemExit(99) from. 99 == "got past the
+        # timesync check."
+        self.assertEqual(exit_code, 99)
+
+    def test_not_installed_passes(self):
+        exit_code, _ = self._run_apply(
+            # newer systemd: exit 4, state "not-found"; older: exit 1
+            # with stderr "No such file or directory." The check
+            # accepts both.
+            timesyncd_state=("not-found\n", 4, "Failed to get unit file state for systemd-timesyncd.service: No such file or directory\n"),
+        )
+        self.assertEqual(exit_code, 99)
+
+    def test_not_installed_older_systemd_passes(self):
+        exit_code, _ = self._run_apply(
+            timesyncd_state=("", 1, "Failed to get unit file state for systemd-timesyncd.service: No such file or directory\n"),
+        )
+        self.assertEqual(exit_code, 99)
+
+    def test_masked_runtime_fails(self):
+        """masked-runtime is the trap — looks masked but disappears at
+        reboot. `apply` stages the next boot, so this must reject."""
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("masked-runtime\n", 1, ""),
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("masked-runtime", stderr)
+        self.assertIn("reboot", stderr.lower(),
+            "failure message must explain the reboot risk of runtime masks")
+        self.assertIn("sudo systemctl mask systemd-timesyncd.service", stderr)
+        self.assertIn("no --runtime flag", stderr,
+            "remediation must steer the operator to a persistent mask")
+
+    def test_disabled_fails(self):
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("disabled\n", 1, ""),
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("disabled", stderr)
+        self.assertIn("sudo systemctl mask", stderr)
+
+    def test_enabled_fails(self):
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("enabled\n", 0, ""),
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("enabled", stderr)
+        self.assertIn("sudo systemctl mask", stderr)
+
+    def test_static_fails(self):
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("static\n", 0, ""),
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("static", stderr)
+
+    def test_chrony_masked_runtime_also_fails(self):
+        """Same check is applied to chrony.service if installed."""
+        exit_code, stderr = self._run_apply(
+            timesyncd_state=("masked\n", 1, ""),
+            chrony_state=("masked-runtime\n", 1, ""),
+        )
+        self.assertEqual(exit_code, 7)
+        self.assertIn("chrony.service", stderr)
+        self.assertIn("masked-runtime", stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

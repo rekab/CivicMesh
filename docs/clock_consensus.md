@@ -246,25 +246,74 @@ old `'admin'` row from a prior boot would always look "new" on
 restart and silently suppress an actual external step happening
 concurrently.
 
-## NTP coexistence
+## NTP coexistence — why it must be persistently masked
 
-`civicmesh apply` refuses to proceed unless `systemd-timesyncd` (and
-`chrony`, if installed) is **masked** — not merely disabled. This is
-the structural defense: the deployment invariant is "no other
-process touches the system clock."
+CivicMesh maintains its own corrected message time using:
 
-`disabled` is NOT sufficient. A merely-disabled unit can still be
-started by a manual `systemctl start <unit>`, by another unit's
-`Requires=` dependency, or by `systemd --user` automation that
-operators sometimes layer in. `masked` redirects the unit file to
-`/dev/null`, which causes any start attempt to fail outright.
-Unit-not-installed is also acceptable (no file ⇒ no risk).
+```
+corrected_message_time = int(time.time()) + offset_seconds
+```
 
-`civicmesh apply` accepts only `masked` (and `masked-runtime`), and
-treats `enabled`, `disabled`, `static`, `alias`, `indirect`,
-`generated`, `linked`, and `enabled-runtime` as failures — they all
-allow the unit to be started by something. The exit message points
-at `systemctl mask <unit>` for remediation.
+Walk-up phones on the captive portal report their wall clock to the
+hub; the mesh process medians the votes into a consensus offset and
+applies that offset on every stamped DB write. If a separate
+service — NTP, systemd-timesyncd, chrony, ntpd, or anything else —
+steps the Linux system clock underneath CivicMesh, the meaning of
+`raw + offset` changes mid-flight: row N was stamped in the old
+frame, row N+1 in the new. The runtime external-step detector
+recovers (rebases offset to 0, clears stale reports, writes an audit
+row) but that is a safety net for accidents, not the intended mode
+of operation.
+
+The deployment invariant for disaster nodes is:
+
+> **No other process should step the system clock.**
+
+`civicmesh apply` enforces this by refusing to proceed unless both
+`systemd-timesyncd.service` and `chrony.service` (if installed) are
+**persistently masked**. The accepted states are exactly:
+
+- `masked` — the unit file is symlinked to `/dev/null` under `/etc/`
+  and survives reboot. Any start attempt fails outright.
+- unit not installed — no file, nothing to start.
+
+Every other state is rejected, with a tailored failure message:
+
+- `masked-runtime` — `systemctl mask --runtime` writes the mask
+  under `/run/systemd/system/`, which is `tmpfs` and **disappears on
+  reboot**. `civicmesh apply` stages the next boot, so accepting
+  this would let the node come up with NTP startable. Use a
+  persistent `sudo systemctl mask <unit>` (no `--runtime` flag).
+- `disabled` — does not autostart, but can still be started by
+  `systemctl start`, by `Requires=` pulling it in from another
+  unit, or by a `systemd --user` automation. Disabled does not
+  prevent start.
+- `enabled`, `enabled-runtime`, `static`, `alias`, `indirect`,
+  `generated`, `linked`, `linked-runtime` — all permit start.
+
+Phrased operationally:
+
+> Disabled is a closed door. Masked is a bricked-up doorway.
+> Masked-runtime is a cardboard wall that gets thrown out at
+> reboot.
+
+The runtime external-step detector remains in place even with
+masking — it catches the case where someone manually unmasks and
+runs NTP, or where a future package upgrade flips the unit back to
+enabled. It is the safety net; persistent masking is the structural
+defense.
+
+### What about machines with RTCs or trusted NTP?
+
+The current production deployment path is optimized for Pi Zero 2W
+disaster nodes without reliable time. On a hub that has a hardware
+RTC or that can trust NTP, the phone-derived offset should converge
+to near zero — but NTP still conflicts with the offset-consensus
+model because it can step the raw system clock under us. There is
+no "trust the system clock / skip phone consensus" config flag
+today; one could be added in a follow-up, but for CIV-99 the path
+is the same on every machine: mask the NTP units, let the
+walk-up-phone consensus run.
 
 The runtime external-step detector above is the safety net for when
 the structural defense fails (someone re-enables timesyncd manually,

@@ -579,8 +579,12 @@ laptop.
 def _cmd_apply(args: argparse.Namespace) -> None:
     import subprocess as _sub
 
-    from apply import driver, restart, validate
     from config import load_config
+    # `apply` package imports moved below the early gates (mode,
+    # root, CIV-99 timesyncd mask check) so failures in those gates
+    # don't carry the cost of resolving the renderer/plan dependency
+    # tree, and so the timesync-mask unit tests can drive _cmd_apply
+    # without resolving `apply.*` at all.
 
     if _MODE == "dev" and not args.dry_run:
         print(
@@ -595,25 +599,34 @@ def _cmd_apply(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # CIV-99: apply refuses to proceed unless systemd-timesyncd (and
-    # chrony, if installed) are MASKED — not merely disabled. The
-    # clock-correction design depends on "no other process touches the
-    # system clock" (docs/clock_consensus.md). A masked unit cannot
-    # be started by `systemctl start <unit>` or by another unit's
-    # `Requires=` dependency; a merely-disabled unit can be started by
-    # either, so `disabled` is NOT sufficient. The runtime external-
-    # step detector is a safety net, not a substitute for the
-    # structural defense. Dry runs skip this — operator may want to
-    # preview the apply plan before fixing the masking state.
+    # chrony, if installed) are PERSISTENTLY MASKED — not
+    # masked-runtime, not merely disabled. The clock-correction design
+    # depends on "no other process touches the system clock"
+    # (docs/clock_consensus.md). The accepted states are exactly:
+    #
+    #   "masked"            — persistent mask in /etc; survives reboot
+    #   unit not installed   — no file, nothing to start
+    #
+    # Every other state is rejected, including:
+    #
+    #   "masked-runtime"    — mask lives under /run, vanishes on reboot;
+    #                         `apply` stages the next boot, so accepting
+    #                         this would let the machine come back with
+    #                         NTP startable. The runtime mask is for
+    #                         operator triage, not deployment.
+    #   "disabled"          — does not autostart, but can still be
+    #                         started manually or pulled in via
+    #                         another unit's Requires=.
+    #   "enabled" / "enabled-runtime" / "static" / "alias" / "indirect"
+    #   / "generated" / "linked" / "linked-runtime"
+    #                       — all permit start.
+    #
+    # Dry runs skip this so an operator can preview the plan before
+    # fixing the masking state.
     if not args.dry_run:
-        # Possible `systemctl is-enabled` outputs we treat as safe:
-        #   "masked", "masked-runtime" — start refused outright
-        #   (handled separately) unit-not-installed: not on disk, so
-        #   no risk of NTP stepping the clock
-        # Everything else — enabled / disabled / static / alias /
-        # indirect / generated / linked / enabled-runtime — must be
-        # rejected, even disabled (a downstream dependency or manual
-        # `systemctl start` could still launch it).
-        _MASKED_OK = ("masked", "masked-runtime")
+        # Only "masked" is acceptable. masked-runtime is NOT — see the
+        # block comment above.
+        _MASKED_OK = ("masked",)
         for unit in ("systemd-timesyncd.service", "chrony.service"):
             try:
                 result = _sub.run(
@@ -633,13 +646,36 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             # for portability.
             if "no such" in stderr or "not-found" in state or "not found" in stderr:
                 continue
+            # Tailor the message to the actual failing state. The
+            # masked-runtime case in particular is a tempting trap
+            # (`systemctl mask --runtime` looks identical at a glance);
+            # call it out by name so the operator sees the reboot risk.
+            if state == "masked-runtime":
+                why = (
+                    "Runtime masks live under /run and disappear on the "
+                    "next reboot. `apply` stages deployment for the next "
+                    "boot, so accepting masked-runtime would let the node "
+                    "come up with NTP startable."
+                )
+            elif state == "disabled":
+                why = (
+                    "Disabled units do not autostart, but can still be "
+                    "started manually or pulled in by another unit's "
+                    "Requires=."
+                )
+            else:
+                why = (
+                    "This state permits the unit to be started by "
+                    "systemd or by an operator."
+                )
             print(
                 f"civicmesh: apply: {unit} is '{state or '<no state>'}' "
-                f"(exit {result.returncode}). CIV-99 requires this unit to "
-                "be MASKED (not just disabled) so it cannot be started by "
-                "`systemctl start` or by another unit's Requires=. Run:\n"
+                f"(exit {result.returncode}). CIV-99 requires this unit "
+                "to be PERSISTENTLY MASKED (not runtime-masked, not merely "
+                f"disabled). {why} Run:\n"
                 f"  sudo systemctl mask {unit}\n"
-                "and re-run `civicmesh apply`. See docs/clock_consensus.md.",
+                "(no --runtime flag) and re-run `civicmesh apply`. "
+                "See docs/clock_consensus.md.",
                 file=sys.stderr,
             )
             sys.exit(7)
@@ -656,6 +692,10 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             print(f"civicmesh: apply: {msg}", file=sys.stderr)
         sys.exit(3)
 
+    # Renderer/plan imports — moved here so the early gates above (mode,
+    # root, CIV-99 timesyncd mask) don't pay the cost or risk of
+    # resolving them.
+    from apply import driver, restart, validate
     plan_obj = driver.plan(cfg)
 
     if args.dry_run:

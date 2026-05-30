@@ -147,6 +147,32 @@ Skip this step entirely for a messaging-only deployment.
 
 ## 7. Apply and reboot
 
+### 7a. Mask NTP services
+
+CIV-99 prerequisite — `apply` refuses to proceed without this.
+CivicMesh maintains its own corrected wall time from walk-up phone
+consensus (`docs/clock_consensus.md`); any other process stepping
+the OS clock conflicts. Persistently mask both potential NTP
+daemons:
+
+```bash
+sudo systemctl mask systemd-timesyncd.service
+sudo systemctl mask chrony.service 2>/dev/null || true
+```
+
+**Do not pass `--runtime`.** `systemctl mask --runtime` writes the
+mask under `/run`, which is `tmpfs` and disappears on reboot —
+`apply` would see it now but the next boot would come up with NTP
+runnable. A plain `systemctl mask` writes under `/etc` and survives.
+
+A merely-disabled (`systemctl disable`) unit is also not enough: it
+won't autostart, but `systemctl start` or another unit's
+`Requires=` can still launch it. `apply` rejects `disabled`,
+`masked-runtime`, and every other state except `masked` or
+"not installed."
+
+### 7b. Run apply
+
 ```bash
 sudo civicmesh apply
 sudo reboot
