@@ -452,6 +452,23 @@
       </div>
     </section>
 
+    <!-- CIV-14 onboarding: scan to add this hub as a companion contact
+         in the MeshCore phone app. Hidden until /api/identity returns a
+         persisted row (mesh_bot must have connected at least once). -->
+    <section class="stats-card stats-card--identity" id="identityCard" hidden>
+      <div class="stats-card__head">
+        <h3 class="stats-card__title">Add this hub to your phone</h3>
+      </div>
+      <div class="stats-card__hint">
+        Open the MeshCore app on your phone &rarr; <em>Add Contact</em> &rarr; scan this QR.
+      </div>
+      <div class="identity__qr" id="identityQr" aria-label="Contact QR code"></div>
+      <div class="identity__meta">
+        <div class="identity__row"><span class="identity__lbl">Name</span><span class="identity__val" id="identityName">&mdash;</span></div>
+        <div class="identity__row"><span class="identity__lbl">Public key</span><code class="identity__pubkey" id="identityPubkey">&mdash;</code></div>
+      </div>
+    </section>
+
     <section class="stats-card stats-card--raw">
       <button type="button" class="stats-raw__toggle" id="statsRawToggle" aria-expanded="false">
         <svg class="stats-raw__chev" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 l4 3 -4 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -486,5 +503,6 @@
 </aside>
 
 <script src="/app.js"></script>
+<script src="/identity.js"></script>
 </body>
 </html>

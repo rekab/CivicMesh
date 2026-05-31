@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS status (
     state TEXT
 );
 
+-- The radio's own MeshCore identity (public_key + on-air name) republished
+-- by mesh_bot on every connect. Single-row table by construction: the CHECK
+-- pins id=1 so the upsert always targets the same row and an identity
+-- change overwrites the previous values atomically. mesh_bot logs WARN on
+-- a public_key delta — see docs/radio-debugging/failure-modes.md for why
+-- the radio's pubkey can change unannounced (reflash, factory reset).
+-- Consumed by /api/identity for the QR onboarding card in the stats sheet.
+CREATE TABLE IF NOT EXISTS node_identity (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    public_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_ts INTEGER NOT NULL
+);
+
 -- Clock-correction state. clock_state is a KV singleton: 'offset_seconds'
 -- is the integer added to raw time.time() to get corrected wall time, and
 -- 'vote_epoch' is a monotonically-increasing generation counter bumped on
@@ -860,6 +874,68 @@ def get_status(cfg: DBConfig, *, process: str, log=None) -> Optional[dict[str, A
         if log:
             log.debug("status:get process=%s", process)
         row = conn.execute("SELECT * FROM status WHERE process=?", (process,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def upsert_node_identity(
+    cfg: DBConfig,
+    *,
+    public_key: str,
+    name: str,
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> Optional[str]:
+    """Upsert the node_identity singleton row. Returns the prior public_key
+    if one was persisted and differed (so the caller can WARN), else None.
+
+    `updated_ts` is wall_now() read inside the BEGIN IMMEDIATE — same
+    invariant as upsert_status (CIV-99). Production callers MUST NOT
+    pass `_ts_for_test`.
+    """
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("identity:upsert name=%s pubkey_prefix=%s",
+                      name, (public_key or "")[:8])
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            prior = conn.execute(
+                "SELECT public_key FROM node_identity WHERE id=1"
+            ).fetchone()
+            now_ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                """
+                INSERT INTO node_identity(id, public_key, name, updated_ts)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    public_key=excluded.public_key,
+                    name=excluded.name,
+                    updated_ts=excluded.updated_ts
+                """,
+                (public_key, name, now_ts),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+    if prior is not None and prior["public_key"] != public_key:
+        return prior["public_key"]
+    return None
+
+
+def get_node_identity(cfg: DBConfig, *, log=None) -> Optional[dict[str, Any]]:
+    conn = _connect(cfg)
+    try:
+        if log:
+            log.debug("identity:get")
+        row = conn.execute("SELECT * FROM node_identity WHERE id=1").fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

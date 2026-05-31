@@ -29,6 +29,7 @@ from database import (
     _connect,
     cancel_outbox_message,
     clear_pending_outbox,
+    get_node_identity,
     get_outbox_message,
     get_pending_outbox_filtered,
     get_recent_messages_filtered,
@@ -409,6 +410,34 @@ def _format_clock_last_correction(
     if applied_at_monotonic > mono_now:
         return f"{trigger}@unknown"
     return f"{trigger}@{int(mono_now - applied_at_monotonic)}s_ago"
+
+
+def _cmd_identity(args: argparse.Namespace) -> None:
+    """Print the meshcore://contact/add URL for this hub on stdout.
+
+    Headless escape hatch for the captive portal's QR card (CIV-14):
+    pipe to `qrencode -t ANSIUTF8` for a terminal QR, or paste the URL
+    into the MeshCore app's "Add by URL" entry.
+    """
+    import urllib.parse as _u
+
+    _, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    row = get_node_identity(db_cfg, log=log)
+    if row is None:
+        print(
+            "civicmesh: identity: mesh_bot has not connected yet "
+            "(node_identity row is empty); start mesh_bot.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    contact_url = (
+        "meshcore://contact/add?"
+        + _u.urlencode(
+            {"name": row["name"], "public_key": row["public_key"], "type": "1"}
+        )
+    )
+    print(contact_url)
 
 
 def _cmd_stats(args: argparse.Namespace) -> None:
@@ -1191,6 +1220,10 @@ def main():
     p_unpin.add_argument("message_id", type=int)
 
     sub.add_parser("stats")
+    # CIV-14 onboarding: print the meshcore://contact/add URL so an
+    # operator can scan it (or pipe to `qrencode`) and add the hub as
+    # a companion contact in the MeshCore phone app.
+    sub.add_parser("identity")
 
     p_cleanup = sub.add_parser("cleanup")
     p_cleanup.add_argument("--channel", default=None)
@@ -1287,6 +1320,7 @@ def main():
         "pin": _cmd_pin,
         "unpin": _cmd_unpin,
         "stats": _cmd_stats,
+        "identity": _cmd_identity,
         "cleanup": _cmd_cleanup,
         "configure": _cmd_configure,
         "apply": _cmd_apply,

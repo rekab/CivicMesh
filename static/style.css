@@ -1303,6 +1303,55 @@ body {
 .stats-raw__code .s { color: #a5d6a7; }
 .stats-raw__code .p { color: #8d6e63; }
 
+/* ---- Identity / contact-add QR card (CIV-14) ---- */
+.stats-card--identity .identity__qr {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 12px 0 8px;
+}
+.stats-card--identity .identity__qr svg {
+  /* qrcode-generator emits an inline SVG with px width/height; let it
+     scale down on narrow phones while keeping a sharp module grid. */
+  width: 180px;
+  height: 180px;
+  max-width: 60vw;
+  max-height: 60vw;
+  background: #ffffff;
+  border-radius: 6px;
+}
+.stats-card--identity .identity__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--stats-ink-hint);
+}
+.stats-card--identity .identity__row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.stats-card--identity .identity__lbl {
+  flex: 0 0 78px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10.5px;
+}
+.stats-card--identity .identity__val {
+  font-family: var(--mono);
+  color: var(--stats-brown);
+  font-size: 12px;
+}
+.stats-card--identity .identity__pubkey {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--stats-brown);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
 /* ---- Desktop: centered card ---- */
 @media (min-width: 768px) {
   .stats-sheet {

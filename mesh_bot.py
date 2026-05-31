@@ -46,6 +46,7 @@ from database import (
     prune_terminal_outbox,
     reconcile_message_status,
     record_outbox_send,
+    upsert_node_identity,
     upsert_status,
     write_external_step_correction,
 )
@@ -586,11 +587,14 @@ async def _outbox_task(
 _ADVERT_COOLDOWN_SEC = 6 * 3600
 
 
-async def _announce_identity(mesh_client, cfg, log, advert_state, EventType):
+async def _announce_identity(mesh_client, cfg, db_cfg, log, advert_state, EventType):
     """Set the firmware name on every connect; advertise only when
     the cooldown has elapsed, the callsign changed, or this is the
     first connect of the process. advert_state is a mutable dict
     shared across reconnects: {"last_callsign", "last_ts"}.
+
+    Also republishes the radio's identity (public_key + on-air name)
+    into the node_identity table for /api/identity (CIV-14 onboarding QR).
     """
     callsign = cfg.node.callsign
     try:
@@ -612,6 +616,32 @@ async def _announce_identity(mesh_client, cfg, log, advert_state, EventType):
     except Exception as e:
         log.warning("mesh:set_name_exception err=%s", e, exc_info=True)
         return
+
+    # Identity publish must run AFTER the post-set_name send_appstart
+    # refresh so self_info["name"] reflects the on-air name a scanning
+    # phone will see, not the create_serial-time pubkey-prefix default.
+    # A persistence failure is logged but never blocks the connect —
+    # the captive portal will 503 /api/identity until the next try.
+    info = getattr(mesh_client, "self_info", {}) or {}
+    pubkey = info.get("public_key") if isinstance(info, dict) else None
+    node_name = info.get("name") if isinstance(info, dict) else None
+    if pubkey and node_name:
+        try:
+            prior = upsert_node_identity(
+                db_cfg, public_key=pubkey, name=node_name, log=log,
+            )
+            if prior is not None:
+                log.warning(
+                    "identity:public_key_changed old=%s new=%s",
+                    prior[:16], pubkey[:16],
+                )
+        except Exception as e:
+            log.warning("identity:upsert_failed err=%s", e, exc_info=True)
+    else:
+        log.warning(
+            "identity:missing_self_info pubkey_present=%s name_present=%s",
+            bool(pubkey), bool(node_name),
+        )
 
     # CIV-99: monotonic — advert cooldown is elapsed time; an admin or
     # NTP step must not reset or extend it. advert_state's "last_ts" is
@@ -768,7 +798,7 @@ async def _setup_mesh_client(
     except Exception as e:
         log.error("mesh:decrypt_channel_logs_failed err=%s", e, exc_info=True)
 
-    await _announce_identity(mesh_client, cfg, log, advert_state, EventType)
+    await _announce_identity(mesh_client, cfg, db_cfg, log, advert_state, EventType)
 
     # RX_LOG_DATA handler — increments heard_count on the
     # outbox row whose echo we just observed. Filter on

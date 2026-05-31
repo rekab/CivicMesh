@@ -45,6 +45,7 @@ from database import (
     create_or_update_session,
     get_message,
     get_messages,
+    get_node_identity,
     get_outbox_snapshot,
     get_status,
     get_session,
@@ -1096,6 +1097,39 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                     "outbox_queue_depth": queue_depth,
                 },
             )
+            return
+
+        if path == "/api/identity":
+            # CIV-14 onboarding: a phone with the MeshCore app scans the QR
+            # rendered from contact_url to add this hub as a companion
+            # contact. mesh_bot._announce_identity republishes the radio's
+            # public_key + on-air name into node_identity on every connect;
+            # we return 503 until that has happened so the SPA can hide the
+            # card cleanly. The URL is built server-side because the
+            # public_key + on-air name are server-trusted state — the
+            # client cannot mint a valid contact link itself.
+            row = get_node_identity(self.server.db_cfg, log=log)
+            if row is None:
+                _json(self, 503, {"reason": "mesh_bot has not connected yet"})
+                return
+            # type=1 = companion per docs/meshcore-protocol-reference.md §14.2.
+            # Hub-as-room-server is a future ticket (CIV-14 stretch); when
+            # that lands, this type may change.
+            contact_url = (
+                "meshcore://contact/add?"
+                + urllib.parse.urlencode(
+                    {
+                        "name": row["name"],
+                        "public_key": row["public_key"],
+                        "type": "1",
+                    }
+                )
+            )
+            _json(self, 200, {
+                "name": row["name"],
+                "public_key": row["public_key"],
+                "contact_url": contact_url,
+            })
             return
 
         if path == "/api/stats":

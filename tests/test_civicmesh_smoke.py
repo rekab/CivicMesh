@@ -51,6 +51,44 @@ class CivicmeshSmokeTest(unittest.TestCase):
                 r"messages=\d+ sessions=\d+ outbox_pending=\d+ votes=\d+",
             )
 
+    def test_identity_exits_nonzero_before_mesh_bot_connects(self) -> None:
+        """CIV-14: `civicmesh identity` must fail loudly (not print a
+        broken URL) when mesh_bot has never persisted an identity row.
+        Pairs with the /api/identity 503 behaviour."""
+        repo_root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            example = (repo_root / "config.toml.example").read_text()
+            db_path = tmp / "civic_mesh.db"
+            log_dir = tmp / "logs"
+            log_dir.mkdir()
+            edited = re.sub(
+                r'^log_dir\s*=.*$',
+                f'log_dir = "{log_dir}"',
+                example, count=1, flags=re.MULTILINE,
+            )
+            edited = re.sub(
+                r'^db_path\s*=.*$',
+                f'db_path = "{db_path}"',
+                edited, count=1, flags=re.MULTILINE,
+            )
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(edited)
+
+            result = subprocess.run(
+                ["uv", "run", "civicmesh", "--config", str(cfg_path), "identity"],
+                capture_output=True,
+                text=True,
+                cwd=repo_root,
+                timeout=60,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("mesh_bot has not connected yet", result.stderr)
+            # Logger setup may write INFO to stdout; the only thing
+            # we must NOT see is a (broken) contact URL — that would
+            # send the operator scanning garbage into MeshCore.
+            self.assertNotIn("meshcore://", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
