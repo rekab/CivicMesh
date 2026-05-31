@@ -322,14 +322,13 @@ curl -sSL https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicme
 # and radio settings.
 sudo -u civicmesh civicmesh configure
 
-# Mask NTP — CivicMesh maintains its own corrected wall time from
-# walk-up phone consensus (see docs/clock_consensus.md); a separate
-# NTP daemon stepping the system clock would conflict. Use a
-# persistent mask, NOT --runtime (runtime masks disappear on reboot).
-# Dev / RTC-backed machines can opt out via `[clock]
-# require_timesync_masked = false` in config.toml.
-sudo systemctl mask systemd-timesyncd.service
-sudo systemctl mask chrony.service 2>/dev/null || true
+# (NTP masking is handled by civicmesh-bootstrap.sh; verify with
+# `systemctl is-enabled systemd-timesyncd.service` → "masked".
+# CivicMesh maintains its own corrected wall time from walk-up
+# phone consensus, so a separate NTP daemon stepping the system
+# clock would conflict. See docs/clock_consensus.md. Dev / RTC
+# nodes can opt out via `civicmesh configure` or by setting
+# `[clock] require_timesync_masked = false` in config.toml.)
 
 # Apply: render system files (hostapd, dnsmasq, nftables, networkd,
 # systemd units) and stage AP mode for the next boot. By default,

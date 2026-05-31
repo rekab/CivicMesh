@@ -56,7 +56,9 @@ Root-required, one-shot. Idempotent on re-run.
 
 What it does (in order):
     1. apt install (git, curl, python3, hostapd, dnsmasq, nftables, rfkill, NetworkManager)
-    2. Disable conflicting services (dhcpcd, systemd-resolved stub)
+    2. Disable conflicting services (dhcpcd, systemd-resolved stub,
+       persistently mask systemd-timesyncd and chrony for CIV-99
+       clock-consensus invariant)
     3. rfkill unblock + persistent unblock-at-boot service
     4. Create the 'civicmesh' system user (home: ${CIVICMESH_HOME})
     5. Install uv as that user
@@ -176,6 +178,30 @@ EOF
     fi
     systemctl restart systemd-resolved
 fi
+
+# CIV-99: CivicMesh maintains its own corrected wall time by adding
+# clock_state.offset_seconds to int(time.time()) on every stamped DB
+# write. A separate NTP daemon stepping the OS clock underneath us
+# breaks that model (the consensus task has a runtime external-step
+# detector as a safety net, but persistent masking is the structural
+# defense). `civicmesh apply` enforces this same invariant; doing it
+# here keeps the deploy procedure from hitting an exit-7 between
+# bootstrap and apply. Dev / RTC-backed nodes that want NTP back can
+# `systemctl unmask <unit>` afterwards AND set `[clock]
+# require_timesync_masked = false` in config.toml (which `civicmesh
+# configure` prompts for; see docs/clock_consensus.md § "Dev / RTC
+# machines"). systemctl mask is idempotent on re-runs.
+for ntp_unit in systemd-timesyncd.service chrony.service; do
+    if systemctl list-unit-files "$ntp_unit" >/dev/null 2>&1 \
+       && systemctl list-unit-files "$ntp_unit" | grep -qE "^$ntp_unit"; then
+        info "masking $ntp_unit (CivicMesh manages clock via offset-consensus)..."
+        # mask refuses NEW starts; stop the unit if it's currently
+        # running so we don't leave NTP racing with our offset
+        # right after bootstrap.
+        systemctl stop "$ntp_unit" 2>/dev/null || true
+        systemctl mask "$ntp_unit"
+    fi
+done
 ok "conflicting services handled"
 
 # =============================================================================

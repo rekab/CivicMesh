@@ -147,13 +147,25 @@ Skip this step entirely for a messaging-only deployment.
 
 ## 7. Apply and reboot
 
-### 7a. Mask NTP services
+### 7a. Verify NTP is masked
 
 CIV-99 prerequisite for production nodes — `apply` refuses to
 proceed without this by default. CivicMesh maintains its own
 corrected wall time from walk-up phone consensus
 (`docs/clock_consensus.md`); any other process stepping the OS
-clock conflicts. Persistently mask both potential NTP daemons:
+clock conflicts.
+
+`civicmesh-bootstrap.sh` (step 4) already persistently masks both
+NTP daemons as part of "disabling conflicting services," so the
+default deploy procedure has nothing to do here. Verify quickly:
+
+```bash
+systemctl is-enabled systemd-timesyncd.service  # expect: masked
+systemctl is-enabled chrony.service             # expect: masked OR no such unit
+```
+
+If either prints anything else (`disabled`, `masked-runtime`,
+`enabled`, …), re-run:
 
 ```bash
 sudo systemctl mask systemd-timesyncd.service
@@ -172,11 +184,13 @@ won't autostart, but `systemctl start` or another unit's
 "not installed."
 
 **Dev / RTC-backed machines** that intentionally trust NTP can opt
-out by setting `[clock] require_timesync_masked = false` in
-`config.toml`; `apply` will then skip the mask check. Leave the
-default (`true`) for offline production deployments — see
-`docs/clock_consensus.md` § "Dev / RTC machines" for what the
-opt-out does and does not change.
+out by answering "n" at the `civicmesh configure` clock prompt
+(equivalent: `[clock] require_timesync_masked = false` in
+`config.toml`); `apply` will then skip the mask check. They will
+also want to manually `systemctl unmask` the relevant unit if
+bootstrap already masked it. Leave the default (`true`) for
+offline production deployments — see `docs/clock_consensus.md` §
+"Dev / RTC machines" for what the opt-out does and does not change.
 
 ### 7b. Run apply
 
