@@ -85,7 +85,7 @@ _ENTER_THROUGH_WALK = [
     "",   # network.country_code
     "",   # external_display.enabled (default False -> Enter accepts)
     "",   # debug.allow_eth0 (default False -> Enter accepts)
-    "",   # clock.require_timesync_masked (default True -> Enter accepts)
+    "",   # "keep NTP running?" (default N -> require_timesync_masked stays True)
     "y",  # confirm write
 ]
 
@@ -142,7 +142,7 @@ class ConfigureRoundTripTest(unittest.TestCase):
                 "",   # network.country_code
                 "y",  # external_display.enabled -> attached
                 "",   # debug.allow_eth0
-                "",   # clock.require_timesync_masked
+                "",   # "keep NTP running?" -> default N -> require_timesync_masked stays True
                 "y",  # confirm write
             ]
             with patch("configure._detect_serial_port", return_value=[]), \
@@ -215,7 +215,7 @@ log_level = "WARNING"
                 "",          # network.country_code
                 "",          # external_display.enabled
                 "",          # debug.allow_eth0
-                "",          # clock.require_timesync_masked
+                "",          # "keep NTP running?" -> default N
                 "y",         # confirm write
             ]
             with patch("configure._detect_serial_port", return_value=[]), \
@@ -254,11 +254,13 @@ log_level = "WARNING"
             cfg = load_config(str(cfg_path))
             self.assertTrue(cfg.clock.require_timesync_masked)
 
-    def test_n_at_prompt_opts_out_for_dev(self) -> None:
-        """CIV-99 dev opt-out: answering "n" at the timesync prompt
-        writes `clock.require_timesync_masked = false`, the dev-Pi-4
-        configuration that lets `civicmesh apply` succeed with NTP
-        running."""
+    def test_y_at_prompt_opts_out_for_dev(self) -> None:
+        """CIV-99 dev opt-out: answering "y" at the "keep NTP running?"
+        prompt writes `clock.require_timesync_masked = false`, the
+        dev-Pi-4 configuration that lets `civicmesh apply` succeed
+        with NTP running. (The prompt is phrased as a fact about the
+        machine and inverts to the field value, matching the
+        allow_eth0 prompt's shape.)"""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             (tmp / "logs").mkdir()
@@ -278,7 +280,7 @@ log_level = "WARNING"
                 "",   # network.country_code
                 "",   # external_display.enabled
                 "",   # debug.allow_eth0
-                "n",  # clock.require_timesync_masked -> OPT OUT
+                "y",  # "keep NTP running?" -> yes -> require_timesync_masked = false
                 "y",  # confirm write
             ]
             with patch("configure._detect_serial_port", return_value=[]), \

@@ -284,21 +284,22 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "Is this a development machine reachable over wired ethernet?",
         bool(debug.get("allow_eth0", False)),
     )
-    print("\nclock.require_timesync_masked — production default is TRUE. "
-          "When true, `civicmesh apply` refuses to proceed unless "
-          "systemd-timesyncd.service and chrony.service are persistently "
-          "masked (`sudo systemctl mask <unit>`, NOT --runtime). The "
-          "offset-consensus model conflicts with any other process "
-          "stepping the OS clock. Set FALSE for dev / RTC-backed / "
-          "internet-connected nodes that intentionally trust NTP — that "
-          "ONLY skips the apply pre-flight; the runtime offset-on-write "
-          "model and external-step detector are unchanged. Production "
-          "disaster nodes MUST leave this true. See "
-          "docs/clock_consensus.md § 'Dev / RTC machines'.")
-    require_timesync_masked = _prompt_bool(
-        "Enforce persistent NTP-masked check at `civicmesh apply`?",
-        bool(clock.get("require_timesync_masked", True)),
+    print("\nclock.require_timesync_masked — DEV ONLY. CivicMesh tracks "
+          "its own wall-clock correction from walk-up phone consensus; "
+          "an NTP daemon stepping the OS clock fights that and corrupts "
+          "message timestamps. Deployed nodes mask systemd-timesyncd "
+          "and chrony at bootstrap, and `civicmesh apply` refuses to "
+          "run unless they stay masked. Answer yes only on a dev or "
+          "RTC-backed machine you want NTP on.")
+    # Phrased as a fact about the machine (matches the allow_eth0
+    # pattern above) rather than about the apply check, so the default
+    # answer matches the deployment posture. "yes" here means
+    # require_timesync_masked = false in the file, hence the inversion.
+    keep_ntp_on = _prompt_bool(
+        "Is this a development machine that should keep NTP running?",
+        not bool(clock.get("require_timesync_masked", True)),
     )
+    require_timesync_masked = not keep_ntp_on
 
     return {
         "node.site_name": site_name,
