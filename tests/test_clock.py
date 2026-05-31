@@ -661,6 +661,109 @@ class TestFirstCorrectionDone(_TempDBTest):
 # ---------------------------------------------------------------------------
 
 
+class TestConsensusTickDebugLogging(_TempDBTest):
+    """Per-tick DEBUG breadcrumbs cover the three silent paths through
+    evaluate_and_maybe_apply_consensus:
+      - no eligible reports (still waiting for quorum / cookie age)
+      - decision rejected (quorum / sanity / acceptance rule failure)
+      - decision accepted but nudge == 0 (steady state)
+
+    At default INFO these branches are completely silent — operators
+    on a healthy production node don't want every tick logged. DEBUG
+    surfaces them for dev exploration; the strings carry the context
+    the operator needs to know which branch fired and why.
+    """
+
+    def _build_consensus_cfg(self):
+        return ConsensusConfig(
+            quorum_min_cookies=3,
+            sanity_floor_epoch=1_000_000_000,
+            sanity_ceiling_epoch=3_000_000_000,
+            max_nudge_sec=120,
+        )
+
+    def test_no_eligible_reports_logs_debug(self):
+        from database import evaluate_and_maybe_apply_consensus
+        log = MagicMock()
+        result = evaluate_and_maybe_apply_consensus(
+            self.db_cfg,
+            boot_id="boot-X",
+            max_report_age_sec=3600,
+            min_cookie_age_sec=300,
+            consensus_cfg=self._build_consensus_cfg(),
+            log=log,
+        )
+        self.assertIsNone(result)
+        debug_msgs = [
+            c.args[0] for c in log.debug.call_args_list if c.args
+        ]
+        self.assertTrue(
+            any("tick_no_eligible_reports" in m for m in debug_msgs),
+            f"expected tick_no_eligible_reports debug log, got: {debug_msgs}",
+        )
+
+    def test_noop_logs_debug(self):
+        """After a consensus row sets offset to X and the same vote
+        population reports the same delta on the next tick, the
+        decision is `nudge=0` and we hit the no-op path."""
+        from database import evaluate_and_maybe_apply_consensus
+
+        # Seed: 3 sessions with current_offset already at +864000, and
+        # reports at +864000 so the next tick produces nudge=0. The
+        # report monotonic must be close to live time.monotonic() so
+        # the eligibility age filter (clock_report_mono >= now - 3600s)
+        # accepts them.
+        mono_at_seed = time.monotonic()
+        for sid in ("s1", "s2", "s3"):
+            with _connect(self.db_cfg) as conn:
+                conn.execute(
+                    "INSERT INTO sessions(session_id, name, location, mac_address, "
+                    "fingerprint, created_ts, last_post_ts, post_count_hour) "
+                    "VALUES (?, 'x', 'x', NULL, NULL, 0, NULL, 0)",
+                    (sid,),
+                )
+            record_clock_report(
+                self.db_cfg, session_id=sid,
+                client_time=1_700_000_000 + 864_000, boot_id="boot-X",
+                _ts_for_test=1_700_000_000, _mono_for_test=mono_at_seed,
+            )
+        # Push current_offset to the same value the votes will land at.
+        with _connect(self.db_cfg) as conn:
+            conn.execute(
+                "UPDATE clock_state SET value='864000' WHERE key='offset_seconds'"
+            )
+            # Seed a first 'consensus' row so first_correction_done=True
+            # (else the no-op branch is still no-op but the path differs).
+            conn.execute(
+                "INSERT INTO clock_corrections "
+                "(applied_at_monotonic, applied_boot_id, "
+                " system_time_before, system_time_after, "
+                " offset_before_sec, offset_after_sec, "
+                " trigger, voter_count, median_offset_vote_sec, source_summary) "
+                "VALUES (1.0, 'boot-X', 1700000000, 1700000000, "
+                " 0, 864000, 'consensus', 3, 864000, '{}')"
+            )
+
+        log = MagicMock()
+        with patch("time.time", return_value=1_700_000_000):
+            result = evaluate_and_maybe_apply_consensus(
+                self.db_cfg,
+                boot_id="boot-X",
+                max_report_age_sec=3600,
+                min_cookie_age_sec=0,
+                consensus_cfg=self._build_consensus_cfg(),
+                log=log,
+            )
+        self.assertIsNone(result, "no-op nudge=0 must not produce an applied dict")
+        debug_msgs = [
+            c.args[0] for c in log.debug.call_args_list if c.args
+        ]
+        self.assertTrue(
+            any("tick_noop" in m for m in debug_msgs),
+            f"expected tick_noop debug log, got: {debug_msgs}",
+        )
+
+
 class TestConsensusWriter(_TempDBTest):
     def test_does_not_bump_vote_epoch(self):
         # Initial vote_epoch=0.

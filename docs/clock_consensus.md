@@ -542,6 +542,42 @@ invalidated at OS reboot.
    external-step detector will rebase if NTP runs anyway, but
    keeping the unit masked is the structural defense.
 
+## Tracing consensus
+
+Default INFO logs cover the *state-change* events: `clock:task_started`
+at boot, `clock:consensus_accepted` whenever a non-zero nudge lands,
+`clock:external_step` (or `clock:external_step_attributed_to_admin`)
+when the wall-monotonic detector fires. A healthy production node
+running with masked NTP and stable phone consensus will tick silently
+between corrections, which is what you want operationally.
+
+For dev exploration — "consensus is running, why hasn't it converged?"
+— set `log_level = "DEBUG"` under `[logging]` in `config.toml` and
+restart `civicmesh-mesh`. Three per-tick breadcrumbs surface:
+
+- `clock:tick wall=… mono=… signal=… signal_last=… delta=… threshold=…`
+  — fires every tick. The signal columns show the external-step
+  detector's input; `delta` should stay near zero between ticks unless
+  NTP is running.
+- `clock:tick_no_eligible_reports boot_id=… vote_epoch=… current_offset=…
+  first_correction_done=…` — fires when the eligibility query returned
+  zero rows. Usually means quorum hasn't been reached or session cookies
+  haven't aged past `min_cookie_age_sec`.
+- `clock:tick_no_decision eligible=N quorum_min=K current_offset=…
+  first_correction_done=…` — fires when eligible reports were found but
+  `evaluate_consensus` rejected the result (quorum, sanity, or the
+  forward-only / max_nudge_sec acceptance rule).
+- `clock:tick_noop eligible=N candidate_offset=… current_offset=…` —
+  fires when the consensus path produced `nudge == 0` and the no-op
+  suppression policy kicked in (steady state).
+
+Set back to `INFO` once you've answered the question — the per-tick
+heartbeat is too noisy for production journald.
+
+Audit history is in the `clock_corrections` table; see "Telemetry &
+operator triage" below for the column layout and the JSON
+`source_summary` columns by trigger.
+
 ## Telemetry & operator triage
 
 Two telemetry events fire on state changes (never on no-op ticks):

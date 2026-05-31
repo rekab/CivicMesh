@@ -2430,6 +2430,17 @@ def evaluate_and_maybe_apply_consensus(
             ).fetchall()
 
             if not report_rows:
+                # DEBUG-only: tick fired but no eligible reports. Common
+                # while waiting for quorum or for cookie age to mature;
+                # silent at default INFO so it doesn't clutter prod logs.
+                # See docs/clock_consensus.md § "Tracing consensus".
+                if log:
+                    log.debug(
+                        "clock:tick_no_eligible_reports boot_id=%s vote_epoch=%d "
+                        "current_offset=%d first_correction_done=%s",
+                        boot_id, current_vote_epoch, current_offset,
+                        first_correction_done,
+                    )
                 conn.execute("COMMIT")
                 return None
 
@@ -2449,7 +2460,36 @@ def evaluate_and_maybe_apply_consensus(
                 cfg=consensus_cfg,
             )
 
-            if decision is None or decision.nudge == 0:
+            if decision is None:
+                # DEBUG-only: reports were eligible but evaluate_consensus
+                # rejected. From the caller side we can't distinguish
+                # quorum / sanity / acceptance-rule failure without
+                # changing the pure function's return shape; the count +
+                # context is usually enough for dev triage.
+                if log:
+                    log.debug(
+                        "clock:tick_no_decision eligible=%d quorum_min=%d "
+                        "current_offset=%d first_correction_done=%s "
+                        "(quorum / sanity / acceptance rule rejected — "
+                        "increase eligible reports, check sanity bounds, "
+                        "or check whether a forward-only or max_nudge_sec "
+                        "constraint applies)",
+                        len(reports), consensus_cfg.quorum_min_cookies,
+                        current_offset, first_correction_done,
+                    )
+                conn.execute("COMMIT")
+                return None
+
+            if decision.nudge == 0:
+                # DEBUG-only: consensus produced the same offset that's
+                # already stored — common in steady state. No audit row,
+                # no telemetry, per the no-op suppression policy.
+                if log:
+                    log.debug(
+                        "clock:tick_noop eligible=%d candidate_offset=%d "
+                        "current_offset=%d (nudge=0)",
+                        len(reports), int(decision.new_offset), current_offset,
+                    )
                 conn.execute("COMMIT")
                 return None
 

@@ -181,6 +181,19 @@ async def _clock_task(cfg, db_cfg: DBConfig, log):
             signal_now = wall_t - mono_t
             signal_last = wall_at_last_tick - mono_at_last_tick
 
+            # DEBUG-only per-tick heartbeat. Shows the external-step
+            # detector's input (the wall-monotonic signal and its delta
+            # since the last tick) so an operator running with
+            # `log_level = "DEBUG"` can see WHY the detector did or
+            # didn't fire. Silent at INFO.
+            log.debug(
+                "clock:tick wall=%d mono=%.1f signal=%.3f signal_last=%.3f "
+                "delta=%.3f threshold=%d",
+                wall_t, mono_t, signal_now, signal_last,
+                abs(signal_now - signal_last),
+                cc.external_step_threshold_sec,
+            )
+
             # --- External-step detection ---
             if abs(signal_now - signal_last) > cc.external_step_threshold_sec:
                 # Was this step attributable to a fresh admin row? The
