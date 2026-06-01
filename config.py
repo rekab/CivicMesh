@@ -113,6 +113,7 @@ class LimitsConfig:
     hub_docs_retention_count: int
     global_egress_per_hour: int
     outbox_max_depth: int
+    dm_responses_per_hour: int = 6
 
 
 @dataclass(frozen=True)
@@ -672,6 +673,11 @@ def load_config(path: str) -> AppConfig:
             outbox_max_depth=_validate_outbox_max_depth(
                 int(limits.get("outbox_max_depth", 60))
             ),
+            # CIV-14 DM-bot rate limit: max reply DMs per pubkey per
+            # sliding hour. Tighter than the web posts_per_hour because
+            # each DM costs a per-recipient ACK round-trip, not just
+            # channel airtime.
+            dm_responses_per_hour=int(limits.get("dm_responses_per_hour", 6)),
         ),
         logging=LoggingConfig(
             log_dir=str(logging_raw.get("log_dir", "logs")),

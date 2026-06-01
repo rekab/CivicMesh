@@ -1127,6 +1127,118 @@ def mark_contact_error(
         conn.close()
 
 
+def get_contact_by_pubkey_prefix(
+    cfg: DBConfig,
+    *,
+    pubkey_prefix: str,
+    log=None,
+) -> Optional[dict[str, Any]]:
+    """Resolve a contact by the 12-hex-char (6-byte) prefix that
+    CONTACT_MSG_RECV carries — the firmware sends only the prefix in DM
+    events, not the full 64-char pubkey. Returns the first matching row
+    with status='added' (i.e., the user has completed the registration
+    flow) or None if no match. Prefix collisions are theoretically
+    possible but astronomically unlikely at 6 bytes for a single-node
+    contact table sized in the hundreds."""
+    pubkey_prefix = pubkey_prefix.lower()
+    conn = _connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT pubkey, status, error_detail, pinned, created_at, last_seen "
+            "FROM contacts WHERE pubkey LIKE ? AND status='added' "
+            "ORDER BY created_at ASC LIMIT 1",
+            (pubkey_prefix + "%",),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def touch_contact_last_seen(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> None:
+    """Update last_seen for a contact on inbound DM. pubkey is the full
+    64-char key, not a prefix — caller (the DM handler) resolves the
+    prefix to a full pubkey first via get_contact_by_pubkey_prefix.
+
+    CIV-99: ts via wall_now read inside BEGIN IMMEDIATE."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_ts = (
+                int(_ts_for_test)
+                if _ts_for_test is not None
+                else _wall_ts_in_txn(conn)
+            )
+            conn.execute(
+                "UPDATE contacts SET last_seen=? WHERE pubkey=?",
+                (now_ts, pubkey),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
+    """Compact stat snapshot for the DM `stats` reply.
+
+    Reads the latest telemetry_samples row for system metrics (uptime,
+    CPU temp, 1-min load); counts messages and distinct sessions over
+    1h/24h/7d windows. Returns a flat dict so the reply formatter can
+    iterate it without surprises.
+
+    Cheaper than compute_stats() (the /api/stats source): one
+    indexed SELECT per window + one LIMIT 1 for the latest sample,
+    versus ~8 windowed SELECTs + the nested system telemetry build.
+    """
+    conn = _connect(cfg)
+    try:
+        latest = conn.execute(
+            "SELECT uptime_s, cpu_temp_c, load_1m "
+            "FROM telemetry_samples ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        latest_row = dict(latest) if latest else {}
+
+        windows = [("1h", 3600), ("24h", 86400), ("7d", 604800)]
+        msgs_sent: dict[str, int] = {}
+        wifi_sessions: dict[str, int] = {}
+        for label, window in windows:
+            cutoff = now_ts - window
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE ts >= ?",
+                (cutoff,),
+            ).fetchone()
+            msgs_sent[label] = row["n"] if row else 0
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT session_id) AS n FROM sessions "
+                "WHERE last_seen_ts >= ?",
+                (cutoff,),
+            ).fetchone()
+            wifi_sessions[label] = row["n"] if row else 0
+
+        return {
+            "uptime_s": latest_row.get("uptime_s"),
+            "cpu_temp_c": latest_row.get("cpu_temp_c"),
+            "load_1m": latest_row.get("load_1m"),
+            "msgs_sent": msgs_sent,
+            "wifi_sessions": wifi_sessions,
+        }
+    finally:
+        conn.close()
+
+
 def queue_outbox(
     cfg: DBConfig,
     *,

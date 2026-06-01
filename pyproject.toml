@@ -47,6 +47,6 @@ civicmesh = "civicmesh:main"
 # external-display endpoint was first hit on prod. Lazily-imported modules
 # (e.g. external_display, imported inside the handler) are the easy ones to
 # forget — keep this list == root-level *.py the app imports.
-py-modules = ["civicmesh", "clock", "config", "configure", "database", "external_display", "hub_docs", "logger", "mesh_bot", "outbox_echoes", "promote", "recovery", "telemetry", "web_server"]
+py-modules = ["civicmesh", "clock", "config", "configure", "database", "dm_bot", "external_display", "hub_docs", "logger", "mesh_bot", "outbox_echoes", "promote", "recovery", "telemetry", "web_server"]
 packages = ["apply"]
 

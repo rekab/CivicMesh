@@ -27,6 +27,8 @@ from config import load_config
 from database import (
     DBConfig,
     cleanup_retention_bytes_per_channel,
+    compute_dm_stats,
+    get_contact_by_pubkey_prefix,
     get_outbox_message,
     get_outbox_snapshot,
     get_pending_contacts,
@@ -49,10 +51,12 @@ from database import (
     prune_terminal_outbox,
     reconcile_message_status,
     record_outbox_send,
+    touch_contact_last_seen,
     upsert_node_identity,
     upsert_status,
     write_external_step_correction,
 )
+import dm_bot
 import telemetry
 import clock
 from clock import wall_now
@@ -821,6 +825,86 @@ async def _announce_identity(mesh_client, cfg, db_cfg, log, advert_state, EventT
         log.warning("mesh:send_advert_exception err=%s", e, exc_info=True)
 
 
+async def _process_dm(
+    payload: dict,
+    *,
+    cfg,
+    db_cfg: DBConfig,
+    log,
+    mesh_client,
+    dm_rate_limiter: "dm_bot.DMRateLimiter",
+    EventType,
+) -> None:
+    """Resolve a CONTACT_MSG_RECV payload to a reply and send it.
+
+    Module-level (rather than nested inside _setup_mesh_client) so the
+    DM handler logic can be unit-tested without standing up the full
+    radio-setup pipeline. The thin in-handler scheduler at the call
+    site does the synchronous parse + log + create_task; this is the
+    async body it spawns.
+
+    All DB calls go through asyncio.to_thread to keep the event loop
+    responsive. send_msg accepts a destination dict with public_key
+    only — _validate_destination reads the first 6 bytes of the hex
+    pubkey and ignores the rest (meshcore commands/base.py:46-51).
+    """
+    pubkey_prefix = (payload.get("pubkey_prefix") or "").lower()
+    text = payload.get("text") or payload.get("content") or ""
+    token = dm_bot.parse_command_token(text)
+
+    contact_row = await asyncio.to_thread(
+        get_contact_by_pubkey_prefix, db_cfg,
+        pubkey_prefix=pubkey_prefix, log=log,
+    )
+    if contact_row is None:
+        log.warning(
+            "dm:drop_unregistered pubkey=%s cmd=%s",
+            pubkey_prefix, token,
+        )
+        return
+    full_pubkey = contact_row["pubkey"]
+    await asyncio.to_thread(
+        touch_contact_last_seen, db_cfg, pubkey=full_pubkey, log=log,
+    )
+    if not dm_rate_limiter.try_consume(full_pubkey):
+        log.warning(
+            "dm:rate_limited pubkey=%s cmd=%s",
+            pubkey_prefix, token,
+        )
+        return
+    stats = await asyncio.to_thread(
+        compute_dm_stats, db_cfg, wall_now(db_cfg), log=log,
+    )
+    ctx = {
+        "site_name": cfg.node.site_name,
+        "stats": stats,
+        "dm_remaining": dm_rate_limiter.remaining(full_pubkey),
+        "dm_per_hour": cfg.limits.dm_responses_per_hour,
+    }
+    reply_text = dm_bot.dispatch_command(token, ctx)
+    try:
+        result = await mesh_client.commands.send_msg(
+            {"public_key": full_pubkey}, reply_text,
+        )
+    except Exception as e:
+        log.warning(
+            "dm:send_exception pubkey=%s cmd=%s err=%s",
+            pubkey_prefix, token, e,
+        )
+        return
+    if result is None or result.type == EventType.ERROR:
+        err_payload = getattr(result, "payload", None) or {}
+        log.warning(
+            "dm:send_failed pubkey=%s cmd=%s err=%s",
+            pubkey_prefix, token, err_payload,
+        )
+    else:
+        log.info(
+            "dm:replied pubkey=%s cmd=%s reply_len=%d",
+            pubkey_prefix, token, len(reply_text),
+        )
+
+
 async def _setup_mesh_client(
     mesh_client,
     cfg,
@@ -830,6 +914,7 @@ async def _setup_mesh_client(
     known_channel_names: set[str],
     EventType,
     advert_state: dict,
+    dm_rate_limiter: "dm_bot.DMRateLimiter",
 ):
     """Configure a connected MeshCore client: verify/set radio params,
     set up channels, enable auto-fetch and decryption, subscribe handlers.
@@ -1040,6 +1125,44 @@ async def _setup_mesh_client(
 
     mesh_client.subscribe(EventType.CHANNEL_MSG_RECV, _on_channel_message)
 
+    # CIV-14 inbound-DM handler. Routes registered contacts through the
+    # `dm_bot` command surface and replies via send_msg. Unregistered
+    # senders are dropped silently — they're either casual passers-by
+    # who haven't gone through the captive-portal contact-add flow, or
+    # operators of other CivicMesh nodes whose adverts the firmware
+    # heard but who never opted in to a relationship with us. Either
+    # way, replying would just spend airtime on noise.
+    #
+    # Security log invariant (AGENTS.md): NEVER write full message text
+    # to a log. Log the pubkey prefix, the parsed command token, and the
+    # body length — that's enough to triage abuse without storing the
+    # body. Pinned by tests/test_dm_handler.py.
+    def _on_contact_message(event):
+        try:
+            payload = event.payload or {}
+            pubkey_prefix = (payload.get("pubkey_prefix") or "").lower()
+            text = payload.get("text") or payload.get("content") or ""
+            if not pubkey_prefix:
+                log.warning("dm:no_pubkey_prefix")
+                return
+            token = dm_bot.parse_command_token(text)
+            log.info(
+                "dm:received pubkey=%s cmd=%s len=%d",
+                pubkey_prefix, token, len(text),
+            )
+            asyncio.create_task(_process_dm(
+                payload,
+                cfg=cfg, db_cfg=db_cfg, log=log,
+                mesh_client=mesh_client,
+                dm_rate_limiter=dm_rate_limiter,
+                EventType=EventType,
+            ))
+        except Exception as e:
+            log.error("dm:handler_error %s", e, exc_info=True)
+
+    mesh_client.subscribe(EventType.CONTACT_MSG_RECV, _on_contact_message)
+    log.info("mesh:contact_msg_subscribed")
+
     # CIV-14 catch-all event tap. Logs every event the meshcore library
     # dispatches at DEBUG so an operator can answer "is the radio
     # actually receiving anything" without instrumenting individual
@@ -1112,6 +1235,13 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
     # (first_connect). See _announce_identity.
     advert_state: dict[str, Any] = {"last_callsign": None, "last_ts": None}
 
+    # CIV-14: shared across reconnects so a transient radio drop doesn't
+    # reset a per-pubkey DM rate-limit window. Process restart legitimately
+    # resets all budgets (lost state, no recovery).
+    dm_rate_limiter = dm_bot.DMRateLimiter(
+        per_hour=cfg.limits.dm_responses_per_hour,
+    )
+
     async def _connect_loop():
         backoff = 1
         while True:
@@ -1131,7 +1261,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
                 await _setup_mesh_client(
                     mesh_client, cfg, db_cfg, log,
                     active_outbox, known_channel_names, EventType,
-                    advert_state,
+                    advert_state, dm_rate_limiter,
                 )
 
                 controller.set_client(mesh_client)
@@ -1153,7 +1283,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         await _setup_mesh_client(
             mc, cfg, db_cfg, log,
             active_outbox, known_channel_names, EventType,
-            advert_state,
+            advert_state, dm_rate_limiter,
         )
 
     def _self_name():
