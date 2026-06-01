@@ -43,6 +43,7 @@ from database import (
     DBConfig,
     compute_stats,
     create_or_update_session,
+    get_contact_by_pubkey,
     get_message,
     get_messages,
     get_node_identity,
@@ -59,6 +60,7 @@ from database import (
     reconcile_message_status,
     record_clock_report,
     record_post_for_session,
+    request_contact_add,
     touch_session_last_seen,
     update_vote,
     update_session_fingerprint,
@@ -1132,6 +1134,31 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
+        # CIV-14 contact-add flow: clients POST a pubkey to /api/contacts to
+        # request registration; mesh_bot's contact-registration worker pushes
+        # it to the firmware contact table; the frontend polls this status
+        # endpoint to surface 'pending' → 'added' or 'error_*'. The pubkey
+        # in the path is the lookup key; no body, no cookie reading. 404
+        # if it isn't 64 hex chars OR if no row exists for that pubkey.
+        if path.startswith("/api/contacts/") and path.endswith("/status"):
+            pubkey = path[len("/api/contacts/"):-len("/status")].lower()
+            if len(pubkey) != 64 or not all(
+                c in "0123456789abcdef" for c in pubkey
+            ):
+                _json(self, 404, {"error": "not found"})
+                return
+            row = get_contact_by_pubkey(
+                self.server.db_cfg, pubkey=pubkey, log=log,
+            )
+            if row is None:
+                _json(self, 404, {"error": "not found"})
+                return
+            _json(self, 200, {
+                "status": row["status"],
+                "error_detail": row["error_detail"],
+            })
+            return
+
         if path == "/api/stats":
             # Consumers: captive-portal stats page (primary) + Inkplate
             # bulletin firmware (secondary, reads a small subset:
@@ -1325,6 +1352,83 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
                 _json(self, 500, {"error": "could not record clock report"})
                 return
             _json(self, 200, {"ok": True, "offset_vote_sec": vote})
+            return
+
+        # CIV-14 contact-add: queue a pubkey for firmware registration.
+        # Body accepts either `{"pubkey": "<64-hex>"}` or
+        # `{"meshcore_url": "meshcore://contact/add?...&public_key=..."}` —
+        # the latter is the format the MeshCore companion app produces for
+        # "share my identity," so users can paste the URL directly without
+        # extracting the pubkey themselves. Returns the queued status; the
+        # client then polls `GET /api/contacts/<pubkey>/status` until it
+        # flips to 'added' or 'error_*'. mesh_bot's contact-registration
+        # worker is the actor that moves rows out of 'pending'.
+        if path == "/api/contacts":
+            sess, ip, mac = self._require_session()
+            if not sess:
+                log.warning(
+                    "contacts:session_invalid ip=%s mac=%s ua=%s",
+                    ip, mac, self.headers.get("User-Agent", ""),
+                )
+                _json(self, 403, {"error": "session invalid"})
+                return
+            data = _read_json(self)
+            if not isinstance(data, dict):
+                _json(self, 400, {"error": "body must be a JSON object"})
+                return
+            pubkey_raw = data.get("pubkey")
+            url_raw = data.get("meshcore_url")
+
+            pubkey = None
+            if isinstance(pubkey_raw, str) and pubkey_raw.strip():
+                pubkey = pubkey_raw.strip().lower()
+            elif isinstance(url_raw, str) and url_raw.strip():
+                try:
+                    parsed_url = urllib.parse.urlparse(url_raw.strip())
+                except Exception as e:
+                    _json(self, 400, {
+                        "error": f"could not parse meshcore_url: {e}",
+                    })
+                    return
+                if parsed_url.scheme != "meshcore":
+                    _json(self, 400, {
+                        "error": "meshcore_url must use the meshcore:// scheme",
+                    })
+                    return
+                qs = urllib.parse.parse_qs(parsed_url.query)
+                keys = qs.get("public_key", [])
+                if keys:
+                    pubkey = keys[0].strip().lower()
+            else:
+                _json(self, 400, {
+                    "error": "pubkey or meshcore_url is required",
+                })
+                return
+
+            if (
+                pubkey is None
+                or len(pubkey) != 64
+                or not all(c in "0123456789abcdef" for c in pubkey)
+            ):
+                _json(self, 400, {
+                    "error": "pubkey must be 64 hex chars (32 bytes)",
+                })
+                return
+
+            try:
+                status = request_contact_add(
+                    self.server.db_cfg, pubkey=pubkey, log=log,
+                )
+            except Exception as e:
+                log.error(
+                    "contacts:queue_failed pubkey=%s err=%s",
+                    pubkey[:12], e, exc_info=True,
+                )
+                _json(self, 500, {
+                    "error": "could not queue contact registration",
+                })
+                return
+            _json(self, 200, {"pubkey": pubkey, "status": status})
             return
 
         if path == "/api/post":

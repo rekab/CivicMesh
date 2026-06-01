@@ -452,20 +452,50 @@
       </div>
     </section>
 
-    <!-- CIV-14 onboarding: scan to add this hub as a companion contact
-         in the MeshCore phone app. Hidden until /api/identity returns a
-         persisted row (mesh_bot must have connected at least once). -->
+    <!-- CIV-14 mesh onboarding. Two-step flow:
+         (1) operator pastes their MeshCore pubkey to register this node;
+         (2) the node's identity QR appears so they can scan it back into
+         the MeshCore app. The QR is only shown when the input contains a
+         valid pubkey — keeps confused passers-by from scanning something
+         they can't use. -->
     <section class="stats-card stats-card--identity" id="identityCard" hidden>
       <div class="stats-card__head">
-        <h3 class="stats-card__title">Add this hub to your phone</h3>
+        <h3 class="stats-card__title">Connect via mesh</h3>
       </div>
       <div class="stats-card__hint">
-        Open the MeshCore app on your phone &rarr; <em>Add Contact</em> &rarr; scan this QR.
+        Paste your MeshCore pubkey or share-identity URL to register with
+        this node. Find it in MeshCore &rarr; <em>Settings</em> &rarr;
+        <em>Share my identity</em>.
       </div>
-      <div class="identity__qr" id="identityQr" aria-label="Contact QR code"></div>
-      <div class="identity__meta">
-        <div class="identity__row"><span class="identity__lbl">Name</span><span class="identity__val" id="identityName">&mdash;</span></div>
-        <div class="identity__row"><span class="identity__lbl">Public key</span><code class="identity__pubkey" id="identityPubkey">&mdash;</code></div>
+      <form class="contact-form" id="contactForm">
+        <label class="contact-form__label" for="contactPubkey">Your pubkey</label>
+        <textarea
+          id="contactPubkey"
+          class="contact-form__input"
+          rows="2"
+          placeholder="64 hex chars, or meshcore://contact/add?..."
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+        ></textarea>
+        <button type="submit" id="contactSubmit" class="contact-form__submit">Register</button>
+      </form>
+      <div class="contact-status" id="contactStatus" hidden></div>
+
+      <!-- Visible only when input contains a valid pubkey AND /api/identity
+           has loaded. The QR encodes the node's pubkey so the phone can
+           add the node — the user's pubkey is for the reverse direction. -->
+      <div class="identity__qr-wrap" id="identityQrWrap" hidden>
+        <div class="stats-card__hint identity__qr-hint">
+          Now open the MeshCore app on your phone &rarr; <em>Add Contact</em>
+          &rarr; scan this QR.
+        </div>
+        <div class="identity__qr" id="identityQr" aria-label="Contact QR code"></div>
+        <div class="identity__meta">
+          <div class="identity__row"><span class="identity__lbl">Name</span><span class="identity__val" id="identityName">&mdash;</span></div>
+          <div class="identity__row"><span class="identity__lbl">Public key</span><code class="identity__pubkey" id="identityPubkey">&mdash;</code></div>
+        </div>
       </div>
     </section>
 

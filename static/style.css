@@ -1352,6 +1352,69 @@ body {
   line-height: 1.4;
 }
 
+/* ---- Contact-add form (CIV-14) ---- */
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.contact-form__label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--stats-ink-hint);
+}
+.contact-form__input {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid #d4cab8;
+  border-radius: 4px;
+  background: #fffdf6;
+  color: var(--stats-brown);
+  resize: vertical;
+  min-height: 40px;
+  word-break: break-all;
+}
+.contact-form__input:focus {
+  outline: 2px solid var(--stats-orange);
+  outline-offset: -1px;
+}
+.contact-form__submit {
+  align-self: flex-start;
+  padding: 6px 14px;
+  font-size: 12px;
+  background: var(--stats-orange);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.contact-form__submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.contact-status {
+  font-size: 12px;
+  padding: 6px 8px;
+  margin: 6px 0 2px;
+  border-radius: 4px;
+  background: #f4ecd8;
+  color: var(--stats-brown);
+}
+.contact-status--ok  { background: #e8f5e9; color: var(--stats-green); }
+.contact-status--err { background: #fde2e1; color: #a3251c; }
+.contact-status--info { background: #fff3e0; color: var(--stats-orange); }
+.identity__qr-wrap {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #d4cab8;
+}
+.identity__qr-hint {
+  margin-bottom: 4px;
+}
+
 /* ---- Desktop: centered card ---- */
 @media (min-width: 768px) {
   .stats-sheet {

@@ -29,6 +29,7 @@ from database import (
     cleanup_retention_bytes_per_channel,
     get_outbox_message,
     get_outbox_snapshot,
+    get_pending_contacts,
     get_pending_outbox,
     increment_heard,
     init_db,
@@ -40,6 +41,8 @@ from database import (
     get_latest_clock_correction,
     insert_message_wall,
     insert_telemetry_event,
+    mark_contact_added,
+    mark_contact_error,
     mark_outbox_failed,
     prune_heard_packets,
     prune_telemetry,
@@ -285,6 +288,110 @@ async def _heartbeat_task(cfg, db_cfg: DBConfig, log, controller: RecoveryContro
         except Exception as e:
             log.error("heartbeat:upsert_failed err=%s", e, exc_info=True)
         await asyncio.sleep(10)
+
+
+# Minimum contact dict shape verified empirically by
+# diagnostics/radio/minimum_contact_probe.py against the Fremonster phone:
+# pubkey + type=1 + flags=0 + out_path_len=-1 (flood) PASSed both TX (ACK)
+# and RX (CONTACT_MSG_RECV) legs. adv_name is intentionally empty — the
+# firmware backfills it from received ADVERTISEMENT packets (see
+# `--watch-adverts` verification). meshcore_py rejects KeyError if any of
+# these fields is omitted, so list them all even if the value is a default.
+def _build_minimum_contact_dict(pubkey_hex: str) -> dict[str, Any]:
+    return {
+        "public_key": pubkey_hex.lower(),
+        "adv_name": "",
+        "type": 1,
+        "flags": 0,
+        "out_path": "",
+        "out_path_len": -1,
+        "out_path_hash_mode": 0,
+        "last_advert": 0,
+        "adv_lat": 0.0,
+        "adv_lon": 0.0,
+    }
+
+
+async def _contact_registration_task(
+    cfg, db_cfg: DBConfig, log, controller: RecoveryController,
+):
+    """Drain the contacts table's status='pending' rows by calling the
+    firmware `add_contact` for each. Writes status back via
+    mark_contact_added / mark_contact_error so the web POST handler's
+    short status-poll loop can surface the result to the user.
+
+    Polls every 5s when idle — contact registration is a rare event
+    (a walk-up user pasting their pubkey in the captive portal), so a
+    tighter cadence would spend CPU without signal. When a row is found,
+    process it immediately and loop back without sleeping; only sleep
+    when the queue is empty.
+
+    Uses controller.get_client() like _outbox_task — sits out cleanly
+    when the radio is mid-reconnect or down.
+    """
+    while True:
+        try:
+            mc = controller.get_client()
+            if mc is None:
+                await asyncio.sleep(5)
+                continue
+
+            pending = await asyncio.to_thread(
+                get_pending_contacts, db_cfg, limit=1, log=log,
+            )
+            if not pending:
+                await asyncio.sleep(5)
+                continue
+
+            pubkey = pending[0]["pubkey"]
+            contact_dict = _build_minimum_contact_dict(pubkey)
+            log.info("contacts:worker_adding pubkey=%s", pubkey[:12])
+
+            try:
+                result = await mc.commands.add_contact(contact_dict)
+            except Exception as e:
+                log.error(
+                    "contacts:add_contact_exception pubkey=%s err=%s",
+                    pubkey[:12], e, exc_info=True,
+                )
+                await asyncio.to_thread(
+                    mark_contact_error, db_cfg,
+                    pubkey=pubkey, status="error_other",
+                    detail=f"exception: {type(e).__name__}", log=log,
+                )
+                # Brief pause so a persistently-broken radio doesn't spin.
+                await asyncio.sleep(5)
+                continue
+
+            if result is None or result.type == EventType.ERROR:
+                payload = getattr(result, "payload", None) or {}
+                code_string = payload.get("code_string")
+                error_code = payload.get("error_code")
+                if code_string == "ERR_CODE_TABLE_FULL":
+                    status_to_write = "error_table_full"
+                    detail = "ERR_CODE_TABLE_FULL"
+                else:
+                    status_to_write = "error_other"
+                    detail = code_string or f"error_code={error_code}"
+                await asyncio.to_thread(
+                    mark_contact_error, db_cfg,
+                    pubkey=pubkey, status=status_to_write,
+                    detail=detail, log=log,
+                )
+                # Don't immediately retry this same row — the failure mode
+                # is probably persistent (table full, etc.). Web POST resets
+                # the row to 'pending' on a fresh submit; nothing else
+                # will move it.
+                continue
+
+            await asyncio.to_thread(
+                mark_contact_added, db_cfg, pubkey=pubkey, log=log,
+            )
+        except Exception as e:
+            log.error(
+                "contacts:worker_loop_error err=%s", e, exc_info=True,
+            )
+            await asyncio.sleep(5)
 
 
 class _GlobalEgressBucket:
@@ -1062,6 +1169,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         _retention_task(cfg, db_cfg, log),
         _heartbeat_task(cfg, db_cfg, log, controller),
         _clock_task(cfg, db_cfg, log),
+        _contact_registration_task(cfg, db_cfg, log, controller),
         telemetry.telemetry_loop(db_cfg, log),
         liveness_task(controller, log),
         recovery_task(controller, _setup_fn, log),

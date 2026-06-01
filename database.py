@@ -2,8 +2,8 @@
 
 The database is the sole IPC channel between `web_server.py` and
 `mesh_bot.py`. Tables: messages, outbox, votes, sessions, status,
-heard_packets, telemetry_events. WAL mode with synchronous=NORMAL
-and foreign keys enabled.
+heard_packets, telemetry_events, contacts. WAL mode with
+synchronous=NORMAL and foreign keys enabled.
 
 Intentionally a flat collection of query functions — no ORM, no
 schema introspection at runtime. The outbox state machine and the
@@ -117,6 +117,36 @@ CREATE TABLE IF NOT EXISTS node_identity (
     name TEXT NOT NULL,
     updated_ts INTEGER NOT NULL
 );
+
+-- Walk-up users who have registered with this node via the captive-portal
+-- contact-add form (CIV-14). pubkey is the 64-char lowercase-hex MeshCore
+-- identity key. status is the registration state machine:
+--   'pending'          — queued; mesh_bot's contact-registration worker
+--                        has not yet pushed it to the firmware contact
+--                        table.
+--   'added'            — firmware add_contact returned OK; the node can
+--                        now both receive DMs from this pubkey and route
+--                        replies back to it.
+--   'error_table_full' — firmware refused with ERR_CODE_TABLE_FULL
+--                        (350-cap; see CIV-105 for the durable fix).
+--   'error_other'      — any other firmware ERROR; payload in error_detail.
+-- pinned (0/1) reserves a contact against future LRU eviction once
+-- firmware-table cap management lands. created_at is wall_now at first
+-- registration; last_seen is wall_now of the most recent inbound DM
+-- (populated by the future CONTACT_MSG_RECV handler). adv_name is NOT
+-- stored locally — mesh_bot reads it from the firmware contact cache via
+-- get_contacts() when admin UIs need it. The firmware backfills adv_name
+-- from received ADVERTISEMENT packets automatically (verified empirically;
+-- see diagnostics/radio/minimum_contact_probe.py --watch-adverts).
+CREATE TABLE IF NOT EXISTS contacts (
+    pubkey TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_detail TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_seen INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_pending ON contacts(status);
 
 -- Clock-correction state. clock_state is a KV singleton: 'offset_seconds'
 -- is the integer added to raw time.time() to get corrected wall time, and
@@ -937,6 +967,162 @@ def get_node_identity(cfg: DBConfig, *, log=None) -> Optional[dict[str, Any]]:
             log.debug("identity:get")
         row = conn.execute("SELECT * FROM node_identity WHERE id=1").fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# contacts table — captive-portal contact-add flow (CIV-14)
+# ---------------------------------------------------------------------------
+
+def request_contact_add(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> str:
+    """Queue a contact-registration request.
+
+    Idempotent: if status='added', leaves the row untouched and returns
+    'added' so callers can short-circuit. Any other state (pending or
+    error_*) resets to 'pending' so the mesh_bot worker picks it up
+    again on its next poll. Returns the resulting status.
+
+    CIV-99: `created_at` is stamped via wall_now read inside the
+    BEGIN IMMEDIATE, same invariant as upsert_status. Production
+    callers MUST NOT pass `_ts_for_test`.
+    """
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT status FROM contacts WHERE pubkey=?", (pubkey,),
+            ).fetchone()
+            if existing is not None and existing["status"] == "added":
+                conn.execute("COMMIT")
+                if log:
+                    log.info(
+                        "contacts:short_circuit pubkey=%s already=added",
+                        pubkey[:12],
+                    )
+                return "added"
+            now_ts = (
+                int(_ts_for_test)
+                if _ts_for_test is not None
+                else _wall_ts_in_txn(conn)
+            )
+            conn.execute(
+                """
+                INSERT INTO contacts(pubkey, status, error_detail, created_at)
+                VALUES (?, 'pending', NULL, ?)
+                ON CONFLICT(pubkey) DO UPDATE SET
+                    status='pending',
+                    error_detail=NULL
+                """,
+                (pubkey, now_ts),
+            )
+            conn.execute("COMMIT")
+            if log:
+                log.info("contacts:queued pubkey=%s", pubkey[:12])
+            return "pending"
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+def get_contact_by_pubkey(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+) -> Optional[dict[str, Any]]:
+    """Read a single contact row by exact pubkey match (case-insensitive)."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT pubkey, status, error_detail, pinned, created_at, last_seen "
+            "FROM contacts WHERE pubkey=?",
+            (pubkey,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_pending_contacts(
+    cfg: DBConfig,
+    *,
+    limit: int = 16,
+    log=None,
+) -> list[dict[str, Any]]:
+    """Return pending contact-add requests, oldest first. Used by the
+    mesh_bot contact-registration worker."""
+    conn = _connect(cfg)
+    try:
+        rows = conn.execute(
+            "SELECT pubkey, created_at FROM contacts "
+            "WHERE status='pending' ORDER BY created_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_contact_added(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+) -> None:
+    """Worker writes this after firmware add_contact returned OK."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "UPDATE contacts SET status='added', error_detail=NULL "
+            "WHERE pubkey=?",
+            (pubkey,),
+        )
+        if log:
+            log.info("contacts:added pubkey=%s", pubkey[:12])
+    finally:
+        conn.close()
+
+
+def mark_contact_error(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    status: str,
+    detail: Optional[str] = None,
+    log=None,
+) -> None:
+    """Worker writes this after firmware add_contact returned ERROR.
+    `status` must be 'error_table_full' or 'error_other'."""
+    pubkey = pubkey.lower()
+    if status not in ("error_table_full", "error_other"):
+        raise ValueError(f"invalid contact error status: {status!r}")
+    conn = _connect(cfg)
+    try:
+        conn.execute(
+            "UPDATE contacts SET status=?, error_detail=? WHERE pubkey=?",
+            (status, detail, pubkey),
+        )
+        if log:
+            log.info(
+                "contacts:error pubkey=%s status=%s detail=%s",
+                pubkey[:12], status, _sanitize_for_log(detail or ""),
+            )
     finally:
         conn.close()
 
