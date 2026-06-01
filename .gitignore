@@ -15,6 +15,11 @@ build/
 .DS_Store
 feedback.jsonl
 TODO.md
+# Output from `diagnostics/radio/*.py` runs (tee'd to dated .log files at
+# the repo root by convention). Contains captured ciphertexts, decrypted
+# plaintexts, and — in the case of manual_decrypt.py — the radio's
+# exported X25519 private key. Per-run only; never source.
+/*.lo*
 
 # CivicMesh radio diagnostics — harness source is tracked, runs are not.
 diagnostics/radio/runs/*

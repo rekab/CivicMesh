@@ -170,3 +170,89 @@ node and flags an asymmetry if one node hears ≥10× fewer packets.
 - `pip install` anything remotely. Import failures abort preflight.
 - Modify any CivicMesh source outside `diagnostics/radio/`.
 - Run itself on a schedule or after delivery. First real run is manual.
+
+---
+
+## Standalone diagnostics
+
+In addition to the `run_test.py` t0–t4 harness above, this directory
+contains single-purpose CLIs for ad-hoc investigation against a connected
+Heltec. Each takes `--config config.toml` to find the serial port (no
+`/dev/ttyUSB0` assumption); all refuse to run while `mesh_bot.service`
+is active and will not stop services for you. Pipe to `tee` to keep a log.
+
+### `device_info.py`
+
+Dumps firmware version + build date + `self_info`. Use to confirm which
+MeshCore build is running and whether you're on the latest
+`meshcore-dev/MeshCore` tag.
+
+```bash
+uv run python3 diagnostics/radio/device_info.py --config config.toml
+```
+
+### `contacts_purge.py`
+
+Disables firmware auto-add (`set_manual_add_contacts(True)` +
+`set_autoadd_config(0)`) and bulk-removes every contact in the firmware
+table. Use when the table hits its 350-row cap and `add_contact` starts
+returning `ERR_CODE_TABLE_FULL` (see CIV-105 for the durable startup-side
+fix). Dry-run by default; pass `--yes-really` to actually mutate.
+
+```bash
+uv run python3 diagnostics/radio/contacts_purge.py --config config.toml             # preview
+uv run python3 diagnostics/radio/contacts_purge.py --config config.toml --yes-really
+```
+
+### `drain_queue.py`
+
+Subscribes to `CONTACT_MSG_RECV` and calls `start_auto_message_fetching()`
+to drain the firmware's in-RAM `offline_queue[16]` of decoded-but-not-yet-
+surfaced DMs. Use when the phone says "delivered" but DMs never reach
+mesh_bot — almost always a host-side drain miss rather than a firmware
+issue. See CIV-106 for the queue/drain protocol.
+
+```bash
+uv run python3 diagnostics/radio/drain_queue.py --config config.toml --window 15
+```
+
+### `dm_diagnose.py`
+
+Three-check diagnostic for "I sent a DM to CONTACT and never got an ACK":
+verifies the stored contact pubkey against a captured ADVERTISEMENT,
+sends a DM and waits for the ACK (with RX-during-wait logging), and runs
+path discovery. CONTACT is matched by `adv_name` then by pubkey prefix.
+
+```bash
+uv run python3 diagnostics/radio/dm_diagnose.py --config config.toml Fremonster
+```
+
+### `dm_rx_trace.py`
+
+Passive observer: subscribes to `RX_LOG_DATA`, `CONTACT_MSG_RECV`, `ACK`,
+and `CHANNEL_MSG_RECV` for a configurable window and correlates inbound
+TXT_MSG packets with subsequent decode events. Use when you can see
+RX activity but DMs aren't surfacing and want to localise where in the
+firmware pipeline they die. Auto-drains the offline_queue.
+
+```bash
+uv run python3 diagnostics/radio/dm_rx_trace.py --config config.toml --window 120
+```
+
+### `manual_decrypt.py`
+
+Bypasses the firmware entirely: exports the Pi's X25519 private key,
+performs ECDH + AES-128-ECB + HMAC-SHA-256 in Python, and decrypts a
+captured inbound TXT_MSG ciphertext. The definitive "is the crypto
+math right?" test. Self-tests against RFC 7748 §6.1 vectors at startup.
+
+Note: `self_info.public_key` is the Ed25519 identity pubkey; the firmware
+converts to X25519 via Edwards→Montgomery inside `getSharedSecret`. This
+tool does the same conversion — handy reference if you ever need to
+operate on MeshCore keys outside the firmware.
+
+```bash
+uv run python3 diagnostics/radio/manual_decrypt.py --config config.toml \
+    --cipher-hex <raw-hex-from-dm_rx_trace-log>     # offline decrypt
+uv run python3 diagnostics/radio/manual_decrypt.py --config config.toml --capture
+```
