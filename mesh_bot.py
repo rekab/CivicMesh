@@ -587,6 +587,37 @@ async def _outbox_task(
 _ADVERT_COOLDOWN_SEC = 6 * 3600
 
 
+# Payload keys whose values are user-readable message content. The
+# CIV-14 event tap (and any future event-level logger) MUST redact
+# these to a length-only field — see AGENTS.md "Security log must
+# not include full message content." Module-level so the invariant
+# is testable in isolation; adding a new content field that the
+# library may dispatch belongs here, not at the call site.
+_EVENT_CONTENT_FIELDS = frozenset({"text", "content", "message"})
+
+
+def _summarize_event_payload(payload):
+    """Produce a one-line-loggable, content-redacted summary of an
+    event payload. Scalars pass through; bytes become bytes(len);
+    nested values become their type name; content fields become
+    {field}_len with the byte/char count. Returns the payload
+    unchanged when it is not a dict (caller logs with %r).
+    """
+    if not isinstance(payload, dict):
+        return payload
+    summary: dict[str, Any] = {}
+    for k, v in payload.items():
+        if k in _EVENT_CONTENT_FIELDS:
+            summary[k + "_len"] = len(v) if isinstance(v, (str, bytes)) else None
+        elif isinstance(v, (str, int, float, bool)) or v is None:
+            summary[k] = v
+        elif isinstance(v, bytes):
+            summary[k] = f"bytes({len(v)})"
+        else:
+            summary[k] = type(v).__name__
+    return summary
+
+
 async def _announce_identity(mesh_client, cfg, db_cfg, log, advert_state, EventType):
     """Set the firmware name on every connect; advertise only when
     the cooldown has elapsed, the callsign changed, or this is the
@@ -901,6 +932,34 @@ async def _setup_mesh_client(
             log.error("mesh:rx_error %s", e, exc_info=True)
 
     mesh_client.subscribe(EventType.CHANNEL_MSG_RECV, _on_channel_message)
+
+    # CIV-14 catch-all event tap. Logs every event the meshcore library
+    # dispatches at DEBUG so an operator can answer "is the radio
+    # actually receiving anything" without instrumenting individual
+    # event types. Permanent: flip `[logging] log_level = "DEBUG"` in
+    # config.toml to surface. INFO stays clean.
+    #
+    # Subscribed with event_type=None — meshcore_py's documented
+    # wildcard form (events.py:140-141). Runs after the channel-msg
+    # and heard-count handlers in registration order, so it never
+    # races a primary handler. Redaction lives in the module-level
+    # _summarize_event_payload so the "no message content in logs"
+    # invariant is unit-testable.
+    def _on_any_event(event):
+        try:
+            etype_obj = getattr(event, "type", None)
+            etype = getattr(etype_obj, "name", str(etype_obj))
+            payload = getattr(event, "payload", None)
+            summary = _summarize_event_payload(payload)
+            if isinstance(summary, dict):
+                log.debug("mesh:event event_type=%s payload=%s", etype, summary)
+            else:
+                log.debug("mesh:event event_type=%s payload=%r", etype, summary)
+        except Exception as e:
+            log.error("mesh:event_tap_error %s", e, exc_info=True)
+
+    mesh_client.subscribe(None, _on_any_event)
+    log.info("mesh:event_tap_subscribed")
 
     log.info(
         "mesh:setup_complete channels_ok=%d/%d",
