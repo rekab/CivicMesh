@@ -95,6 +95,32 @@ far in the future." Bump it once a year. The config loader logs a
 WARNING when "now + 180 days" crosses the ceiling so operators see
 the reminder.
 
+### MeshCore inbound DM drain (companion firmware quirk)
+
+The Heltec radio does NOT push decoded DMs to the host. The firmware
+decrypts a `CONTACT_MSG_RECV` frame and enqueues it in an in-RAM
+`offline_queue` (size 16), then sends a 1-byte `MESSAGES_WAITING`
+(0x83) tickle. The host has to pull each message by issuing
+`CMD_SYNC_NEXT_MESSAGE` (0x0A) until the firmware answers
+`NO_MORE_MSGS`. `meshcore_py` wraps that drain loop in
+`MeshCore.start_auto_message_fetching()` (`meshcore.py:414-458`).
+
+mesh_bot calls it at `mesh_bot.py:817`, so production is fine. The
+trap is for new code that observes inbound DMs without this call:
+
+- **Any host-side reader of inbound DMs — mesh_bot, a diagnostic,
+  a future async helper — must `await mc.start_auto_message_fetching()`
+  after connect.** Subscribing to `EventType.CONTACT_MSG_RECV` alone
+  yields silence: the firmware decodes correctly, sends the
+  `MESSAGES_WAITING` tickle, and waits. Nothing crosses the wire
+  until the host drains. A 30s passive observer will see zero DMs
+  and conclude the radio is broken.
+
+`diagnostics/radio/drain_queue.py` is the minimal reference (subscribe
++ start_auto_message_fetching + window). This protocol cost ~6h of
+CIV-14 investigation before it was identified; CIV-106 tracks the
+hygiene work that landed this section.
+
 ## Invariants
 
 These constraints must be preserved across all changes:

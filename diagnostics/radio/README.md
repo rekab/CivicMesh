@@ -181,6 +181,13 @@ Heltec. Each takes `--config config.toml` to find the serial port (no
 `/dev/ttyUSB0` assumption); all refuse to run while `mesh_bot.service`
 is active and will not stop services for you. Pipe to `tee` to keep a log.
 
+**Writing a new diagnostic that observes inbound DMs?** You MUST call
+`await mc.start_auto_message_fetching()` after connect, or
+`CONTACT_MSG_RECV` will never fire — the firmware queues DMs in an in-RAM
+`offline_queue` and only sends `MESSAGES_WAITING` tickles until the host
+drains. See the "MeshCore inbound DM drain" section in `AGENTS.md` for
+the protocol, and `drain_queue.py` below for the minimal reference.
+
 ### `device_info.py`
 
 Dumps firmware version + build date + `self_info`. Use to confirm which
