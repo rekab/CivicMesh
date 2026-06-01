@@ -38,6 +38,10 @@ Usage:
     # named-baseline comparison run:
     uv run python3 diagnostics/radio/minimum_contact_probe.py \\
         --config config.toml --pubkey <hex> --name Fremonster
+    # advert-backfill watch: add with empty name, see if firmware
+    # populates adv_name from an incoming advert within N seconds.
+    uv run python3 diagnostics/radio/minimum_contact_probe.py \\
+        --config config.toml --pubkey <hex> --watch-adverts 180
 """
 
 from __future__ import annotations
@@ -285,6 +289,109 @@ async def _rx_leg(
     return FAIL, "no CONTACT_MSG_RECV fired in window"
 
 
+async def _advert_watch_leg(
+    mesh_client,
+    pubkey_hex: str,
+    window_s: float,
+) -> tuple[str, str]:
+    _section(f"ADVERT-BACKFILL WATCH — does firmware populate adv_name from "
+             f"an incoming advert within {window_s:.0f}s?")
+    pubkey_lower = pubkey_hex.lower()
+    pubkey_prefix_hex = pubkey_lower[:12]
+
+    advert_events: list[dict] = []
+    new_contact_events: list[dict] = []
+    next_contact_events: list[dict] = []
+
+    def _on_advert(event):
+        try:
+            p = event.payload or {}
+            advert_events.append(dict(p))
+            _p(f"[{_ts()}] ADVERTISEMENT pubkey={p.get('public_key', '')[:12]}…")
+        except Exception as e:
+            _p(f"  advert handler error: {e}", file=sys.stderr)
+
+    def _on_new_contact(event):
+        try:
+            p = event.payload or {}
+            new_contact_events.append(dict(p))
+            _p(f"[{_ts()}] *** NEW_CONTACT "
+               f"pubkey={p.get('public_key', '')[:12]}… "
+               f"adv_name={p.get('adv_name')!r}")
+        except Exception as e:
+            _p(f"  new_contact handler error: {e}", file=sys.stderr)
+
+    def _on_next_contact(event):
+        try:
+            p = event.payload or {}
+            next_contact_events.append(dict(p))
+        except Exception as e:
+            _p(f"  next_contact handler error: {e}", file=sys.stderr)
+
+    subs = [
+        mesh_client.subscribe(EventType.ADVERTISEMENT, _on_advert),
+        mesh_client.subscribe(EventType.NEW_CONTACT, _on_new_contact),
+        mesh_client.subscribe(EventType.NEXT_CONTACT, _on_next_contact),
+    ]
+    try:
+        _p()
+        _p("=" * 72)
+        _p("ACTION:")
+        _p("  - Your phone's companion app advertises periodically. You can")
+        _p("    also trigger one manually via 'share identity' / 'send")
+        _p("    advert' in the MeshCore app.")
+        _p(f"  - Watching for {window_s:.0f}s starting now.")
+        _p("=" * 72)
+        try:
+            await asyncio.sleep(window_s)
+        except asyncio.CancelledError:
+            pass
+    finally:
+        for s in subs:
+            s.unsubscribe()
+
+    matching_adverts = [e for e in advert_events
+                        if (e.get("public_key") or "").lower() == pubkey_lower]
+    matching_new = [e for e in new_contact_events
+                    if (e.get("public_key") or "").lower() == pubkey_lower]
+
+    _p()
+    _p(f"ADVERTISEMENT events (all)       : {len(advert_events)}")
+    _p(f"  matching this pubkey           : {len(matching_adverts)}")
+    _p(f"NEW_CONTACT events               : {len(new_contact_events)}")
+    _p(f"  matching this pubkey           : {len(matching_new)}")
+    if matching_new:
+        names = [e.get("adv_name") for e in matching_new]
+        _p(f"  names carried by NEW_CONTACT   : {names!r}")
+
+    # Re-read the contact via get_contacts. This is the load-bearing
+    # question: did the firmware UPDATE the stored adv_name?
+    await mesh_client.commands.get_contacts()
+    stored = _find_contact_by_pubkey(mesh_client, pubkey_hex)
+    _p()
+    _p("Stored contact AFTER watch window:")
+    _p(json.dumps(stored, indent=2, default=str))
+
+    if stored is None:
+        return FAIL, "contact disappeared from the table"
+    final_name = stored.get("adv_name", "")
+    if final_name:
+        return PASS, (
+            f"adv_name backfilled to {final_name!r} "
+            f"(saw {len(matching_adverts)} ADVERTISEMENT + "
+            f"{len(matching_new)} NEW_CONTACT for this pubkey)"
+        )
+    if matching_adverts or matching_new:
+        return INCONCLUSIVE, (
+            f"events fired but adv_name stayed empty — firmware doesn't "
+            "backfill manually-added contacts"
+        )
+    return INCONCLUSIVE, (
+        "no advert from this pubkey arrived in the window — extend "
+        "--watch-adverts or trigger an advert from the phone manually"
+    )
+
+
 async def _async_main(args: argparse.Namespace) -> int:
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -317,10 +424,23 @@ async def _async_main(args: argparse.Namespace) -> int:
             return 3
 
         # Drain protocol: see AGENTS.md "MeshCore inbound DM drain".
-        # Without this, CONTACT_MSG_RECV never fires.
+        # Without this, CONTACT_MSG_RECV never fires (and NEW_CONTACT
+        # in the watch-adverts mode arrives via the same reader path,
+        # so calling it is harmless either way).
         _p()
         _p(f"[{_ts()}] start_auto_message_fetching() — required for RX")
         await mesh_client.start_auto_message_fetching()
+
+        if args.watch_adverts is not None:
+            label, detail = await _advert_watch_leg(
+                mesh_client, args.pubkey, args.watch_adverts,
+            )
+            _verdict(label, detail)
+            _section("SUMMARY")
+            _p(f"adv_name supplied  : {args.name!r}  (empty = the experiment)")
+            _p(f"watch window       : {args.watch_adverts:.0f}s")
+            _p(f"advert backfill    : {label}  {detail}")
+            return 0 if label == PASS else 1
 
         tx_label, tx_detail = await _tx_leg(mesh_client, stored)
         _verdict(tx_label, tx_detail)
@@ -337,11 +457,6 @@ async def _async_main(args: argparse.Namespace) -> int:
         _p(f"adv_name supplied : {args.name!r}")
         _p(f"TX leg            : {tx_label}  {tx_detail}")
         _p(f"RX leg            : {rx_label}  {rx_detail}")
-        _p()
-        _p("UX note to record manually:")
-        _p("  What sender-name did your phone display for the hub's DM?")
-        _p("  (If empty adv_name caused the phone to show 'Anonymous' or")
-        _p("   a pubkey prefix, that's a finding worth capturing.)")
         return 0 if (tx_label == PASS and rx_label == PASS) else 1
     finally:
         try:
@@ -376,6 +491,17 @@ def _parse_args() -> argparse.Namespace:
         default=30.0,
         help="Seconds to listen for CONTACT_MSG_RECV during the RX leg "
              "after operator presses Enter (default 30).",
+    )
+    p.add_argument(
+        "--watch-adverts",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Alternate mode: skip TX/RX legs; add the contact with the "
+             "empty adv_name and watch ADVERTISEMENT + NEW_CONTACT events "
+             "for SECONDS to see if the firmware backfills adv_name from "
+             "a received advert. Use --name '' (the default) for this to "
+             "be meaningful.",
     )
     ns = p.parse_args()
     pk = ns.pubkey.strip().lower()
