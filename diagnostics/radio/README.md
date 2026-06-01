@@ -263,3 +263,20 @@ uv run python3 diagnostics/radio/manual_decrypt.py --config config.toml \
     --cipher-hex <raw-hex-from-dm_rx_trace-log>     # offline decrypt
 uv run python3 diagnostics/radio/manual_decrypt.py --config config.toml --capture
 ```
+
+### `minimum_contact_probe.py`
+
+Adds a MeshCore contact with only a pubkey + sensible defaults (empty
+`adv_name`, `type=1`, `flags=0`, `out_path_len=-1`), then runs a TX leg
+(send DM from hub, wait for ACK) and an RX leg (operator sends DM from
+the phone, count `CONTACT_MSG_RECV`). PASS on both legs means the
+captive-portal contact-add form needs only a pubkey field; the local
+`adv_name` is purely cosmetic for the hub's own UI.
+
+```bash
+uv run python3 diagnostics/radio/minimum_contact_probe.py \
+    --config config.toml \
+    --pubkey <64-hex-chars>                  # the experiment: empty name
+uv run python3 diagnostics/radio/minimum_contact_probe.py \
+    --config config.toml --pubkey <hex> --name <name>   # baseline
+```
