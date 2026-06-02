@@ -202,9 +202,11 @@ uv run python3 diagnostics/radio/device_info.py --config config.toml
 
 Disables firmware auto-add (`set_manual_add_contacts(True)` +
 `set_autoadd_config(0)`) and bulk-removes every contact in the firmware
-table. Use when the table hits its 350-row cap and `add_contact` starts
-returning `ERR_CODE_TABLE_FULL` (see CIV-105 for the durable startup-side
-fix). Dry-run by default; pass `--yes-really` to actually mutate.
+table. The durable fix for the 350-row cap is `mesh_bot._evict_one_contact`
+(three-tier LRU, runs on `ERR_CODE_TABLE_FULL`; see AGENTS.md
+"Firmware contact-table eviction"); this script is the bulk-reset
+escape hatch for when an operator wants to wipe everything and start
+clean. Dry-run by default; pass `--yes-really` to actually mutate.
 
 ```bash
 uv run python3 diagnostics/radio/contacts_purge.py --config config.toml             # preview
