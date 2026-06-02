@@ -245,6 +245,7 @@ Hub-docs releases:
 
 Operations (runtime):
   stats               Print message/session/outbox/vote counts.            [IMPL]
+  identity            Print this node's meshcore://contact/add URL.        [IMPL]
   cleanup             Run retention cleanup.                               [IMPL]
   messages recent     List recent messages.                                [IMPL]
   outbox list         List pending outbox messages.                        [IMPL]
@@ -254,6 +255,10 @@ Operations (runtime):
   sessions show       Show one session's detail.                           [IMPL]
   sessions reset      Zero a session's hourly post counter.                [IMPL]
   pin / unpin         Pin or unpin a message.                              [IMPL]
+  contact list        List registered MeshCore contacts.                   [IMPL]
+  contact pin/unpin   Pin or unpin a contact (LRU eviction protection).    [IMPL]
+  contact remove      Remove a contact from the DB.                        [IMPL]
+  set-clock           Promote corrected display time into the OS clock.    [IMPL]
 ```
 
 ---
@@ -1248,6 +1253,22 @@ priority (lower = higher in list); default is next available slot.
 **Drift note:** UI doesn't surface pinned messages explicitly yet.
 Schema and admin command both work; rendering is the gap.
 
+### identity                                                             [IMPL]
+
+```
+civicmesh identity
+```
+
+Print this node's `meshcore://contact/add` URL on stdout. Headless
+escape hatch for the captive portal's QR card (CIV-14): pipe to
+`qrencode -t ANSIUTF8` for a terminal QR, or paste the URL into the
+MeshCore app's "Add by URL" entry.
+
+The URL is built from the `node_identity` row that mesh_bot populates
+on first connection. If mesh_bot has never run, the command exits
+non-zero with `mesh_bot has not connected yet (node_identity row is
+empty); start mesh_bot.` on stderr.
+
 ### contact list / pin / unpin / remove                                  [IMPL]
 
 ```
@@ -1280,6 +1301,40 @@ because `get_contact_by_pubkey_prefix` filters to `status='added'`
 — so the user-facing behavior of removal is immediate. Operators who
 need to wipe the firmware contact table aggressively should use
 `diagnostics/radio/contacts_purge.py` (mesh_bot must be stopped).
+
+### set-clock                                                            [IMPL]
+
+```
+sudo civicmesh set-clock
+```
+
+Promote the corrected display time (`clock_state.offset_seconds`)
+into the OS clock. CIV-99 admin command for operators who want the
+Pi's wall clock to read correctly to anything that talks to it via
+the kernel (logs, `date`, third-party processes) — not just to
+CivicMesh's own stamped DB writes.
+
+Behavior, under a single `BEGIN EXCLUSIVE`:
+
+1. Reads current `offset_seconds`.
+2. Runs `date -s @<target>` to step the system clock to
+   `int(time.time()) + offset`.
+3. Runs `fake-hwclock save` so the corrected time survives reboot.
+4. Commits `offset_seconds=0`, bumps `vote_epoch`, clears
+   per-session clock report fields, and appends an `'admin'` row
+   to `clock_corrections`.
+
+`date -s` failure rolls back the DB and leaves the system clock
+unchanged (exit 3). `fake-hwclock save` failure does NOT roll back —
+the system clock is already correct, and rolling back would leave
+the running node double-corrected (`wall_now = jumped_clock +
+old_offset`) until reboot. The failure is logged at CRITICAL and
+recorded in the audit row as `clock_corrections.source_summary`
+JSON with `fake_hwclock_save_failed=true`. Exits non-zero so the
+operator notices and re-runs after fixing fake-hwclock.
+
+Requires root; refuses otherwise (exit 1). SSH-only by design — there
+is no sudoers rule and no setuid helper.
 
 ---
 
