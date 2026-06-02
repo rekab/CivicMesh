@@ -64,7 +64,7 @@ uv run python -m unittest tests.test_admin_outbox_list       # single test modul
 
 ### Clock model (CIV-99)
 
-CivicMesh hubs run without internet, often on a Pi Zero 2W with no
+CivicMesh nodes run without internet, often on a Pi Zero 2W with no
 RTC. The OS clock starts stale every cold boot. CivicMesh keeps an
 integer `clock_state.offset_seconds` derived from walk-up phone reports
 and adds it to raw `time.time()` on every stamped DB write. We never

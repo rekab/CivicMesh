@@ -41,7 +41,7 @@ void draw_api_mismatch(Adafruit_GFX& gfx,
                       kCustomFontBaseHeight * 2);
   gfx.print(line2);
 
-  const char* line3 = "This hub needs reflashing.";
+  const char* line3 = "This display needs reflashing.";
   gfx.getTextBounds(line3, 0, 0, &x1, &y1, &w, &h);
   set_cursor_top_left(gfx, (PANEL_W - w) / 2, 200,
                       kCustomFontBaseHeight * 2);

@@ -24,21 +24,21 @@ struct FailureCopy {
 
 FailureCopy copy_for(const std::string& reason) {
   if (reason == "ap_unreachable")
-    return {"! HUB UNREACHABLE", "AP UNREACHABLE",
-            "The hub WiFi is not responding."};
+    return {"! NODE UNREACHABLE", "AP UNREACHABLE",
+            "The CivicMesh WiFi is not responding."};
   if (reason == "dns_failure")
-    return {"! HUB UNREACHABLE", "DNS FAILURE",
-            "The hub did not resolve."};
+    return {"! NODE UNREACHABLE", "DNS FAILURE",
+            "The CivicMesh node did not resolve."};
   if (reason == "pi_unreachable")
-    return {"! HUB UNREACHABLE", "HUB UNREACHABLE",
-            "AP is up but the hub is not."};
+    return {"! NODE UNREACHABLE", "NODE UNREACHABLE",
+            "AP is up but the node is not."};
   if (reason == "http_error")
-    return {"! HUB ERROR", "HTTP ERROR",
-            "The hub responded but with an error code."};
+    return {"! NODE ERROR", "HTTP ERROR",
+            "The CivicMesh node responded but with an error code."};
   if (reason == "bad_json")
-    return {"! HUB ERROR", "BAD JSON",
-            "The hub response did not parse."};
-  return {"! HUB ERROR", "ERROR", reason.c_str()};
+    return {"! NODE ERROR", "BAD JSON",
+            "The CivicMesh node response did not parse."};
+  return {"! NODE ERROR", "ERROR", reason.c_str()};
 }
 
 void draw_inverted_bar(Adafruit_GFX& gfx, int16_t y, int16_t h) {
@@ -168,7 +168,7 @@ void draw_failure_shell(Adafruit_GFX& gfx, const Envelope& env) {
   char http_detail[48];
   if (env.failure_reason == "http_error" && env.http_code > 0) {
     snprintf(http_detail, sizeof(http_detail),
-             "The hub responded with HTTP %d.", env.http_code);
+             "The CivicMesh node responded with HTTP %d.", env.http_code);
     copy.detail = http_detail;
   }
   draw_header(gfx, copy);

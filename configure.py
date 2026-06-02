@@ -269,12 +269,12 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         _validate_country,
     )
     print("\nexternal_display.enabled — optional Inkplate 6 e-paper bulletin "
-          "display for walk-up users. Most hubs don't have one. Enable only "
-          "if this hub physically has the Inkplate wired in; otherwise the "
+          "display for walk-up users. Most nodes don't have one. Enable only "
+          "if this node physically has the Inkplate wired in; otherwise the "
           "/api/external-display/state endpoint stays disabled and the "
           "feature imposes no runtime cost.")
     external_display_enabled = _prompt_bool(
-        "Does this hub have an Inkplate display attached?",
+        "Does this node have an Inkplate display attached?",
         bool(external_display.get("enabled", False)),
     )
     print("\ndebug.allow_eth0 — DEV ONLY. When true, traffic on eth0 "

@@ -1,7 +1,7 @@
 """Wall-clock correction primitives: offset, vote epoch, boot id, and the
 pure consensus math.
 
-CivicMesh hubs have no RTC and run without internet at deploy sites; the
+CivicMesh nodes have no RTC and run without internet at deploy sites; the
 system clock starts stale every cold boot. We never set the OS clock from
 bot code (see docs/clock_consensus.md for the rationale). Instead we track
 an integer offset_seconds in `clock_state` and apply it on every

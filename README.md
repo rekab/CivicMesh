@@ -76,7 +76,7 @@ Currently in development; design lives in
 
 ## External bulletin display
 
-A CivicMesh hub can optionally drive an Inkplate 6 e-paper display
+A CivicMesh node can optionally drive an Inkplate 6 e-paper display
 hung at the Hub, rendering recent mesh chat at arm's length.
 Walk-up readers see the bulletin without picking up their phone —
 useful when a passerby wants to know what's going on but doesn't
@@ -88,13 +88,13 @@ want to join the WiFi or open the captive portal.
 
 The display is its own device — its own ESP32, its own battery, its
 own WiFi client. It polls `/api/external-display/state` from the
-hub's AP, renders the bulletin client-side, and never receives
+node's AP, renders the bulletin client-side, and never receives
 bitmaps over WiFi (a 1-bit JSON payload parses cheaper than a
-60 KB framebuffer crosses the air). The same hub serves both the
+60 KB framebuffer crosses the air). The same node serves both the
 phone portal and the bulletin from the same SQLite store; no extra
 moving parts.
 
-- **Optional.** Hubs without an Inkplate are unaffected; the API
+- **Optional.** Nodes without an Inkplate are unaffected; the API
   endpoint exists either way.
 - **Walk-up readable.** BBS-aesthetic chrome and e-paper
   persistence — the last bulletin stays visible when the panel
@@ -318,7 +318,7 @@ over SSH, the core flow is four commands:
 # civicmesh service user, and stage the deployment tree.
 curl -sSL https://raw.githubusercontent.com/rekab/CivicMesh/main/scripts/civicmesh-bootstrap.sh | sudo bash
 
-# Configure: walk through prompts for hub name, channels, AP SSID,
+# Configure: walk through prompts for node name, channels, AP SSID,
 # and radio settings.
 sudo -u civicmesh civicmesh configure
 
