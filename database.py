@@ -127,17 +127,25 @@ CREATE TABLE IF NOT EXISTS node_identity (
 --   'added'            — firmware add_contact returned OK; the node can
 --                        now both receive DMs from this pubkey and route
 --                        replies back to it.
---   'error_table_full' — firmware refused with ERR_CODE_TABLE_FULL
---                        (350-cap; see CIV-105 for the durable fix).
+--   'evicted'          — firmware table was full when a newer pubkey
+--                        registered and this row was bumped to make room
+--                        (mesh_bot._evict_one_contact, three-tier LRU
+--                        policy). Re-registration via the captive portal
+--                        flips it back to 'pending' (request_contact_add
+--                        does INSERT OR REPLACE).
+--   'error_table_full' — firmware refused with ERR_CODE_TABLE_FULL AND
+--                        the eviction helper found no candidate to bump
+--                        (every slot pinned, or eviction itself failed).
 --   'error_other'      — any other firmware ERROR; payload in error_detail.
--- pinned (0/1) reserves a contact against future LRU eviction once
--- firmware-table cap management lands. created_at is wall_now at first
--- registration; last_seen is wall_now of the most recent inbound DM
--- (populated by the future CONTACT_MSG_RECV handler). adv_name is NOT
--- stored locally — mesh_bot reads it from the firmware contact cache via
--- get_contacts() when admin UIs need it. The firmware backfills adv_name
--- from received ADVERTISEMENT packets automatically (verified empirically;
--- see diagnostics/radio/minimum_contact_probe.py --watch-adverts).
+-- pinned (0/1) reserves a contact against LRU eviction. Pinned rows are
+-- tier 1: never evicted regardless of last_seen. created_at is wall_now
+-- at first registration; last_seen is wall_now of the most recent
+-- inbound DM (populated by the CONTACT_MSG_RECV handler). adv_name is
+-- NOT stored locally — mesh_bot reads it from the firmware contact cache
+-- via get_contacts() when admin UIs need it. The firmware backfills
+-- adv_name from received ADVERTISEMENT packets automatically (verified
+-- empirically; see diagnostics/radio/minimum_contact_probe.py
+-- --watch-adverts).
 CREATE TABLE IF NOT EXISTS contacts (
     pubkey TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -1127,6 +1135,74 @@ def mark_contact_error(
         conn.close()
 
 
+def get_contacts_for_eviction(
+    cfg: DBConfig,
+    *,
+    log=None,
+) -> list[dict[str, Any]]:
+    """Snapshot of every contact row, for mesh_bot._evict_one_contact.
+
+    Returns every row regardless of status. The eviction helper needs
+    all statuses for the firmware-vs-DB set diff: a 'pending' or
+    'error_table_full' row excludes its pubkey from tier 3 even though
+    we wouldn't pick it for tier 2 (only status='added' AND pinned=0
+    is tier 2 territory). Filtering to 'added' here would leak races
+    into tier 3 — see _evict_one_contact for the signpost comment.
+    """
+    conn = _connect(cfg)
+    try:
+        rows = conn.execute(
+            "SELECT pubkey, status, pinned, last_seen FROM contacts"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_contact_evicted(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> None:
+    """Worker writes this after firmware remove_contact returned OK for
+    a tier-2 LRU eviction. Status flips to 'evicted'; error_detail
+    records the wall-clock moment so an operator can correlate with
+    incident timelines.
+
+    CIV-99: ts via wall_now read inside BEGIN IMMEDIATE."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now_ts = (
+                int(_ts_for_test)
+                if _ts_for_test is not None
+                else _wall_ts_in_txn(conn)
+            )
+            conn.execute(
+                "UPDATE contacts SET status='evicted', error_detail=? "
+                "WHERE pubkey=?",
+                (f"LRU eviction at {now_ts}", pubkey),
+            )
+            conn.execute("COMMIT")
+            if log:
+                log.info(
+                    "contacts:evicted_db pubkey=%s ts=%d",
+                    pubkey[:12], now_ts,
+                )
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
 def get_contact_by_pubkey_prefix(
     cfg: DBConfig,
     *,
@@ -1137,9 +1213,13 @@ def get_contact_by_pubkey_prefix(
     CONTACT_MSG_RECV carries — the firmware sends only the prefix in DM
     events, not the full 64-char pubkey. Returns the first matching row
     with status='added' (i.e., the user has completed the registration
-    flow) or None if no match. Prefix collisions are theoretically
-    possible but astronomically unlikely at 6 bytes for a single-node
-    contact table sized in the hundreds."""
+    flow and has not been evicted) or None if no match. Rows in
+    'pending', 'evicted', or any 'error_*' state are intentionally
+    excluded: pending and error rows aren't in the firmware contact
+    table so the DM never arrived; evicted rows lost their slot and
+    must re-register before they're heard again. Prefix collisions are
+    theoretically possible but astronomically unlikely at 6 bytes for a
+    single-node contact table sized in the hundreds."""
     pubkey_prefix = pubkey_prefix.lower()
     conn = _connect(cfg)
     try:

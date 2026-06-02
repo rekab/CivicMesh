@@ -31,6 +31,7 @@ from database import (
     get_contact_by_pubkey_prefix,
     get_outbox_message,
     get_outbox_snapshot,
+    get_contacts_for_eviction,
     get_pending_contacts,
     get_pending_outbox,
     increment_heard,
@@ -45,6 +46,7 @@ from database import (
     insert_telemetry_event,
     mark_contact_added,
     mark_contact_error,
+    mark_contact_evicted,
     mark_outbox_failed,
     prune_heard_packets,
     prune_telemetry,
@@ -316,6 +318,132 @@ def _build_minimum_contact_dict(pubkey_hex: str) -> dict[str, Any]:
     }
 
 
+async def _evict_one_contact(
+    mc, db_cfg: DBConfig, log,
+) -> tuple[Optional[str], str]:
+    """Three-tier LRU eviction of a single firmware contact, to recover a
+    slot for a new walk-up registration that hit ERR_CODE_TABLE_FULL.
+
+    Tiers, in eviction order:
+      tier 3 — pubkey is in firmware but has no DB row at all (auto-add
+               leftovers, neighbor adverts, anything pre-existing this
+               feature). Pick smallest last_advert. Disposable.
+      tier 2 — DB row with status='added' and pinned=0. Pick smallest
+               last_seen, NULL-first (registered but never DMed us).
+               Flip status to 'evicted' on success.
+      tier 1 — pinned=1. Never picked.
+
+    Returns (pubkey, tier_label) on success or (None, reason) on miss.
+    All firmware/DB failures are caught and returned as (None, ...) —
+    the caller treats that the same as the existing error_table_full
+    path, so eviction can never make a registration worse than the
+    pre-eviction baseline.
+    """
+    # Refresh the firmware-side view. meshcore_py mutates mc.contacts in
+    # place on get_contacts(); cached value would miss adverts that
+    # arrived since the last call.
+    try:
+        list_result = await mc.commands.get_contacts()
+    except Exception as e:
+        log.warning("contacts:eviction_list_exception err=%r", e)
+        return (None, "list_exception")
+    if list_result is None or list_result.type == EventType.ERROR:
+        log.warning("contacts:eviction_list_failed result=%r", list_result)
+        return (None, "list_failed")
+
+    firmware_keys = {k.lower() for k in mc.contacts.keys()}
+    if not firmware_keys:
+        # Cap reported full but the lib reports no contacts — refuse to
+        # delete anything. Either the readback is broken or the table is
+        # genuinely empty and the firmware error is from elsewhere.
+        log.warning("contacts:eviction_firmware_empty")
+        return (None, "firmware_empty")
+
+    try:
+        rows = await asyncio.to_thread(
+            get_contacts_for_eviction, db_cfg, log=log,
+        )
+    except Exception as e:
+        log.warning("contacts:eviction_db_exception err=%r", e)
+        return (None, "db_exception")
+
+    # Subtract against ALL DB pubkeys (any status), not just 'added'.
+    # Otherwise a 'pending' row racing with a phone-side add could land
+    # in tier 3 and we'd evict our own in-flight registration.
+    db_keys = {r["pubkey"] for r in rows}
+    tier3 = firmware_keys - db_keys
+
+    target_pubkey: Optional[str] = None
+    target_tier: str = ""
+
+    if tier3:
+        # Smallest last_advert wins (stalest on-air contact).
+        stalest = min(
+            tier3,
+            key=lambda pk: (mc.contacts.get(pk, {}).get("last_advert") or 0),
+        )
+        target_pubkey = stalest
+        target_tier = "tier3"
+    else:
+        # Tier 2: registered, evictable, in firmware.
+        tier2 = [
+            r for r in rows
+            if r["status"] == "added"
+            and not r["pinned"]
+            and r["pubkey"] in firmware_keys
+        ]
+        if not tier2:
+            pinned_in_fw = sum(
+                1 for r in rows
+                if r["pinned"] and r["pubkey"] in firmware_keys
+            )
+            log.warning(
+                "contacts:eviction_no_candidate pinned_count=%d "
+                "tier3_count=0 tier2_count=0",
+                pinned_in_fw,
+            )
+            return (None, "no_candidate")
+        # NULL last_seen first, then smallest last_seen.
+        tier2.sort(key=lambda r: (r["last_seen"] is not None, r["last_seen"] or 0))
+        target_pubkey = tier2[0]["pubkey"]
+        target_tier = "tier2"
+
+    try:
+        rm_result = await mc.commands.remove_contact(bytes.fromhex(target_pubkey))
+    except Exception as e:
+        log.warning(
+            "contacts:eviction_remove_exception pubkey=%s err=%r",
+            target_pubkey[:12], e,
+        )
+        return (None, "remove_exception")
+    if rm_result is None or rm_result.type == EventType.ERROR:
+        log.warning(
+            "contacts:eviction_remove_failed pubkey=%s result=%r",
+            target_pubkey[:12], rm_result,
+        )
+        return (None, "remove_failed")
+
+    if target_tier == "tier2":
+        try:
+            await asyncio.to_thread(
+                mark_contact_evicted, db_cfg, pubkey=target_pubkey, log=log,
+            )
+        except Exception as e:
+            # The firmware delete already happened; the DB row is just
+            # cosmetic at this point. Log and proceed so the worker can
+            # still retry add_contact for the new registration.
+            log.warning(
+                "contacts:eviction_db_mark_failed pubkey=%s err=%r",
+                target_pubkey[:12], e,
+            )
+
+    log.info(
+        "contacts:evicted pubkey=%s tier=%s reason=table_full",
+        target_pubkey[:12], target_tier,
+    )
+    return (target_pubkey, target_tier)
+
+
 async def _contact_registration_task(
     cfg, db_cfg: DBConfig, log, controller: RecoveryController,
 ):
@@ -371,9 +499,56 @@ async def _contact_registration_task(
                 payload = getattr(result, "payload", None) or {}
                 code_string = payload.get("code_string")
                 error_code = payload.get("error_code")
+
                 if code_string == "ERR_CODE_TABLE_FULL":
+                    # Single retry by contract. If add_contact still fails
+                    # after eviction, fall through to the existing
+                    # error_table_full branch — don't loop, don't evict a
+                    # second time. The next pending row gets a fresh shot
+                    # on the worker's next pass.
+                    evicted_pubkey, tier_or_reason = await _evict_one_contact(
+                        mc, db_cfg, log,
+                    )
+                    if evicted_pubkey is not None:
+                        try:
+                            retry_result = await mc.commands.add_contact(
+                                contact_dict,
+                            )
+                        except Exception as e:
+                            log.warning(
+                                "contacts:eviction_retry_exception "
+                                "pubkey=%s evicted=%s err=%r",
+                                pubkey[:12], evicted_pubkey[:12], e,
+                            )
+                            retry_result = None
+                        if (
+                            retry_result is not None
+                            and retry_result.type != EventType.ERROR
+                        ):
+                            log.info(
+                                "contacts:eviction_retry_ok pubkey=%s "
+                                "evicted=%s tier=%s",
+                                pubkey[:12], evicted_pubkey[:12],
+                                tier_or_reason,
+                            )
+                            await asyncio.to_thread(
+                                mark_contact_added, db_cfg,
+                                pubkey=pubkey, log=log,
+                            )
+                            continue
+                        log.warning(
+                            "contacts:eviction_retry_failed pubkey=%s "
+                            "evicted=%s result=%r",
+                            pubkey[:12], evicted_pubkey[:12], retry_result,
+                        )
+                    # No eviction candidate, or retry still failed: fall
+                    # through to mark_contact_error below.
                     status_to_write = "error_table_full"
-                    detail = "ERR_CODE_TABLE_FULL"
+                    detail = (
+                        "ERR_CODE_TABLE_FULL"
+                        if evicted_pubkey is None
+                        else f"ERR_CODE_TABLE_FULL after_evict={tier_or_reason}"
+                    )
                 else:
                     status_to_write = "error_other"
                     detail = code_string or f"error_code={error_code}"

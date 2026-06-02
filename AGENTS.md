@@ -121,6 +121,47 @@ trap is for new code that observes inbound DMs without this call:
 CIV-14 investigation before it was identified; CIV-106 tracks the
 hygiene work that landed this section.
 
+### Firmware contact-table eviction (CIV-14)
+
+The Heltec contact table caps at 350 rows. With `manual_add_contacts`
+on (set by `diagnostics/radio/contacts_purge.py`), neighbor adverts no
+longer auto-fill the table — but walk-up registrations still hit the
+ceiling once enough real users have signed up. When `add_contact`
+returns `ERR_CODE_TABLE_FULL`, the contact-registration worker calls
+`mesh_bot._evict_one_contact` to free one slot, then retries the add
+exactly once.
+
+Three-tier eviction policy, strictly ordered:
+
+- **tier 3** — pubkey present in firmware but absent from the DB. Auto-add
+  leftovers from before `manual_add_contacts=True` was set, plus
+  anything added out-of-band. Disposable; evicted by smallest
+  `last_advert`. No DB row to update.
+- **tier 2** — `contacts.status='added'` and `pinned=0`. Real registered
+  users who haven't been pinned. Evicted by smallest `last_seen`,
+  NULL-first (registered but never DMed the node). The DB row flips
+  to `status='evicted'` so `get_contact_by_pubkey_prefix` (used by
+  the CONTACT_MSG_RECV handler) stops accepting their DMs.
+- **tier 1** — `pinned=1`. Never evicted regardless of age. Pinning is
+  absolute.
+
+Operator notes:
+
+- **The success path is silent except for one log line.** Grep for
+  `contacts:evicted` (INFO, with `tier=3`/`tier=2`) to see which
+  contacts the eviction loop bumped. `tier=3` evictions are healthy
+  steady-state churn against neighbor leftovers; mostly `tier=2`
+  evictions mean real walk-ups are being bumped — consider pinning
+  more or investigating registration churn.
+- **All-pinned table** logs `contacts:eviction_no_candidate
+  pinned_count=N` (WARN) and falls through to the existing
+  `status='error_table_full'` path — the walk-up sees the same
+  failure they would have seen before this feature. No regression.
+- **Re-registration after eviction** is automatic: `request_contact_add`
+  is `INSERT OR REPLACE`, so a previously-evicted user who pastes
+  their pubkey into the captive portal again gets a fresh `pending`
+  row and goes back through the worker.
+
 ## Invariants
 
 These constraints must be preserved across all changes:
