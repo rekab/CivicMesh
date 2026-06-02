@@ -97,6 +97,28 @@ The Week 1 checklist item "36-hour unattended UGREEN runtime test" is satisfied 
 
 ---
 
+## Test 5 — Idle floor + DM-reply transient (instantaneous)
+
+**Setup:** Pi + Heltec quiescent. One client associated to the WiFi AP but not generating HTTP traffic (browser closed; only background WiFi management frames). USB power meters inline at the Pi's USB-C power input and on the Pi → Heltec USB-A cable.
+
+**Steady-state idle draw:**
+
+| Rail | Voltage | Current | Power |
+|---|---|---|---|
+| Pi USB-C input (whole system) | 5.12 V | 0.21 A | **1.08 W** |
+| Pi → Heltec USB-A | 5.017 V | 0.037 A | **0.19 W** |
+| Pi-only (input − Heltec) | — | — | **~0.89 W** |
+
+The Heltec is downstream of the Pi's USB host port, so its 0.19 W is already inside the 1.08 W system total. Subtracting gives the Pi's own CPU + WiFi AP + SD + MeshCore-poll cost.
+
+**Idle floor: ~1.08 W.** This sits *below* Test 1's 2.1 W rolling average — that average included manual interaction. Test 5 is the true quiescent baseline.
+
+**DM-reply transient:** during a single phone → node DM reply, the Heltec rail briefly registered **0.100 A** on the meter display (sub-second, by eye). Implied peak ~0.5 W on the Heltec rail — roughly 2.7× the 0.037 A idle. This is the SX1262 TX burst emitting the reply over LoRa. Caveat: 0.100 A is what the meter momentarily displayed, not an instrumented peak. Typical USB power meters sample at ~1 Hz, so the true peak is likely higher and the burst is likely shorter than the display lag suggests. Treat as order-of-magnitude only.
+
+**Implication for the budget:** mesh TX bursts are too brief to materially shift the multi-hour rolling average. Tests 1 and 3 (2.1 W / 2.9 W) are dominated by sustained WiFi serving, not by sparse LoRa TX events. A node that processed substantially more inbound DMs would shift slightly, but the gap from idle floor (1.08 W) to measured light load (2.1 W) is mostly WiFi + SD I/O, not radio.
+
+---
+
 ## Power math reference
 
 UGREEN PB205 nominal capacity: **90 Wh** (25,000 mAh × 3.7 V, before conversion losses).
@@ -141,10 +163,10 @@ Measured correspondence from Test 2's full recharge cycle: **~0.9 Wh per UGREEN 
 
 - [ ] Enable hardware watchdog (`/dev/watchdog` + systemd)
 - [ ] Add nightly cron reboot at 4am
-- [ ] Mesh TX burst peak measurement (short, targeted test — needs USB power meter inline)
+- [x] Mesh TX burst peak measurement — captured informally in Test 5 (Heltec rail ~0.100 A on a sub-second meter blip during DM reply). A calibrated peak measurement with a sampling-fast meter is still TBD if we ever need the actual peak watts.
 
 ## Deferred to later weeks
 
-- Idle draw with zero connected WiFi clients (would establish the true floor; not critical for deployment math)
+- Idle draw with zero connected WiFi clients (Test 5 captures the 1-client case at 1.08 W; the zero-client delta is just AP beacon/keepalive overhead, likely <0.05 W, not load-bearing for deployment math)
 - Power profile inside sealed IP67 enclosure (Week 2, with thermal implications)
 - Real-world walk-up load profile at a Hub (Week 4 outdoor test)
