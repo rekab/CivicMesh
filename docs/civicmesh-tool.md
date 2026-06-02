@@ -1248,6 +1248,39 @@ priority (lower = higher in list); default is next available slot.
 **Drift note:** UI doesn't surface pinned messages explicitly yet.
 Schema and admin command both work; rendering is the gap.
 
+### contact list / pin / unpin / remove                                  [IMPL]
+
+```
+civicmesh contact list [--status STATUS] [--pinned | --unpinned]
+civicmesh contact pin    <pubkey>
+civicmesh contact unpin  <pubkey>
+civicmesh contact remove <pubkey> [--skip_confirmation]
+```
+
+Manage the registered MeshCore contacts the node responds to over DM
+(CIV-14). `<pubkey>` accepts either the full 64-hex key or a prefix
+of 12-63 hex chars (12 is what `CONTACT_MSG_RECV` carries in
+mesh_bot logs — paste from there directly). Ambiguous prefixes are
+rejected; resolve by typing more chars.
+
+`list` prints status, pinned flag, last_seen, and created_at for
+each row. Filters: `--status pending|added|evicted|error_table_full
+|error_other` and `--pinned` / `--unpinned`.
+
+`pin` reserves a contact against LRU eviction — the firmware
+contact-table eviction policy (see AGENTS.md) treats pinned rows as
+absolute tier 1, never evicted regardless of `last_seen` age. `unpin`
+removes that protection.
+
+`remove` deletes the DB row. The firmware-side contact (if still
+present) becomes tier-3 disposable for the eviction helper and is
+reclaimed automatically on the next `ERR_CODE_TABLE_FULL`. Until
+that happens, mesh_bot stops responding to DMs from that pubkey
+because `get_contact_by_pubkey_prefix` filters to `status='added'`
+— so the user-facing behavior of removal is immediate. Operators who
+need to wipe the firmware contact table aggressively should use
+`diagnostics/radio/contacts_purge.py` (mesh_bot must be stopped).
+
 ---
 
 ## EXAMPLES

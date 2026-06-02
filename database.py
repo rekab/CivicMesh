@@ -1203,6 +1203,169 @@ def mark_contact_evicted(
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Admin contact CLI helpers (`civicmesh contact list/pin/unpin/remove`)
+# ---------------------------------------------------------------------------
+
+class ContactLookupError(ValueError):
+    """Raised by resolve_contact_pubkey when the query is malformed,
+    matches no row, or matches multiple rows. Carries an `exit_code`
+    so the CLI dispatcher can map to a stable exit value."""
+
+    def __init__(self, msg: str, *, exit_code: int = 1):
+        super().__init__(msg)
+        self.exit_code = exit_code
+
+
+def resolve_contact_pubkey(
+    cfg: DBConfig,
+    *,
+    query: str,
+    log=None,
+) -> str:
+    """Resolve a CLI-supplied pubkey or prefix to a full 64-char pubkey.
+
+    Accepts the full 64-hex key or a prefix of 12..63 hex chars (12 is
+    the smallest accepted because that's what CONTACT_MSG_RECV
+    delivers — operators reading mesh_bot logs will type that length).
+    Shorter prefixes are refused to keep accidental ambiguous matches
+    out of admin commands.
+
+    Raises ContactLookupError on malformed input, no match, or
+    multiple matches. Searches across ALL statuses — operators should
+    be able to pin/unpin/remove an 'evicted' or 'error_*' row, not
+    just 'added'.
+    """
+    if not query:
+        raise ContactLookupError("contact: pubkey is required")
+    q = query.strip().lower()
+    if not all(c in "0123456789abcdef" for c in q):
+        raise ContactLookupError(
+            f"contact: {query!r} is not hex; expected 12-64 hex chars",
+        )
+    if len(q) < 12 or len(q) > 64:
+        raise ContactLookupError(
+            f"contact: {query!r} is {len(q)} chars; need a 64-char pubkey "
+            "or a 12-63 char prefix",
+        )
+    conn = _connect(cfg)
+    try:
+        if len(q) == 64:
+            row = conn.execute(
+                "SELECT pubkey FROM contacts WHERE pubkey=?", (q,),
+            ).fetchone()
+            if row is None:
+                raise ContactLookupError(
+                    f"contact: no contact with pubkey {q[:12]}...",
+                )
+            return row["pubkey"]
+        rows = conn.execute(
+            "SELECT pubkey FROM contacts WHERE pubkey LIKE ? LIMIT 2",
+            (q + "%",),
+        ).fetchall()
+        if not rows:
+            raise ContactLookupError(
+                f"contact: no contact matches prefix {q!r}",
+            )
+        if len(rows) > 1:
+            raise ContactLookupError(
+                f"contact: prefix {q!r} matches multiple contacts; "
+                "use more hex chars or the full pubkey",
+            )
+        return rows[0]["pubkey"]
+    finally:
+        conn.close()
+
+
+def list_contacts(
+    cfg: DBConfig,
+    *,
+    status: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    log=None,
+) -> list[dict[str, Any]]:
+    """Return contact rows for the admin CLI's `contact list`.
+
+    Filters are optional and combine with AND. Ordered by created_at
+    DESC so the most-recently-registered show first — matches what an
+    operator triaging a fresh walk-up wants to see at the top.
+    """
+    clauses = []
+    params: list[Any] = []
+    if status is not None:
+        clauses.append("status=?")
+        params.append(status)
+    if pinned is not None:
+        clauses.append("pinned=?")
+        params.append(1 if pinned else 0)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    conn = _connect(cfg)
+    try:
+        rows = conn.execute(
+            "SELECT pubkey, status, error_detail, pinned, created_at, last_seen "
+            f"FROM contacts {where} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_contact_pinned(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    pinned: bool,
+    log=None,
+) -> int:
+    """Flip the pinned flag on a contact. Returns the number of rows
+    touched (1 on success, 0 if the pubkey was deleted between the
+    CLI's resolve step and this write — rare, but handled cleanly)."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        cur = conn.execute(
+            "UPDATE contacts SET pinned=? WHERE pubkey=?",
+            (1 if pinned else 0, pubkey),
+        )
+        if log:
+            log.info(
+                "contacts:set_pinned pubkey=%s pinned=%s rows=%d",
+                pubkey[:12], pinned, cur.rowcount,
+            )
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def delete_contact(
+    cfg: DBConfig,
+    *,
+    pubkey: str,
+    log=None,
+) -> int:
+    """Delete a contact row outright. The firmware contact (if still
+    present) is NOT touched — once the row is gone the pubkey will be
+    treated as tier 3 disposable by mesh_bot._evict_one_contact and
+    reclaimed on the next ERR_CODE_TABLE_FULL. Returns the number of
+    rows deleted (1 on success, 0 on miss)."""
+    pubkey = pubkey.lower()
+    conn = _connect(cfg)
+    try:
+        cur = conn.execute(
+            "DELETE FROM contacts WHERE pubkey=?",
+            (pubkey,),
+        )
+        if log:
+            log.info(
+                "contacts:deleted pubkey=%s rows=%d",
+                pubkey[:12], cur.rowcount,
+            )
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def get_contact_by_pubkey_prefix(
     cfg: DBConfig,
     *,

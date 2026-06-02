@@ -25,10 +25,12 @@ from config import load_config
 if TYPE_CHECKING:
     from config import AppConfig
 from database import (
+    ContactLookupError,
     DBConfig,
     _connect,
     cancel_outbox_message,
     clear_pending_outbox,
+    delete_contact,
     get_node_identity,
     get_outbox_message,
     get_pending_outbox_filtered,
@@ -36,7 +38,10 @@ from database import (
     get_recent_sessions,
     get_session_by_id,
     init_db,
+    list_contacts,
     pin_message,
+    resolve_contact_pubkey,
+    set_contact_pinned,
     unpin_message,
 )
 from logger import setup_logging
@@ -565,6 +570,150 @@ def _cmd_sessions_show(args: argparse.Namespace) -> None:
         print("session not found")
         return
     print(_format_session_detail(row))
+
+
+CONTACT_PUBKEY_PREFIX_WIDTH = 14
+CONTACT_STATUS_WIDTH = 17
+CONTACT_PINNED_WIDTH = 6
+CONTACT_LAST_SEEN_WIDTH = 16
+CONTACT_CREATED_WIDTH = 16
+
+
+def _format_contacts(rows: list[dict[str, object]]) -> str:
+    header = (
+        f"{'PUBKEY':<{CONTACT_PUBKEY_PREFIX_WIDTH}} "
+        f"{'STATUS':<{CONTACT_STATUS_WIDTH}} "
+        f"{'PINNED':<{CONTACT_PINNED_WIDTH}} "
+        f"{'LAST_SEEN':<{CONTACT_LAST_SEEN_WIDTH}} "
+        f"{'CREATED':<{CONTACT_CREATED_WIDTH}}"
+    )
+    lines = [header]
+    for row in rows:
+        pubkey = str(row["pubkey"])[:12] + ".."
+        status = str(row["status"])
+        pinned = "yes" if row["pinned"] else "no"
+        last_seen = row.get("last_seen")
+        last_str = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(int(last_seen)))
+            if last_seen
+            else "-"
+        )
+        created_str = time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(int(row["created_at"])),
+        )
+        lines.append(
+            f"{pubkey:<{CONTACT_PUBKEY_PREFIX_WIDTH}} "
+            f"{status:<{CONTACT_STATUS_WIDTH}} "
+            f"{pinned:<{CONTACT_PINNED_WIDTH}} "
+            f"{last_str:<{CONTACT_LAST_SEEN_WIDTH}} "
+            f"{created_str:<{CONTACT_CREATED_WIDTH}}"
+        )
+    return "\n".join(lines)
+
+
+def _cmd_contact_list(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    pinned_filter: bool | None = None
+    if args.pinned:
+        pinned_filter = True
+    elif args.unpinned:
+        pinned_filter = False
+    rows = list_contacts(
+        db_cfg, status=args.status, pinned=pinned_filter, log=log,
+    )
+    if not rows:
+        print("no contacts")
+        return
+    print(_format_contacts(rows))
+
+
+def _resolve_for_cli(db_cfg: DBConfig, query: str, log=None) -> str:
+    """Wrap resolve_contact_pubkey: map the structured error to a
+    stderr print + sys.exit so each contact handler is a one-liner.
+    The dispatcher pattern matches _handle_outbox_cancel."""
+    try:
+        return resolve_contact_pubkey(db_cfg, query=query, log=log)
+    except ContactLookupError as e:
+        print(f"civicmesh: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
+
+
+def _cmd_contact_pin(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    pubkey = _resolve_for_cli(db_cfg, args.pubkey, log=log)
+    rows = set_contact_pinned(db_cfg, pubkey=pubkey, pinned=True, log=log)
+    print(f"pinned={rows} pubkey={pubkey[:12]}..")
+
+
+def _cmd_contact_unpin(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    pubkey = _resolve_for_cli(db_cfg, args.pubkey, log=log)
+    rows = set_contact_pinned(db_cfg, pubkey=pubkey, pinned=False, log=log)
+    print(f"unpinned={rows} pubkey={pubkey[:12]}..")
+
+
+def _confirm_contact_remove(
+    *, pubkey: str, status: str, pinned: int,
+    skip_confirmation: bool, input_fn: Callable[[str], str],
+) -> bool:
+    print(
+        f"contact {pubkey[:12]}.. status={status} "
+        f"pinned={'yes' if pinned else 'no'}"
+    )
+    if skip_confirmation:
+        return True
+    resp = input_fn("Remove this contact from the DB? [y/N]: ").strip().lower()
+    return resp in ("y", "yes")
+
+
+def _handle_contact_remove(
+    db_cfg: DBConfig,
+    *,
+    pubkey: str,
+    skip_confirmation: bool,
+    input_fn: Callable[[str], str],
+    log=None,
+) -> int:
+    # The contact row is what tells the DM handler "this user is
+    # registered." Once we delete it, get_contact_by_pubkey_prefix
+    # returns None for inbound DMs from that pubkey — same as if they
+    # had never registered. The firmware contact (if still present)
+    # becomes tier-3 disposable for the LRU helper and gets reclaimed
+    # on the next ERR_CODE_TABLE_FULL.
+    from database import get_contact_by_pubkey
+
+    row = get_contact_by_pubkey(db_cfg, pubkey=pubkey, log=log)
+    if row is None:
+        print(f"removed=0 pubkey={pubkey[:12]}..")
+        return 0
+    if not _confirm_contact_remove(
+        pubkey=pubkey,
+        status=str(row["status"]),
+        pinned=int(row["pinned"]),
+        skip_confirmation=skip_confirmation,
+        input_fn=input_fn,
+    ):
+        print("removed=0")
+        return 0
+    deleted = delete_contact(db_cfg, pubkey=pubkey, log=log)
+    print(f"removed={deleted} pubkey={pubkey[:12]}..")
+    return deleted
+
+
+def _cmd_contact_remove(args: argparse.Namespace) -> None:
+    cfg, log, db_cfg = _load_runtime(args)
+    init_db(db_cfg, log=log)
+    pubkey = _resolve_for_cli(db_cfg, args.pubkey, log=log)
+    _handle_contact_remove(
+        db_cfg,
+        pubkey=pubkey,
+        skip_confirmation=args.skip_confirmation,
+        input_fn=input,
+        log=log,
+    )
 
 
 def _cmd_sessions_reset(args: argparse.Namespace) -> None:
@@ -1263,6 +1412,33 @@ def main():
     p_sessions_reset = sub_sessions.add_parser("reset")
     p_sessions_reset.add_argument("session_id")
 
+    # CIV-14 admin contact management. pubkey arguments accept either
+    # a full 64-hex pubkey or a 12-63 char prefix (12 is what
+    # CONTACT_MSG_RECV logs carry, so operators reading mesh_bot logs
+    # can paste those directly).
+    p_contact = sub.add_parser("contact")
+    sub_contact = p_contact.add_subparsers(dest="contact_cmd", required=True)
+
+    p_contact_list = sub_contact.add_parser("list")
+    p_contact_list.add_argument(
+        "--status",
+        choices=["pending", "added", "evicted", "error_table_full", "error_other"],
+        default=None,
+    )
+    pinned_group = p_contact_list.add_mutually_exclusive_group()
+    pinned_group.add_argument("--pinned", action="store_true")
+    pinned_group.add_argument("--unpinned", action="store_true")
+
+    p_contact_pin = sub_contact.add_parser("pin")
+    p_contact_pin.add_argument("pubkey")
+
+    p_contact_unpin = sub_contact.add_parser("unpin")
+    p_contact_unpin.add_argument("pubkey")
+
+    p_contact_remove = sub_contact.add_parser("remove")
+    p_contact_remove.add_argument("pubkey")
+    p_contact_remove.add_argument("--skip_confirmation", action="store_true")
+
     sub.add_parser("configure")
     p_apply = sub.add_parser("apply")
     p_apply.add_argument("--dry-run", action="store_true")
@@ -1310,6 +1486,13 @@ def main():
             "show": _cmd_sessions_show,
             "reset": _cmd_sessions_reset,
         }[args.sessions_cmd](args)
+    if args.cmd == "contact":
+        return {
+            "list": _cmd_contact_list,
+            "pin": _cmd_contact_pin,
+            "unpin": _cmd_contact_unpin,
+            "remove": _cmd_contact_remove,
+        }[args.contact_cmd](args)
     if args.cmd == "config":
         return {
             "show": _cmd_config_show,
