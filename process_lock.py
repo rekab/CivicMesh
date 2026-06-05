@@ -5,20 +5,33 @@ on the same host (the dev-tree + installed-systemd collision: a
 developer runs `uv run civicmesh-mesh` from ~/code/CivicMesh without
 first stopping the systemd service, or vice versa).
 
-Mechanism: fcntl.flock(LOCK_EX | LOCK_NB) on a small file in
-/run/lock/. The lock is on the open-file-description; the kernel
-releases it on fd close (including SIGKILL), so there is no stale-lock
-recovery path. The lock fd is held for the process lifetime by being
-stashed at module scope in the caller.
+Mechanism: fcntl.flock(LOCK_EX | LOCK_NB) on a small file in /tmp.
+The lock is on the open-file-description; the kernel releases it on
+fd close (including SIGKILL), so there is no stale-lock recovery
+path. The lock fd is held for the process lifetime by being stashed
+at module scope in the caller.
 
-Why /run/lock and not the device:
+Why /tmp and not the device:
   - Opening /dev/ttyUSB* toggles DTR/RTS via the cp210x driver, which
     on the Heltec V3 is wired to the ESP32 reset/boot circuit (see
     recovery.py:_rts_pulse_action). Locking via a separate file leaves
     the radio untouched until meshcore opens it.
-  - /run/lock is mode 1777 (sticky world-writable) on systemd by
-    default, so any UID can create files there. The sticky bit means
-    you can create, but not remove, other users' files.
+
+Why /tmp and not /run/lock:
+  - Debian Bookworm (and current Raspberry Pi OS) ships /run/lock as
+    `root:lock 0775`, not the legacy 1777. The installed service
+    runs as the `civicmesh` user, which is not in the `lock` group,
+    so opening /run/lock/* fails with PermissionError. /tmp is
+    universally 1777 on every Linux system, so cross-user
+    coordination works without group membership setup. Sticky bit
+    means only the file owner can remove it, so a dev user cannot
+    delete the file the installed service is holding.
+  - If the systemd unit ever grows `PrivateTmp=true`, this path
+    would need to move (see `apply/renderers.py:render_systemd_unit_mesh`
+    for the current unit; PrivateTmp is not set there). At that
+    point /var/lib/civicmesh-mesh.lock pre-created world-writable by
+    the installer, or /run/lock with SupplementaryGroups=lock + a
+    matching `usermod -aG lock` for dev users, are the alternatives.
 
 Why O_RDONLY:
   - The installed service runs as `civicmesh:civicmesh` and the dev
@@ -38,7 +51,7 @@ import errno
 import fcntl
 import os
 
-LOCK_PATH = "/run/lock/civicmesh-mesh.lock"
+LOCK_PATH = "/tmp/civicmesh-mesh.lock"
 
 
 def acquire_mesh_bot_lock() -> int:
@@ -57,8 +70,10 @@ def acquire_mesh_bot_lock() -> int:
     except OSError as e:
         raise RuntimeError(
             f"CIV-80: cannot open lock file {LOCK_PATH}: {e}. "
-            "Expected /run/lock to exist and be world-writable (mode 1777). "
-            "On systemd this is the default; verify with `ls -ld /run/lock`."
+            "Expected /tmp to exist and be world-writable (mode 1777). "
+            "Verify with `ls -ld /tmp`. If the systemd unit grew "
+            "PrivateTmp=true, this path needs to move — see "
+            "process_lock.py docstring for alternatives."
         ) from e
 
     try:

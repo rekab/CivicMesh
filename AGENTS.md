@@ -49,7 +49,7 @@ uv run python -m unittest tests.test_admin_outbox_list       # single test modul
   Heltec V3 radio over USB serial. Concurrent async tasks: outbox
   sender (with exponential backoff), retention pruner, heartbeat
   recorder, and clock-consensus task. Startup acquires
-  `fcntl.flock(LOCK_EX)` on `/run/lock/civicmesh-mesh.lock` via
+  `fcntl.flock(LOCK_EX)` on `/tmp/civicmesh-mesh.lock` via
   `process_lock.acquire_mesh_bot_lock()` to prevent two
   `civicmesh-mesh` processes from running against one radio (CIV-80;
   see `docs/invariants.md`).
