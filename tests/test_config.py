@@ -322,5 +322,24 @@ class NodeIdentityTest(unittest.TestCase):
             self.assertEqual(cfg.node.callsign, "fremont1")
 
 
+class LoggingDefaultsTest(unittest.TestCase):
+    def test_log_dir_default_is_var_logs(self) -> None:
+        # CIV-104: default must resolve under var/, not next to source in
+        # app/. Both LoggingConfig() and load_config()'s fallback for a
+        # missing [logging].log_dir key share the same default.
+        from logger import LoggingConfig
+
+        self.assertEqual(LoggingConfig().log_dir, "var/logs")
+
+    def test_log_dir_fallback_when_key_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            sections = _good_sections(tmp)
+            sections["logging"] = {"log_level": "WARNING"}  # no log_dir
+            cfg_path = _write(tmp, sections)
+            cfg = load_config(str(cfg_path))
+            self.assertEqual(cfg.logging.log_dir, "var/logs")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -818,6 +818,53 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _migrate_logs_civ_104() -> None:
+    """CIV-104: rewrite legacy [logging].log_dir = "logs" to "var/logs".
+
+    Prior installs ran with the systemd unit's WorkingDirectory at
+    /usr/local/civicmesh/app and a relative `log_dir = "logs"`, which
+    landed runtime logs at app/logs/ next to source code. The unit's
+    WorkingDirectory is now the tree root, so the same relative value
+    would resolve to /usr/local/civicmesh/logs/ — a worse orphan.
+    Rewrite the key here so existing nodes pick up var/logs/ on the
+    next start.
+
+    Files already in app/logs/ are intentionally orphaned rather than
+    moved: rotation-capped (~150 MB max across services) and readable
+    in place if anyone wants the pre-cutover lines. The banner below
+    tells operators where to look.
+
+    Idempotent: only rewrites the exact legacy literal "logs"; no-op
+    on second run.
+    """
+    import re
+
+    cfg_path = Path("/usr/local/civicmesh/etc/config.toml")
+    if not cfg_path.is_file():
+        return
+
+    text = cfg_path.read_text()
+    new_text = re.sub(
+        r'^(\s*log_dir\s*=\s*)"logs"\s*$',
+        r'\1"var/logs"',
+        text,
+        flags=re.MULTILINE,
+    )
+    if new_text == text:
+        return
+
+    cfg_path.write_text(new_text)
+    print(
+        'civicmesh: apply: migrated [logging].log_dir = "logs" -> "var/logs" '
+        f"in {cfg_path} (CIV-104)."
+    )
+    print(
+        "civicmesh: apply: previous logs at /usr/local/civicmesh/app/logs/ "
+        "are orphaned (safe to read in place, safe to rm). New logs at "
+        "/usr/local/civicmesh/var/logs/."
+    )
+
+
 def _print_cutover_banner(cfg: "AppConfig") -> None:
     print(f"""
 Configuration applied. The system is staged for AP mode.
@@ -1040,6 +1087,12 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/civicmesh.conf"],
             check=True,
         )
+        # CIV-104: rewrite legacy log_dir before the auto-restart fires.
+        # Must run after driver.apply_plan (which wrote the new systemd
+        # unit) and before restart.derive_actions, so the restarting
+        # services see the rewritten config on their first boot under
+        # the new WorkingDirectory.
+        _migrate_logs_civ_104()
         actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
         if actions:
             restart.run_actions(actions)

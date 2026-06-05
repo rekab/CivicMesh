@@ -112,7 +112,11 @@ outbox_max_depth = 60
 # Log output. Tier 2. All [logging] fields are [runtime].
 [logging]
 log_level = "INFO"
-log_dir = "logs"
+# CIV-104: resolved relative to the systemd unit's WorkingDirectory
+# (/usr/local/civicmesh) in prod, or the repo root in dev. Lives in
+# var/ alongside the DB so runtime state doesn't sit next to code in
+# app/.
+log_dir = "var/logs"
 enable_security_log = true
 
 # Development/testing overrides. Tier 1 — civicmesh configure will prompt.

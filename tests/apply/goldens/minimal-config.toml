@@ -40,5 +40,5 @@ port = 8080
 portal_aliases = ["civicmesh.internal"]
 
 [logging]
-log_dir = "logs"
+log_dir = "var/logs"
 log_level = "WARNING"

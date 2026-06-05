@@ -680,7 +680,7 @@ def load_config(path: str) -> AppConfig:
             dm_responses_per_hour=int(limits.get("dm_responses_per_hour", 6)),
         ),
         logging=LoggingConfig(
-            log_dir=str(logging_raw.get("log_dir", "logs")),
+            log_dir=str(logging_raw.get("log_dir", "var/logs")),
             log_level=str(logging_raw.get("log_level", "INFO")),
             enable_security_log=bool(logging_raw.get("enable_security_log", True)),
         ),

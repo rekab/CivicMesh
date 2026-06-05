@@ -258,6 +258,9 @@ net.ipv6.conf.{cfg.network.iface}.disable_ipv6 = 1
 
 
 def render_systemd_unit_web(cfg: AppConfig) -> bytes:
+    # CIV-104: WorkingDirectory is the tree root, not app/. Relative paths
+    # in config (log_dir = "var/logs") resolve under /usr/local/civicmesh/
+    # so runtime state lives in var/ next to the DB, not under app/.
     return b"""\
 [Unit]
 Description=CivicMesh web server (captive portal)
@@ -268,7 +271,7 @@ Wants=network-online.target
 Type=simple
 User=civicmesh
 Group=civicmesh
-WorkingDirectory=/usr/local/civicmesh/app
+WorkingDirectory=/usr/local/civicmesh
 ExecStart=/usr/local/bin/civicmesh-web --config /usr/local/civicmesh/etc/config.toml
 Restart=on-failure
 RestartSec=5
@@ -281,6 +284,7 @@ WantedBy=multi-user.target
 
 
 def render_systemd_unit_mesh(cfg: AppConfig) -> bytes:
+    # CIV-104: see render_systemd_unit_web for WorkingDirectory rationale.
     return b"""\
 [Unit]
 Description=CivicMesh mesh bot (radio relay)
@@ -290,7 +294,7 @@ Type=simple
 User=civicmesh
 Group=civicmesh
 SupplementaryGroups=dialout
-WorkingDirectory=/usr/local/civicmesh/app
+WorkingDirectory=/usr/local/civicmesh
 ExecStart=/usr/local/bin/civicmesh-mesh --config /usr/local/civicmesh/etc/config.toml
 Restart=on-failure
 RestartSec=5

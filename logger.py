@@ -64,7 +64,7 @@ class _RateLimitedSecurityLogger:
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    log_dir: str = "logs"
+    log_dir: str = "var/logs"
     log_level: str = "INFO"
     enable_security_log: bool = True
     rotate_max_bytes: int = 10 * 1024 * 1024

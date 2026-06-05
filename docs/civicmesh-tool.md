@@ -52,7 +52,7 @@ filesystem is the source of truth.
 | Binary path | `<project_root>/.venv/bin/civicmesh` | `/usr/local/civicmesh/app/.venv/bin/civicmesh` (also reachable via `/usr/local/bin/civicmesh` symlink) |
 | Config | `<project_root>/config.toml` | `/usr/local/civicmesh/etc/config.toml` |
 | Database | `<project_root>/civic_mesh.db` (or as set in local config) | `/usr/local/civicmesh/var/civic_mesh.db` |
-| Logs | `<project_root>/logs/` | `/usr/local/civicmesh/var/logs/` |
+| Logs | `<project_root>/var/logs/` | `/usr/local/civicmesh/var/logs/` |
 | Services managed by systemd | no | yes (`civicmesh-web`, `civicmesh-mesh`) |
 | `apply` (real) | refused | yes (root required) |
 | `apply --dry-run` | yes (renders to tmpdir, diffs against `/etc/`, never writes) | yes (same behavior) |
@@ -354,7 +354,8 @@ the other rendered files). Self-contained.
 ├── config.toml                               # gitignored; per-machine, written by `configure`
 ├── config.toml.example                       # COMMITTED; reference with inline comments
 ├── civic_mesh.db                             # gitignored
-├── logs/                                     # gitignored
+├── var/                                      # gitignored — runtime state (logs, hub-docs releases)
+│   └── logs/                                 # CIV-104
 ├── docs/
 │   └── civicmesh-tool.md                     # this document
 ├── web_server.py
@@ -365,7 +366,7 @@ the other rendered files). Self-contained.
 ```
 
 **`.gitignore` must include:** `.venv/`, `config.toml`, `civic_mesh.db`,
-`logs/`, `__pycache__/`, `*.pyc`.
+`var/`, `__pycache__/`, `*.pyc`.
 
 **Cleanup task before merging this doc:** remove `config.toml` from git
 tracking and replace with `config.toml.example`. See "Repository
@@ -471,7 +472,7 @@ outbox_max_depth = 60                   # queued-row cap; over-cap POSTs get 429
 
 [logging]
 log_level = "INFO"
-log_dir = "logs"                     # relative to project_root in dev, /usr/local/civicmesh/var/logs in prod
+log_dir = "var/logs"                 # CIV-104: <project_root>/var/logs in dev, /usr/local/civicmesh/var/logs in prod
 enable_security_log = true
 
 [debug]
@@ -1531,6 +1532,12 @@ sudo tail -100 /usr/local/civicmesh/var/logs/mesh_bot.log
 Look for `recovery:` events, `RecoveryController` state changes,
 and repeated `send_chan_msg error` lines.
 
+> **CIV-104 note:** on nodes that pre-date this cutover, lines logged
+> before the most recent `civicmesh apply` may live at
+> `/usr/local/civicmesh/app/logs/{mesh_bot,web_server,security}.log`
+> (orphaned, no new appends). Check both paths if spanning the
+> cutover.
+
 **d. Who owns the serial port?**
 
 ```bash
@@ -1619,7 +1626,7 @@ git mv config.toml config.toml.example
 cat >> .gitignore <<EOF
 config.toml
 civic_mesh.db
-logs/
+var/
 .venv/
 __pycache__/
 *.pyc
