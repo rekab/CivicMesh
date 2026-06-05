@@ -300,3 +300,21 @@ StartLimitBurst=5
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def render_tmpfiles_conf(cfg: AppConfig) -> bytes:
+    # CIV-80: pre-create the civicmesh-mesh startup lock file with
+    # group=dialout. Both the installed civicmesh-mesh service (User=
+    # civicmesh in dialout via SupplementaryGroups=dialout) and any
+    # dev user (in dialout to talk to the radio) can then flock the
+    # file, enforcing single-mesh_bot-per-host. /run/lock on Debian
+    # Bookworm / current Raspberry Pi OS is root:lock 0775, so a
+    # service running as civicmesh cannot create files there
+    # directly; pre-creating via tmpfiles.d sidesteps that.
+    # systemd-tmpfiles --create runs the relevant rules at boot to
+    # repopulate /run/lock (it's tmpfs), and apply runs it explicitly
+    # so the file exists immediately without requiring reboot.
+    return b"""\
+# CIV-80: civicmesh-mesh startup lock. See process_lock.py.
+f /run/lock/civicmesh-mesh.lock 0664 root dialout -
+"""

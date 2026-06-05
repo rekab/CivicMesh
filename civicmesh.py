@@ -1033,6 +1033,13 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
             check=True,
         )
+        # CIV-80: create the civicmesh-mesh startup lock file at
+        # /run/lock/civicmesh-mesh.lock now (don't wait for reboot).
+        # Idempotent — re-runs on subsequent applies just no-op.
+        _sub.run(
+            ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/civicmesh.conf"],
+            check=True,
+        )
         actions = restart.derive_actions(c.abs_path for c in plan_obj.changes)
         if actions:
             restart.run_actions(actions)

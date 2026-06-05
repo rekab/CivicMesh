@@ -65,6 +65,8 @@ _RENDER_TARGETS: list[tuple[Callable[[AppConfig], bytes], Callable[[AppConfig], 
      lambda c: Path("/etc/systemd/system/civicmesh-web.service")),
     (renderers.render_systemd_unit_mesh,
      lambda c: Path("/etc/systemd/system/civicmesh-mesh.service")),
+    (renderers.render_tmpfiles_conf,
+     lambda c: Path("/etc/tmpfiles.d/civicmesh.conf")),
 ]
 
 

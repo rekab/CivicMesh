@@ -167,12 +167,16 @@ Both physical singletons now fail loud:
   with `OSError: [Errno 98] Address already in use`. Easy to diagnose;
   nothing else is affected.
 - **Serial port (`/dev/ttyUSB0`).** `civicmesh-mesh` takes
-  `fcntl.flock(LOCK_EX | LOCK_NB)` on `/tmp/civicmesh-mesh.lock`
+  `fcntl.flock(LOCK_EX | LOCK_NB)` on `/run/lock/civicmesh-mesh.lock`
   at startup (CIV-80, `process_lock.acquire_mesh_bot_lock`). The
-  second `civicmesh-mesh` exits immediately with a `RuntimeError`
-  naming the lock path and recommending `sudo systemctl stop
-  civicmesh-mesh`. `lsof /tmp/civicmesh-mesh.lock` shows the
-  holding PID.
+  file is pre-created by `/etc/tmpfiles.d/civicmesh.conf` (shipped
+  via `apply`) at mode `0664 root:dialout`, so both the installed
+  service (running as `civicmesh` in `dialout`) and a dev user (also
+  in `dialout`) can open it; users outside `dialout` cannot, but they
+  cannot use the radio anyway. The second `civicmesh-mesh` exits
+  immediately with a `RuntimeError` naming the lock path and
+  recommending `sudo systemctl stop civicmesh-mesh`.
+  `lsof /run/lock/civicmesh-mesh.lock` shows the holding PID.
 
 The lock is **cooperative**: it only catches processes that opt in. If
 a non-CivicMesh tool (`picocom /dev/ttyUSB0`, `screen`, `cat
@@ -212,13 +216,13 @@ or unguarded diagnostic), verify with:
 ```
 systemctl is-active civicmesh-mesh
 journalctl -u civicmesh-mesh -e
-lsof /tmp/civicmesh-mesh.lock   # which civicmesh-mesh holds the lock
+lsof /run/lock/civicmesh-mesh.lock   # which civicmesh-mesh holds the lock
 lsof /dev/ttyUSB0                    # any other opener (picocom etc.)
 ```
 
 A failed or flapping unit whose journal shows the `CIV-80` lock
 message means a different process holds the lock — read the message;
-it points you at `lsof /tmp/civicmesh-mesh.lock`. Multiple PIDs
+it points you at `lsof /run/lock/civicmesh-mesh.lock`. Multiple PIDs
 in `lsof /dev/ttyUSB0` with only one (or zero) holding the lock means
 a non-cooperating opener is in play.
 
