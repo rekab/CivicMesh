@@ -61,6 +61,7 @@ from database import (
 import dm_bot
 import telemetry
 import clock
+import process_lock
 from clock import wall_now
 from logger import setup_logging
 from outbox_echoes import ActiveOutboxIndex
@@ -1481,7 +1482,33 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
     )
 
 
+# Module-scope so the kernel holds the flock for the process lifetime.
+# Released on process exit (including SIGKILL) via fd close; no explicit
+# cleanup needed. See process_lock.acquire_mesh_bot_lock.
+_mesh_bot_lock_fd: Optional[int] = None
+
+
+def _pre_async_startup() -> None:
+    """Synchronous startup guards run before asyncio.run.
+
+    Both entry points (the console-script main() and the `python
+    mesh_bot.py` __main__ block) go through this so the guards stay in
+    one place.
+    """
+    # CIV-99: hard-fail on non-Linux before anything else (clock-consensus
+    # depends on /proc/sys/kernel/random/boot_id; _clock_task would
+    # explode at startup otherwise).
+    clock.ensure_linux_platform()
+
+    # CIV-80: prevent two civicmesh-mesh processes from racing on one
+    # radio (dev tree alongside installed systemd service, etc.). fd
+    # held at module scope so the kernel keeps the flock until exit.
+    global _mesh_bot_lock_fd
+    _mesh_bot_lock_fd = process_lock.acquire_mesh_bot_lock()
+
+
 if __name__ == "__main__":
+    _pre_async_startup()
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--meshcore-debug", action="store_true", help="Enable meshcore library debug logging")
@@ -1493,10 +1520,7 @@ def main() -> None:
     """
     Console-script entrypoint (sync wrapper).
     """
-    # CIV-99: hard-fail on non-Linux before anything else (clock-consensus
-    # depends on /proc/sys/kernel/random/boot_id; _clock_task would
-    # explode at startup otherwise).
-    clock.ensure_linux_platform()
+    _pre_async_startup()
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)

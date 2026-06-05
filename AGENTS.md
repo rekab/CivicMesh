@@ -48,7 +48,11 @@ uv run python -m unittest tests.test_admin_outbox_list       # single test modul
 - **mesh_bot.py** — Async process using `meshcore`. Connects to the
   Heltec V3 radio over USB serial. Concurrent async tasks: outbox
   sender (with exponential backoff), retention pruner, heartbeat
-  recorder, and clock-consensus task.
+  recorder, and clock-consensus task. Startup acquires
+  `fcntl.flock(LOCK_EX)` on `/run/lock/civicmesh-mesh.lock` via
+  `process_lock.acquire_mesh_bot_lock()` to prevent two
+  `civicmesh-mesh` processes from running against one radio (CIV-80;
+  see `docs/invariants.md`).
 - **database.py** — Schema and query functions. Tables: `messages`,
   `outbox`, `votes`, `sessions`, `status`, `heard_packets`,
   `clock_state`, `clock_corrections`. The DB is the sole IPC channel

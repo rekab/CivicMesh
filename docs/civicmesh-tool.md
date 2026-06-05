@@ -135,7 +135,11 @@ and we want it to fail loudly rather than silently work.
 
 Stop prod services before running dev. Prod and dev share two physical
 resources on the host — `/dev/ttyUSB0` (the radio) and the web TCP port
-configured in `[web].port` — and the serial port collision is silent.
+configured in `[web].port` — and only one process at a time can use
+either correctly. Since CIV-80, both collisions now fail loudly at
+startup of the second process, so you'll find out fast if you skip the
+stop step; pre-CIV-80 the serial collision was silent and produced
+hours of "is the radio broken?" debugging.
 
 ### Why this is needed
 
@@ -157,49 +161,66 @@ sudo systemctl start civicmesh-mesh civicmesh-web
 
 ### What goes wrong if you skip the stop step
 
-The two ports fail very differently when contended:
+Both physical singletons now fail loud:
 
-- **Web port (`[web].port`): loud failure, no state damage.** The
-  second process exits immediately with
-  `OSError: [Errno 98] Address already in use`. Easy to diagnose;
+- **Web port (`[web].port`).** The second process exits immediately
+  with `OSError: [Errno 98] Address already in use`. Easy to diagnose;
   nothing else is affected.
-- **Serial port (`/dev/ttyUSB0`): silent failure, real damage.** Linux
-  does not exclusive-lock USB-serial nodes; pyserial opens without
-  `TIOCEXCL`. Both processes' `open()` calls return success. Inbound
-  radio bytes split arbitrarily between the two readers; outbound
-  writes from the two processes interleave on the wire. Symptoms
-  mimic radio hardware flakiness (corrupt frames, command timeouts,
-  missed `RX_LOG_DATA` events) and trigger spurious recovery actions
-  in `RecoveryController` — RTS resets, reconnects, the works. None
-  of those help, because the duplicate file descriptors survive an
-  ESP32 reset.
+- **Serial port (`/dev/ttyUSB0`).** `civicmesh-mesh` takes
+  `fcntl.flock(LOCK_EX | LOCK_NB)` on `/run/lock/civicmesh-mesh.lock`
+  at startup (CIV-80, `process_lock.acquire_mesh_bot_lock`). The
+  second `civicmesh-mesh` exits immediately with a `RuntimeError`
+  naming the lock path and recommending `sudo systemctl stop
+  civicmesh-mesh`. `lsof /run/lock/civicmesh-mesh.lock` shows the
+  holding PID.
+
+The lock is **cooperative**: it only catches processes that opt in. If
+a non-CivicMesh tool (`picocom /dev/ttyUSB0`, `screen`, `cat
+/dev/ttyUSB0`) or a diagnostic script in `diagnostics/radio/*.py`
+opens the serial device, the corruption mode below returns. The fix
+there is operator discipline plus running diagnostics with
+`civicmesh-mesh` stopped.
+
+When the cooperative lock is bypassed (or pre-CIV-80, when both
+mesh_bots could open the device), the failure mode is silent
+corruption: Linux does not exclusive-lock USB-serial nodes; pyserial
+opens without `TIOCEXCL`; both `open()` calls succeed at the kernel
+level. Inbound radio bytes split arbitrarily between the two readers;
+outbound writes interleave on the wire. Symptoms mimic radio hardware
+flakiness (corrupt frames, command timeouts, missed `RX_LOG_DATA`
+events) and trigger spurious recovery actions in `RecoveryController`
+— RTS resets, reconnects, the works. None of those help, because the
+duplicate file descriptors survive an ESP32 reset.
 
 For the engineering view of this failure mode, see **C3** in
 `docs/radio-debugging/failure-modes.md`. The unambiguous diagnostic
-signal is `lsof /dev/ttyUSB0` (or `fuser /dev/ttyUSB0`) returning
-multiple PIDs. Without that check, C3 looks identical to the genuine
-framing-desync modes C1 and C2.
+signal for the non-cooperating case is `lsof /dev/ttyUSB0` (or `fuser
+/dev/ttyUSB0`) returning multiple PIDs.
 
 ### The dev-running-then-prod-started case
 
-`sudo systemctl start civicmesh-mesh` while a dev `mesh_bot` is already
-holding `/dev/ttyUSB0` is especially nasty. Systemd's restart policy
-masks the corruption: the unit cycles in `activating (auto-restart)`
-rather than failing cleanly, so the operator sees "service is starting"
-rather than a clear `EADDRINUSE`-style error. Symptoms on the dev side
-look like radio flakiness; symptoms on the prod side look like a unit
-that "won't quite come up."
+`sudo systemctl start civicmesh-mesh` while a dev `mesh_bot` is
+already holding `/dev/ttyUSB0` now fails cleanly: the unit's
+`ExecStart` exits with the CIV-80 `RuntimeError`, systemd marks the
+unit failed (or cycles it via auto-restart, each cycle exiting fast
+with the same loud message in the journal). Compare to pre-CIV-80,
+where the unit silently corrupted the radio I/O on every restart.
 
-If symptoms suggest C3, verify with:
+If symptoms suggest a residual C3 (lock bypass — non-CivicMesh tool
+or unguarded diagnostic), verify with:
 
 ```
 systemctl is-active civicmesh-mesh
 journalctl -u civicmesh-mesh -e
-lsof /dev/ttyUSB0
+lsof /run/lock/civicmesh-mesh.lock   # which civicmesh-mesh holds the lock
+lsof /dev/ttyUSB0                    # any other opener (picocom etc.)
 ```
 
-A flapping unit, repeated framing/timeout errors in the journal, and
-multiple PIDs in `lsof` together confirm C3.
+A failed or flapping unit whose journal shows the `CIV-80` lock
+message means a different process holds the lock — read the message;
+it points you at `lsof /run/lock/civicmesh-mesh.lock`. Multiple PIDs
+in `lsof /dev/ttyUSB0` with only one (or zero) holding the lock means
+a non-cooperating opener is in play.
 
 ---
 
