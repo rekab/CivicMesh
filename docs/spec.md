@@ -185,6 +185,7 @@ See `docs/message_lifecycle.md` for the full state machine.
   - Read-only curated channels list.
   - Security log records abuse and send failures without PII.
   - Degraded-mode messaging to reduce confusion and abuse.
+- Non-goals (CIV-100): Message posting rate limits are best-effort. The per-session portal limit is a UX courtesy and is bypassable by clearing cookies; it is not a security boundary. The mesh is protected by a separate egress throttle (`limits.global_egress_per_hour`) that is not session-keyed (see `docs/invariants.md`). CivicMesh does not attempt to defend against adversaries with physical access to the node.
 
 ## Deployment and Operations
 - Systemd units: civicmesh-web starts after network; civicmesh-mesh depends on serial device.
