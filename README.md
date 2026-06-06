@@ -10,8 +10,8 @@ CivicMesh is:
 - bridged to MeshCore over USB serial
 - exposing selected public mesh channels over WiFi
 - for walk-up users with ordinary phones
-- optionally serves offline preparedness PDFs
-- optionally drives an Inkplate 6 e-paper bulletin display
+- optionally serving offline preparedness PDFs
+- optionally driving an Inkplate 6 e-paper bulletin display
 - optimized for Seattle Emergency Hubs
 
 <p align="center">
@@ -89,8 +89,8 @@ want to join the WiFi or open the captive portal.
 The display is its own device — its own ESP32, its own battery, its
 own WiFi client. It polls `/api/external-display/state` from the
 node's AP, renders the bulletin client-side, and never receives
-bitmaps over WiFi (a 1-bit JSON payload parses cheaper than a
-60 KB framebuffer crosses the air). The same node serves both the
+bitmaps over WiFi (a small JSON payload is cheaper to ship and
+render than a 60 KB framebuffer). The same node serves both the
 phone portal and the bulletin from the same SQLite store; no extra
 moving parts.
 
@@ -172,11 +172,10 @@ accessibility, and each tier reaches people the tier above couldn't.
 - **CivicMesh** — no license, no radio to buy, no app to install.
   Any phone in WiFi range reads and posts.
 
-CivicMesh doesn't replace the tiers above it; it layers under them.
-Each tier exists because it reaches people the tier above couldn't,
-and CivicMesh sits at the bottom of that ladder, where the largest
-population of currently-unreached people is. It's a complement to ACS
-and the mesh community, not a competitor.
+CivicMesh doesn't replace the tiers above it; it layers under them,
+sitting at the bottom of the ladder where the largest population of
+currently-unreached people is. It's a complement to ACS and the mesh
+community, not a competitor.
 
 ### Why MeshCore instead of Meshtastic?
 
@@ -244,7 +243,7 @@ power:
   hardware.
 - **WiFi and SD card I/O dominate the cost, not CPU.** SQLite queries
   and JSON serialization for three concurrent clients keep load average
-  near zero across hundreds of telemetry samples. The ~0.85 W gap
+  near zero across hundreds of telemetry samples. The ~0.8 W gap
   between light and sustained load is WiFi airtime, not Python work —
   so adding endpoints, richer queries, or new read paths doesn't move
   the power needle; client count and response sizes do.
@@ -252,7 +251,8 @@ power:
 The deployment model assumes pack swaps every 24–36 hours and supports
 pass-through charge, so a node can be topped up from a larger battery
 or shore power without dropping service. Full methodology, the 65+ hour
-unattended run, thermal data, and per-watt runtime table are in
+combined endurance run (light load → mid-run top-up → sustained
+synthetic load), thermal data, and per-watt runtime table are in
 [docs/power-budget.md](docs/power-budget.md).
 
 ## Threat model
@@ -486,8 +486,8 @@ the Python package.
   [`mesh_bot`](mesh_bot.py). Gated by `[diagnostics] enabled = true` in
   `config.toml`; refuses to run otherwise. See
   `diagnostics/mesh-sim/README.md`.
-- `diagnostics/loadgen.py`, `diagnostics/check_laodtest.sh` —
-  load-test helpers used during power-budget work. See
+- `diagnostics/loadgen.py` — load-test helper used during
+  power-budget work. See
   [docs/power-budget.md](docs/power-budget.md) for context.
 
 ## Contributing
