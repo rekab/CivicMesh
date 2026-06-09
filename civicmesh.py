@@ -869,7 +869,6 @@ def _print_cutover_banner(cfg: "AppConfig") -> None:
     print(f"""
 Configuration applied. The system is staged for AP mode.
 
-Currently running: WiFi client mode (this SSH session is fine).
 On next boot:      AP mode — SSID "{cfg.ap.ssid}", portal at http://{cfg.network.ip}
 
 To cut over, run:
