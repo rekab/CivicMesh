@@ -93,6 +93,18 @@ def _fmt_load(l: Optional[float]) -> str:
     return "?" if l is None else f"{l:.2f}"
 
 
+def _fmt_disk(free_kb: Optional[int], total_kb: Optional[int]) -> str:
+    """Percent of disk free, e.g. '78% free'. '?' if telemetry is missing.
+
+    A genuinely full disk (free_kb == 0) must render '0% free', not '?',
+    since that's the exact condition an operator is querying for — so the
+    guard tests `is None`, not falsiness.
+    """
+    if free_kb is None or total_kb is None or total_kb <= 0:
+        return "?"
+    return f"{round(100 * free_kb / total_kb)}% free"
+
+
 def build_help_reply(site_name: str) -> str:
     """Reply to `help`. Short enough for one packet."""
     return (
@@ -116,7 +128,8 @@ def build_stats_reply(
         f"CivicMesh @ {site_name}\n"
         f"up {_fmt_uptime(stats.get('uptime_s'))} "
         f"cpu {_fmt_temp(stats.get('cpu_temp_c'))} "
-        f"load {_fmt_load(stats.get('load_1m'))}\n"
+        f"load {_fmt_load(stats.get('load_1m'))} "
+        f"disk {_fmt_disk(stats.get('disk_free_kb'), stats.get('disk_total_kb'))}\n"
         f"msg 1h:{msgs.get('1h', 0)} 24h:{msgs.get('24h', 0)} "
         f"7d:{msgs.get('7d', 0)}\n"
         f"sess 1h:{sess.get('1h', 0)} 24h:{sess.get('24h', 0)} "

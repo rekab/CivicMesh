@@ -96,6 +96,8 @@ _STATS = {
     "uptime_s": 12 * 3600 + 32 * 60,
     "cpu_temp_c": 51.3,
     "load_1m": 0.82,
+    "disk_free_kb": 24_000_000,
+    "disk_total_kb": 30_000_000,
     "msgs_sent": {"1h": 5, "24h": 42, "7d": 280},
     "wifi_sessions": {"1h": 2, "24h": 8, "7d": 50},
 }
@@ -110,6 +112,23 @@ class BuildStatsReplyTest(unittest.TestCase):
         self.assertIn("12h32m", reply)
         self.assertIn("51c", reply)
         self.assertIn("0.82", reply)
+
+    def test_includes_disk_free(self) -> None:
+        reply = dm_bot.build_stats_reply(
+            site_name="TestNode", stats=_STATS,
+            dm_remaining=3, dm_per_hour=6,
+        )
+        # 24/30 GB free → 80% free.
+        self.assertIn("disk 80% free", reply)
+
+    def test_full_disk_renders_zero_not_missing(self) -> None:
+        # free_kb == 0 is the exact alarm condition; must not collapse to '?'.
+        stats = dict(_STATS, disk_free_kb=0)
+        reply = dm_bot.build_stats_reply(
+            site_name="TestNode", stats=stats,
+            dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("disk 0% free", reply)
 
     def test_includes_msg_and_session_windows(self) -> None:
         reply = dm_bot.build_stats_reply(
@@ -141,6 +160,7 @@ class BuildStatsReplyTest(unittest.TestCase):
         self.assertIn("up ?", reply)
         self.assertIn("cpu ?", reply)
         self.assertIn("load ?", reply)
+        self.assertIn("disk ?", reply)
 
     def test_uptime_days_format(self) -> None:
         stats = dict(_STATS, uptime_s=3 * 86400 + 5 * 3600)

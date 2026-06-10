@@ -1438,9 +1438,9 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
     """Compact stat snapshot for the DM `stats` reply.
 
     Reads the latest telemetry_samples row for system metrics (uptime,
-    CPU temp, 1-min load); counts messages and distinct sessions over
-    1h/24h/7d windows. Returns a flat dict so the reply formatter can
-    iterate it without surprises.
+    CPU temp, 1-min load, disk free/total); counts messages and distinct
+    sessions over 1h/24h/7d windows. Returns a flat dict so the reply
+    formatter can iterate it without surprises.
 
     Cheaper than compute_stats() (the /api/stats source): one
     indexed SELECT per window + one LIMIT 1 for the latest sample,
@@ -1449,7 +1449,7 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
     conn = _connect(cfg)
     try:
         latest = conn.execute(
-            "SELECT uptime_s, cpu_temp_c, load_1m "
+            "SELECT uptime_s, cpu_temp_c, load_1m, disk_free_kb, disk_total_kb "
             "FROM telemetry_samples ORDER BY ts DESC LIMIT 1"
         ).fetchone()
         latest_row = dict(latest) if latest else {}
@@ -1475,6 +1475,8 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
             "uptime_s": latest_row.get("uptime_s"),
             "cpu_temp_c": latest_row.get("cpu_temp_c"),
             "load_1m": latest_row.get("load_1m"),
+            "disk_free_kb": latest_row.get("disk_free_kb"),
+            "disk_total_kb": latest_row.get("disk_total_kb"),
             "msgs_sent": msgs_sent,
             "wifi_sessions": wifi_sessions,
         }
