@@ -403,6 +403,38 @@
           <div class="sys-metric__sub" id="mDiskSub">&mdash;</div>
           <div class="sys-metric__spark" id="mDiskSpark"></div>
         </div>
+        <!-- Companion-radio stats (get_stats_core / get_stats_radio). RSSI/SNR
+             are the last-heard-packet link quality; TX queue is the radio's
+             send backlog; RTS resets counts health-check-triggered hard resets. -->
+        <div class="sys-metric" id="mRadioRssi">
+          <div class="sys-metric__lbl">Radio RSSI</div>
+          <div class="sys-metric__val" id="mRadioRssiVal">&mdash;</div>
+          <div class="sys-metric__sub">dBm, last pkt</div>
+          <div class="sys-metric__spark" id="mRadioRssiSpark"></div>
+        </div>
+        <div class="sys-metric" id="mRadioSnr">
+          <div class="sys-metric__lbl">Radio SNR</div>
+          <div class="sys-metric__val" id="mRadioSnrVal">&mdash;</div>
+          <div class="sys-metric__sub">dB, last pkt</div>
+          <div class="sys-metric__spark" id="mRadioSnrSpark"></div>
+        </div>
+        <div class="sys-metric" id="mRadioNoise">
+          <div class="sys-metric__lbl">Noise floor</div>
+          <div class="sys-metric__val" id="mRadioNoiseVal">&mdash;</div>
+          <div class="sys-metric__sub">dBm</div>
+          <div class="sys-metric__spark" id="mRadioNoiseSpark"></div>
+        </div>
+        <div class="sys-metric" id="mRadioQueue">
+          <div class="sys-metric__lbl">TX queue</div>
+          <div class="sys-metric__val" id="mRadioQueueVal">&mdash;</div>
+          <div class="sys-metric__sub">pending</div>
+          <div class="sys-metric__spark" id="mRadioQueueSpark"></div>
+        </div>
+        <div class="sys-metric" id="mRtsReset">
+          <div class="sys-metric__lbl">RTS resets</div>
+          <div class="sys-metric__val" id="mRtsResetVal">&mdash;</div>
+          <div class="sys-metric__sub">24h &middot; 7d <span id="mRtsReset7d">&mdash;</span></div>
+        </div>
       </div>
 
       <div class="sys-row sys-row--net">

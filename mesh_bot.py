@@ -1477,6 +1477,10 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         _clock_task(cfg, db_cfg, log),
         _contact_registration_task(cfg, db_cfg, log, controller),
         telemetry.telemetry_loop(db_cfg, log),
+        telemetry.radio_telemetry_loop(
+            controller, db_cfg, log,
+            timeout_sec=cfg.recovery.liveness_timeout_sec,
+        ),
         liveness_task(controller, log),
         recovery_task(controller, _setup_fn, log),
     )

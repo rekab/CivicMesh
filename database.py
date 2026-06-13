@@ -250,6 +250,21 @@ CREATE TABLE IF NOT EXISTS telemetry_events (
 CREATE INDEX IF NOT EXISTS idx_telemetry_events_ts ON telemetry_events(ts);
 CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_ts ON telemetry_events(kind, ts);
 
+-- Companion-radio stats (distinct from telemetry_samples, which is the Pi's
+-- own health). Sampled from get_stats_core()/get_stats_radio() over serial.
+CREATE TABLE IF NOT EXISTS radio_samples (
+    ts INTEGER PRIMARY KEY,
+    battery_mv INTEGER,
+    radio_uptime_s INTEGER,
+    err_bitmask INTEGER,
+    tx_queue_len INTEGER,
+    noise_floor INTEGER,
+    last_rssi INTEGER,
+    last_snr REAL,
+    tx_air_secs INTEGER,
+    rx_air_secs INTEGER
+);
+
 """
 
 
@@ -438,6 +453,18 @@ def init_db(cfg: DBConfig, log=None) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_telemetry_events_ts ON telemetry_events(ts);
             CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_ts ON telemetry_events(kind, ts);
+            CREATE TABLE IF NOT EXISTS radio_samples (
+                ts INTEGER PRIMARY KEY,
+                battery_mv INTEGER,
+                radio_uptime_s INTEGER,
+                err_bitmask INTEGER,
+                tx_queue_len INTEGER,
+                noise_floor INTEGER,
+                last_rssi INTEGER,
+                last_snr REAL,
+                tx_air_secs INTEGER,
+                rx_air_secs INTEGER
+            );
         """)
 
         # -- sessions.last_seen_ts --
@@ -1438,13 +1465,15 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
     """Compact stat snapshot for the DM `stats` reply.
 
     Reads the latest telemetry_samples row for system metrics (uptime,
-    CPU temp, 1-min load, disk free/total); counts messages and distinct
-    sessions over 1h/24h/7d windows. Returns a flat dict so the reply
-    formatter can iterate it without surprises.
+    CPU temp, 1-min load, disk free/total) and the latest radio_samples row
+    for companion-radio metrics (RSSI, SNR, TX queue, noise floor, radio
+    uptime); counts messages, distinct sessions, and RTS resets over
+    1h/24h/7d windows. Returns a flat dict so the reply formatter can
+    iterate it without surprises.
 
-    Cheaper than compute_stats() (the /api/stats source): one
-    indexed SELECT per window + one LIMIT 1 for the latest sample,
-    versus ~8 windowed SELECTs + the nested system telemetry build.
+    Cheaper than compute_stats() (the /api/stats source): three windowed
+    SELECTs per window + two LIMIT 1 reads for the latest samples, versus
+    the nested system telemetry build plus its full series queries.
     """
     conn = _connect(cfg)
     try:
@@ -1454,9 +1483,16 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
         ).fetchone()
         latest_row = dict(latest) if latest else {}
 
+        radio = conn.execute(
+            "SELECT last_rssi, last_snr, tx_queue_len, noise_floor, radio_uptime_s "
+            "FROM radio_samples ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        radio_row = dict(radio) if radio else {}
+
         windows = [("1h", 3600), ("24h", 86400), ("7d", 604800)]
         msgs_sent: dict[str, int] = {}
         wifi_sessions: dict[str, int] = {}
+        rts_resets: dict[str, int] = {}
         for label, window in windows:
             cutoff = now_ts - window
             row = conn.execute(
@@ -1470,6 +1506,12 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
                 (cutoff,),
             ).fetchone()
             wifi_sessions[label] = row["n"] if row else 0
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM telemetry_events "
+                "WHERE kind = 'rts_pulse' AND ts >= ?",
+                (cutoff,),
+            ).fetchone()
+            rts_resets[label] = row["n"] if row else 0
 
         return {
             "uptime_s": latest_row.get("uptime_s"),
@@ -1477,6 +1519,14 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
             "load_1m": latest_row.get("load_1m"),
             "disk_free_kb": latest_row.get("disk_free_kb"),
             "disk_total_kb": latest_row.get("disk_total_kb"),
+            "radio": {
+                "last_rssi": radio_row.get("last_rssi"),
+                "last_snr": radio_row.get("last_snr"),
+                "tx_queue_len": radio_row.get("tx_queue_len"),
+                "noise_floor": radio_row.get("noise_floor"),
+                "uptime_s": radio_row.get("radio_uptime_s"),
+            },
+            "rts_resets": rts_resets,
             "msgs_sent": msgs_sent,
             "wifi_sessions": wifi_sessions,
         }
@@ -2380,6 +2430,18 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
             ).fetchone()
             restarts[label] = row["n"] if row else 0
 
+        # -- rts_resets (rts_pulse events: a failed health-check that hard-reset
+        #    the radio via the serial RTS line). Distinct from radio_restarts,
+        #    which counts only the pulses that went on to recover successfully.
+        rts_resets = {}
+        for label, window in [("hour", 3600), ("day", 86400), ("week", 604800)]:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM telemetry_events "
+                "WHERE kind = 'rts_pulse' AND ts >= ?",
+                (now_ts - window,),
+            ).fetchone()
+            rts_resets[label] = row["n"] if row else 0
+
         result = {
             "now_ts": now_ts,
             "wifi_sessions": wifi,
@@ -2388,6 +2450,7 @@ def compute_stats(cfg: DBConfig, now_ts, log=None):
             "messages_failed": failed,
             "direct_repeaters": repeaters,
             "radio_restarts": restarts,
+            "rts_resets": rts_resets,
         }
         result["system"] = _build_system_telemetry(cfg, now_ts, log=log)
         return result
@@ -2435,6 +2498,49 @@ def insert_telemetry_sample(
                 (ts, uptime_s, load_1m, cpu_temp_c, mem_available_kb, mem_total_kb,
                  disk_free_kb, disk_total_kb, net_rx_bytes, net_tx_bytes,
                  outbox_depth, outbox_oldest_age_s, throttled_bitmask),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
+def insert_radio_sample(
+    cfg: DBConfig,
+    *,
+    battery_mv: Optional[int],
+    radio_uptime_s: Optional[int],
+    err_bitmask: Optional[int],
+    tx_queue_len: Optional[int],
+    noise_floor: Optional[int],
+    last_rssi: Optional[int],
+    last_snr: Optional[float],
+    tx_air_secs: Optional[int],
+    rx_air_secs: Optional[int],
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> None:
+    """Insert a companion-radio stats sample. CIV-99: ts stamped inside the txn.
+
+    Production callers MUST NOT pass `_ts_for_test`.
+    """
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "INSERT INTO radio_samples "
+                "(ts, battery_mv, radio_uptime_s, err_bitmask, tx_queue_len, "
+                "noise_floor, last_rssi, last_snr, tx_air_secs, rx_air_secs) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ts, battery_mv, radio_uptime_s, err_bitmask, tx_queue_len,
+                 noise_floor, last_rssi, last_snr, tx_air_secs, rx_air_secs),
             )
             conn.execute("COMMIT")
         except:
@@ -2561,6 +2667,7 @@ def prune_telemetry(
     conn = _connect(cfg)
     try:
         conn.execute("DELETE FROM telemetry_samples WHERE ts < ?", (samples_cutoff_ts,))
+        conn.execute("DELETE FROM radio_samples WHERE ts < ?", (samples_cutoff_ts,))
         conn.execute("DELETE FROM telemetry_events WHERE ts < ?", (events_cutoff_ts,))
     finally:
         conn.close()
@@ -2612,6 +2719,13 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
         outbox_row = conn.execute(
             "SELECT COUNT(*) AS depth, MIN(ts) AS oldest_ts FROM outbox WHERE status = 'queued'"
         ).fetchone()
+
+        # 7. Companion-radio 1h samples
+        radio_rows_1h = conn.execute(
+            "SELECT * FROM radio_samples WHERE ts > ? ORDER BY ts",
+            (now_ts - 3600,),
+        ).fetchall()
+        radio_1h = [dict(r) for r in radio_rows_1h]
     finally:
         conn.close()
 
@@ -2731,6 +2845,13 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
         status_str = str(r["s"]) if r["s"] is not None else "unknown"
         http_errors[status_str] = r["n"]
 
+    # Companion radio: latest scalars + 1h series for the chartable fields.
+    radio_latest = radio_1h[-1] if radio_1h else {}
+    rssi_1h_values = [s["last_rssi"] for s in radio_1h if s.get("last_rssi") is not None]
+    snr_1h_values = [s["last_snr"] for s in radio_1h if s.get("last_snr") is not None]
+    noise_1h_values = [s["noise_floor"] for s in radio_1h if s.get("noise_floor") is not None]
+    queue_1h_values = [s["tx_queue_len"] for s in radio_1h if s.get("tx_queue_len") is not None]
+
     return {
         "now_ts": now_ts,
         "uptime_s": latest.get("uptime_s"),
@@ -2760,6 +2881,20 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
         "outbox": {
             "depth_now": outbox_depth,
             "oldest_age_s": outbox_oldest_age_s,
+        },
+        "radio": {
+            "battery_mv": radio_latest.get("battery_mv"),
+            "uptime_s": radio_latest.get("radio_uptime_s"),
+            "tx_queue_len": radio_latest.get("tx_queue_len"),
+            "noise_floor": radio_latest.get("noise_floor"),
+            "last_rssi": radio_latest.get("last_rssi"),
+            "last_snr": radio_latest.get("last_snr"),
+            "tx_air_secs": radio_latest.get("tx_air_secs"),
+            "rx_air_secs": radio_latest.get("rx_air_secs"),
+            "rssi_1h_series": {"sample_sec": 60, "values": rssi_1h_values},
+            "snr_1h_series": {"sample_sec": 60, "values": snr_1h_values},
+            "noise_1h_series": {"sample_sec": 60, "values": noise_1h_values},
+            "queue_1h_series": {"sample_sec": 60, "values": queue_1h_values},
         },
         "throttle_events_24h": throttle_events_24h,
         "events_24h": {

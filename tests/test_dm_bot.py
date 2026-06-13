@@ -169,10 +169,46 @@ class BuildStatsReplyTest(unittest.TestCase):
         )
         self.assertIn("3d5h", reply)
 
+    def test_includes_rts_reset_line(self) -> None:
+        stats = dict(_STATS, rts_resets={"1h": 0, "24h": 1, "7d": 2})
+        reply = dm_bot.build_stats_reply(
+            site_name="TestNode", stats=stats,
+            dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("rts 1h:0 24h:1 7d:2", reply)
+
+    def test_includes_radio_line(self) -> None:
+        stats = dict(_STATS, radio={
+            "last_rssi": -92, "last_snr": 6.0, "tx_queue_len": 0,
+            "noise_floor": -115, "uptime_s": 5 * 86400,
+        })
+        reply = dm_bot.build_stats_reply(
+            site_name="TestNode", stats=stats,
+            dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("rf rssi-92 snr6.0 q0 nf-115", reply)
+
+    def test_missing_radio_and_rts_render_gracefully(self) -> None:
+        # _STATS carries neither key (mirrors a node with no radio samples
+        # yet); the formatter must default to zero counts and '?' fields.
+        reply = dm_bot.build_stats_reply(
+            site_name="TestNode", stats=_STATS,
+            dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("rts 1h:0 24h:0 7d:0", reply)
+        self.assertIn("rf rssi? snr? q? nf?", reply)
+
     def test_compact_overall_length(self) -> None:
+        # Include the radio + rts lines so the cap is checked against the
+        # full reply, not the pre-CIV-radio-stats subset.
+        stats = dict(
+            _STATS,
+            radio={"last_rssi": -92, "last_snr": 6.0, "tx_queue_len": 0, "noise_floor": -115},
+            rts_resets={"1h": 0, "24h": 1, "7d": 2},
+        )
         reply = dm_bot.build_stats_reply(
             site_name="CivicMesh-TestSite",
-            stats=_STATS, dm_remaining=3, dm_per_hour=6,
+            stats=stats, dm_remaining=3, dm_per_hour=6,
         )
         # Target ~150 chars; relaxed cap at 200 keeps multi-packet
         # cost predictable on the LoRa side.

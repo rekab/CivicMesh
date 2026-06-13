@@ -1258,6 +1258,13 @@ function healthOf(metric, value) {
     case "outbox_age":   return value > 60 ? "warn" : "ok";
     case "rate_limit":   return value > 10 ? "warn" : "ok";
     case "http_5xx":     return value > 0 ? "warn" : "ok";
+    // Companion radio. RSSI/SNR: higher is better (less negative). TX queue:
+    // a growing send backlog. RTS resets: any reset in 24h is worth a glance,
+    // many means the radio is flapping.
+    case "radio_rssi":   return value < -115 ? "crit" : value < -100 ? "warn" : "ok";
+    case "radio_snr":    return value < -10 ? "crit" : value < 0 ? "warn" : "ok";
+    case "radio_queue":  return value > 20 ? "crit" : value > 5 ? "warn" : "ok";
+    case "rts_resets":   return value > 5 ? "crit" : value > 0 ? "warn" : "ok";
   }
   return "ok";
 }
@@ -1275,7 +1282,7 @@ function sparkColor(health) {
 
 /* ---- Render system health card ---- */
 
-function renderSysHealth(sys) {
+function renderSysHealth(sys, rtsResets) {
   if (!sys || !sys.cpu) return;
 
   // Compute health per metric
@@ -1289,6 +1296,13 @@ function renderSysHealth(sys) {
     rate:  healthOf("rate_limit", sys.events_24h && sys.events_24h.rate_limit),
     http5: healthOf("http_5xx", sys.events_24h && sys.events_24h.http_errors && sys.events_24h.http_errors["500"]),
   };
+  var radio = sys.radio || {};
+  // rtsResets is the top-level {hour, day, week} block from compute_stats,
+  // passed in by renderStats (it's a sibling of `system`, not inside it).
+  h.radioRssi  = healthOf("radio_rssi", radio.last_rssi);
+  h.radioSnr   = healthOf("radio_snr", radio.last_snr);
+  h.radioQueue = healthOf("radio_queue", radio.tx_queue_len);
+  h.rts        = healthOf("rts_resets", rtsResets ? rtsResets.day : null);
   var throttleEvents = sys.throttle_events_24h || [];
   h.throttle = throttleEvents.length > 0 ? "warn" : "ok";
 
@@ -1321,6 +1335,10 @@ function renderSysHealth(sys) {
       { key: "mem",  label: "Memory free", val: sys.mem && sys.mem.available_mb, fmt: function(v) { return v != null ? fmtMb(v) : "n/a"; } },
       { key: "disk", label: "Disk free", val: sys.disk ? (sys.disk.free_mb / sys.disk.total_mb) * 100 : null, fmt: function(v) { return v != null ? v.toFixed(0) + "%" : "n/a"; } },
       { key: "outboxDepth", label: "Outbox depth", val: sys.outbox && sys.outbox.depth_now, fmt: function(v) { return v != null ? String(v) : "n/a"; } },
+      { key: "radioRssi", label: "Radio RSSI", val: radio.last_rssi, fmt: function(v) { return v != null ? Math.round(v) + " dBm" : "n/a"; } },
+      { key: "radioSnr", label: "Radio SNR", val: radio.last_snr, fmt: function(v) { return v != null ? v.toFixed(1) + " dB" : "n/a"; } },
+      { key: "radioQueue", label: "TX queue", val: radio.tx_queue_len, fmt: function(v) { return v != null ? String(v) : "n/a"; } },
+      { key: "rts", label: "RTS resets (24h)", val: rtsResets ? rtsResets.day : null, fmt: function(v) { return v != null ? String(v) : "n/a"; } },
     ];
     var lines = [];
     var okCount = 0;
@@ -1371,6 +1389,38 @@ function renderSysHealth(sys) {
     sys.disk.series_24h && sys.disk.series_24h.values, sparkColor(h.disk));
   var mDiskSub = $("mDiskSub");
   if (mDiskSub && diskPct != null) mDiskSub.textContent = diskPct.toFixed(0) + "% of " + fmtMb(sys.disk.total_mb);
+
+  // Companion radio
+  applyMetric("mRadioRssi", "mRadioRssiVal", "mRadioRssiSpark",
+    radio.last_rssi, h.radioRssi,
+    function(v) { return v == null ? "—" : Math.round(v) + " dBm"; },
+    radio.rssi_1h_series && radio.rssi_1h_series.values, sparkColor(h.radioRssi));
+
+  applyMetric("mRadioSnr", "mRadioSnrVal", "mRadioSnrSpark",
+    radio.last_snr, h.radioSnr,
+    function(v) { return v == null ? "—" : v.toFixed(1) + " dB"; },
+    radio.snr_1h_series && radio.snr_1h_series.values, sparkColor(h.radioSnr));
+
+  // Noise floor is informational (no good/bad threshold) — show it neutrally,
+  // only dimming the tile (status n/a) when there's no sample yet.
+  applyMetric("mRadioNoise", "mRadioNoiseVal", "mRadioNoiseSpark",
+    radio.noise_floor, radio.noise_floor == null ? "n/a" : "ok",
+    function(v) { return v == null ? "—" : Math.round(v) + " dBm"; },
+    radio.noise_1h_series && radio.noise_1h_series.values, sparkColor("ok"));
+
+  applyMetric("mRadioQueue", "mRadioQueueVal", "mRadioQueueSpark",
+    radio.tx_queue_len, h.radioQueue,
+    function(v) { return v == null ? "—" : String(v); },
+    radio.queue_1h_series && radio.queue_1h_series.values, sparkColor(h.radioQueue));
+
+  // RTS resets: a counter, no sparkline. Show 24h prominently, 7d in the sub.
+  var rts = rtsResets || {};
+  applyMetric("mRtsReset", "mRtsResetVal", null,
+    (rts.day != null ? rts.day : null), h.rts,
+    function(v) { return v == null ? "—" : String(v); },
+    null, null);
+  var mRts7d = $("mRtsReset7d");
+  if (mRts7d) mRts7d.textContent = (rts.week != null ? rts.week : "—");
 
   // Network
   var sysNetIn = $("sysNetIn");
@@ -1554,7 +1604,7 @@ function renderStats() {
   if (uv) uv.textContent = fmtUptime(sys.uptime_s);
 
   renderRadioStatusRow();
-  renderSysHealth(sys);
+  renderSysHealth(sys, d.rts_resets);
 
   var updated = $("statsUpdated");
   if (updated) {

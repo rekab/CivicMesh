@@ -9,6 +9,7 @@ from typing import Optional
 from database import (
     DBConfig,
     get_outbox_snapshot,
+    insert_radio_sample,
     insert_telemetry_event,
     insert_telemetry_sample,
 )
@@ -226,3 +227,60 @@ async def telemetry_loop(db_cfg: DBConfig, log) -> None:
                 log.exception("telemetry:sample_failed")
         tick += 1
         await asyncio.sleep(60)
+
+
+async def radio_telemetry_loop(controller, db_cfg: DBConfig, log, *, timeout_sec: float = 5.0) -> None:
+    """Sample the locally-connected MeshCore companion every 60s into radio_samples.
+
+    Distinct from telemetry_loop (the Pi's own health). Reads two stat frames
+    over serial — get_stats_core() (battery, radio uptime, error bitmask, TX
+    queue) and get_stats_radio() (noise floor, RSSI, SNR, tx/rx airtime). Both
+    are read-only 2-byte queries; they transmit nothing over RF and write no
+    flash. Calling get_stats_core() alongside the liveness poller is safe — the
+    meshcore dispatcher broadcasts each response to every subscribed waiter, so
+    neither caller steals the other's reply.
+
+    Skips a tick whenever the radio is down or recovering (no client), so we
+    never poll a port that's mid-RTS-reset.
+    """
+    from meshcore import EventType  # lazy import, mirrors liveness_task
+    while True:
+        await asyncio.sleep(60)
+        mc = controller.get_client()
+        if mc is None:
+            continue
+        try:
+            core = await asyncio.wait_for(mc.commands.get_stats_core(), timeout=timeout_sec)
+            radio = await asyncio.wait_for(mc.commands.get_stats_radio(), timeout=timeout_sec)
+        except Exception:
+            if log:
+                log.debug("radio_telemetry:poll_failed", exc_info=True)
+            continue
+        if core.type == EventType.ERROR or radio.type == EventType.ERROR:
+            if log:
+                log.debug("radio_telemetry:stats_error core=%s radio=%s", core.type, radio.type)
+            continue
+        cp = core.payload or {}
+        rp = radio.payload or {}
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                functools.partial(
+                    insert_radio_sample,
+                    db_cfg,
+                    battery_mv=cp.get("battery_mv"),
+                    radio_uptime_s=cp.get("uptime_secs"),
+                    err_bitmask=cp.get("errors"),
+                    tx_queue_len=cp.get("queue_len"),
+                    noise_floor=rp.get("noise_floor"),
+                    last_rssi=rp.get("last_rssi"),
+                    last_snr=rp.get("last_snr"),
+                    tx_air_secs=rp.get("tx_air_secs"),
+                    rx_air_secs=rp.get("rx_air_secs"),
+                    log=log,
+                ),
+            )
+        except Exception:
+            if log:
+                log.exception("radio_telemetry:insert_failed")

@@ -105,6 +105,24 @@ def _fmt_disk(free_kb: Optional[int], total_kb: Optional[int]) -> str:
     return f"{round(100 * free_kb / total_kb)}% free"
 
 
+def _fmt_radio(radio: dict[str, Any]) -> str:
+    """Compact companion-radio line, e.g. 'rf rssi-92 snr6.0 q0 nf-115'.
+
+    rssi/nf are dBm, snr is dB, q is the TX queue depth. Each field shows
+    '?' when that sample is missing (no radio_samples row yet, or the field
+    was null). Bare numbers (no spaces inside a field) so it stays parseable.
+    """
+    rssi = radio.get("last_rssi")
+    snr = radio.get("last_snr")
+    queue = radio.get("tx_queue_len")
+    noise = radio.get("noise_floor")
+    rssi_s = "?" if rssi is None else f"{int(rssi)}"
+    snr_s = "?" if snr is None else f"{snr:.1f}"
+    q_s = "?" if queue is None else f"{int(queue)}"
+    nf_s = "?" if noise is None else f"{int(noise)}"
+    return f"rf rssi{rssi_s} snr{snr_s} q{q_s} nf{nf_s}"
+
+
 def build_help_reply(site_name: str) -> str:
     """Reply to `help`. Short enough for one packet."""
     return (
@@ -121,15 +139,26 @@ def build_stats_reply(
     dm_remaining: int,
     dm_per_hour: int,
 ) -> str:
-    """Reply to `stats`. `stats` is the compute_dm_stats() result."""
+    """Reply to `stats`. `stats` is the compute_dm_stats() result.
+
+    The `rts` line (radio hard-resets from failed health checks) is the
+    highest-priority addition; the `rf` radio line follows. This pushes the
+    reply past the ~150-char/1-packet target — the firmware chunks it into
+    ~2 packets, which is an accepted cost for surfacing radio health over DM.
+    """
     msgs = stats.get("msgs_sent") or {}
     sess = stats.get("wifi_sessions") or {}
+    rts = stats.get("rts_resets") or {}
+    radio = stats.get("radio") or {}
     return (
         f"CivicMesh @ {site_name}\n"
         f"up {_fmt_uptime(stats.get('uptime_s'))} "
         f"cpu {_fmt_temp(stats.get('cpu_temp_c'))} "
         f"load {_fmt_load(stats.get('load_1m'))} "
         f"disk {_fmt_disk(stats.get('disk_free_kb'), stats.get('disk_total_kb'))}\n"
+        f"rts 1h:{rts.get('1h', 0)} 24h:{rts.get('24h', 0)} "
+        f"7d:{rts.get('7d', 0)}\n"
+        f"{_fmt_radio(radio)}\n"
         f"msg 1h:{msgs.get('1h', 0)} 24h:{msgs.get('24h', 0)} "
         f"7d:{msgs.get('7d', 0)}\n"
         f"sess 1h:{sess.get('1h', 0)} 24h:{sess.get('24h', 0)} "

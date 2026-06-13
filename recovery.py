@@ -344,6 +344,12 @@ async def recovery_task(
                 controller._emit_telemetry("recovery_rung_attempted", {
                     "rung": rung.name, "attempt": attempt,
                 })
+                # Dedicated counter for the operator-facing "RTS resets" stat:
+                # a failed health-check that hard-reset the radio via the serial
+                # RTS line. Kept separate from recovery_rung_attempted so the
+                # stats query is a clean kind='rts_pulse' COUNT (no JSON filter).
+                if rung.name == "rts_pulse":
+                    controller._emit_telemetry("rts_pulse", {"attempt": attempt})
 
                 # 1. Disconnect current client
                 old = controller.get_client()
