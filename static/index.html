@@ -489,9 +489,13 @@
       <div class="identity__qr-wrap" id="identityQrWrap" hidden>
         <div class="stats-card__hint identity__qr-hint">
           Now open the MeshCore app on your phone &rarr; <em>Add Contact</em>
-          &rarr; scan this QR.
+          &rarr; scan this QR, or tap the link below to copy it.
         </div>
         <div class="identity__qr" id="identityQr" aria-label="Contact QR code"></div>
+        <div class="identity__copy" id="identityCopy" hidden>
+          <code class="identity__copy-uri" id="identityCopyUri">&mdash;</code>
+          <button type="button" class="identity__copy-cta" id="identityCopyCta">Tap to copy</button>
+        </div>
         <div class="identity__meta">
           <div class="identity__row"><span class="identity__lbl">Name</span><span class="identity__val" id="identityName">&mdash;</span></div>
           <div class="identity__row"><span class="identity__lbl">Public key</span><code class="identity__pubkey" id="identityPubkey">&mdash;</code></div>

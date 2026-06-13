@@ -1352,6 +1352,55 @@ body {
   line-height: 1.4;
 }
 
+/* Tap-to-copy of the node's meshcore:// contact URI — the same-phone
+   alternative to scanning the QR above. The portal is plain HTTP, so
+   navigator.clipboard is unavailable. Android/desktop fall back to
+   execCommand; iOS Safari can't copy programmatically at all, so the URI is
+   kept selectable and the user taps the native Copy (see identity.js). */
+.stats-card--identity .identity__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+}
+.stats-card--identity .identity__copy-uri {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--stats-brown);
+  word-break: break-all;
+  line-height: 1.4;
+  padding: 8px 10px;
+  background: #fffdf6;
+  border: 1px dashed #d4cab8;
+  border-radius: 4px;
+  /* Must stay selectable so iOS users can select-all and use native Copy. */
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+  cursor: text;
+}
+.stats-card--identity .identity__copy-cta {
+  align-self: stretch;
+  min-height: 44px;            /* comfortable tap target */
+  padding: 8px 14px;
+  font-size: 12px;
+  background: var(--stats-orange);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.stats-card--identity .identity__copy-cta:focus {
+  outline: 2px solid var(--stats-orange);
+  outline-offset: 2px;
+}
+.stats-card--identity .identity__copy.is-copied .identity__copy-cta {
+  background: var(--stats-green);
+}
+
 /* ---- Contact-add form (CIV-14) ---- */
 .contact-form {
   display: flex;

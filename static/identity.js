@@ -51,6 +51,8 @@
   var identityData = null;
   var qrRenderedFor = null;  // contact_url last rendered, to avoid rerender
   var registeredPubkey = null;  // pubkey the backend has confirmed as 'added'
+  var copyHandlerAttached = false;  // wire the copy button's click only once
+  var copyResetTimer = null;  // pending "Copied!" -> "Tap to copy" revert
 
   function loadQrLib() {
     if (window.qrcode) return Promise.resolve(window.qrcode);
@@ -74,6 +76,59 @@
     qr.addData(text);
     qr.make();
     container.innerHTML = qr.createSvgTag(QR_CELL_SIZE, QR_MARGIN);
+  }
+
+  // iPadOS 13+ reports as "Macintosh"; the touch check catches it. iOS Safari
+  // has no working programmatic copy over plain HTTP, so we treat it specially
+  // (see onCopyClick): navigator.clipboard needs a secure context, and
+  // execCommand("copy") returns true while copying nothing.
+  var IS_IOS = /ipad|iphone|ipod/i.test(navigator.userAgent) ||
+    (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+  // Copy `text` to the clipboard, returning a Promise. Used on non-iOS only:
+  //   1. navigator.clipboard.writeText — secure contexts only. The portal is
+  //      plain HTTP today so this is normally absent; kept first so we
+  //      transparently use it if ever served over HTTPS.
+  //   2. Legacy execCommand("copy") via an off-screen textarea — what Android
+  //      Chrome and desktop browsers actually use over HTTP.
+  //   3. Reject — caller falls back to selecting the URI for a manual copy.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      var ok = false;
+      try {
+        ta.select();
+        ok = document.execCommand("copy");
+      } catch (e) {
+        ok = false;
+      } finally {
+        document.body.removeChild(ta);
+      }
+      if (ok) resolve();
+      else reject(new Error("copy command failed"));
+    });
+  }
+
+  // Select the full visible URI so the user can invoke the native Copy. On
+  // iOS this is the whole story; elsewhere it's the manual-copy fallback.
+  function selectUri() {
+    var uriEl = document.getElementById("identityCopyUri");
+    if (!uriEl) return;
+    var range = document.createRange();
+    range.selectNodeContents(uriEl);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   function formatPubkey(hex) {
@@ -139,6 +194,56 @@
     if (wrap) wrap.hidden = true;
   }
 
+  function setCopyCta(text, copied) {
+    var btn = document.getElementById("identityCopy");
+    var cta = document.getElementById("identityCopyCta");
+    if (cta) cta.textContent = text;
+    if (btn) {
+      if (copied) btn.classList.add("is-copied");
+      else btn.classList.remove("is-copied");
+    }
+  }
+
+  function onCopyClick() {
+    if (!identityData) return;
+    if (copyResetTimer) { clearTimeout(copyResetTimer); copyResetTimer = null; }
+    // iOS: no honest programmatic copy over HTTP. Select the URI and let the
+    // user tap the native Copy that pops over the selection. Don't claim
+    // "Copied!" — execCommand would lie and the clipboard would stay empty.
+    if (IS_IOS) {
+      selectUri();
+      setCopyCta("Selected — tap Copy", false);
+      return;
+    }
+    copyText(identityData.contact_url).then(function () {
+      setCopyCta("Copied!", true);
+      copyResetTimer = setTimeout(function () {
+        setCopyCta("Tap to copy", false);
+        copyResetTimer = null;
+      }, 1800);
+    }).catch(function () {
+      // execCommand failed too: select the URI so the user can copy manually.
+      selectUri();
+      setCopyCta("Press & hold to copy", false);
+    });
+  }
+
+  // Show the node's contact URI in the copy button and wire its click once.
+  // Independent of the QR library so copy works even if the QR fails to load.
+  function setupCopyButton() {
+    var wrap = document.getElementById("identityCopy");
+    var uriEl = document.getElementById("identityCopyUri");
+    var cta = document.getElementById("identityCopyCta");
+    if (!wrap || !uriEl || !cta || !identityData) return;
+    uriEl.textContent = identityData.contact_url || "—";
+    setCopyCta("Tap to copy", false);
+    wrap.hidden = false;
+    if (!copyHandlerAttached) {
+      cta.addEventListener("click", onCopyClick);
+      copyHandlerAttached = true;
+    }
+  }
+
   // Reveal the QR for the current input value. Caller is responsible for
   // ensuring registration has been backend-confirmed for that pubkey.
   function revealQr() {
@@ -148,6 +253,7 @@
     var pubEl = document.getElementById("identityPubkey");
     if (!wrap || !qrHost || !nameEl || !pubEl || !identityData) return;
     wrap.hidden = false;
+    setupCopyButton();
     if (qrRenderedFor === identityData.contact_url) return;
     loadQrLib().then(function () {
       renderQr(qrHost, identityData.contact_url);
