@@ -191,6 +191,14 @@ void fill_bayer_50(Adafruit_GFX& gfx,
 // arcs render above it. Glyph extent is roughly (2r·sin45°) wide ×
 // (r+1) tall.
 //
+// `active_arcs` (1..3) encodes signal strength the way a phone does:
+// arcs light up from the inside out, so the innermost (r/3) lights
+// first and the outermost (r) lights last. Active arcs draw solid;
+// inactive arcs draw faint (half the angular samples) so the icon still
+// reads as a full wifi symbol rather than looking broken. The default
+// of 3 (all solid) preserves the original decorative look for callers
+// — and the "unknown RSSI" path — that don't encode strength.
+//
 // Implementation: drawCircleHelper only plots full quadrants. For a
 // sub-quadrant arc we iterate the angle and plot one pixel per degree.
 // 91 plots over a ~28-pixel arc length at r=18 means heavy overdraw, but
@@ -198,9 +206,9 @@ void fill_bayer_50(Adafruit_GFX& gfx,
 // both ESP32 and the host build.
 void draw_wifi_glyph(Adafruit_GFX& gfx,
                      int16_t cx, int16_t cy, int16_t r_outer,
-                     uint16_t color) {
+                     uint16_t color, int active_arcs = 3) {
   // Dot at the bottom; doubled vertically so it has the same visual
-  // weight as the 2-px-thick arc strokes above.
+  // weight as the 2-px-thick arc strokes above. Always solid.
   gfx.fillRect(cx - 1, cy - 1, 3, 2, color);
   const int16_t base_radii[3] = {
       static_cast<int16_t>(r_outer / 3),
@@ -211,12 +219,17 @@ void draw_wifi_glyph(Adafruit_GFX& gfx,
   // wifi glyph reads as bold strokes rather than thin curves at the
   // size we render it. The 1-px gap between concentric pairs (e.g. 5-6
   // and 11-12 for r_outer=18) keeps the three rings visually distinct.
-  for (int16_t r_base : base_radii) {
+  for (int idx = 0; idx < 3; ++idx) {
+    const int16_t r_base = base_radii[idx];
     if (r_base <= 0) continue;
+    // base_radii is inner→outer, so a lower index is a "stronger-signal"
+    // arc. Solid when within the active count; otherwise faint.
+    const bool active = idx < active_arcs;
+    const int deg_step = active ? 1 : 2;
     for (int stroke = 0; stroke < 2; ++stroke) {
       const int16_t r = static_cast<int16_t>(r_base - stroke);
       if (r <= 0) continue;
-      for (int deg = 45; deg <= 135; ++deg) {
+      for (int deg = 45; deg <= 135; deg += deg_step) {
         const float rad = deg * 3.14159265f / 180.0f;
         const int16_t x = cx + static_cast<int16_t>(r * std::cos(rad));
         // Subtract sin: screen y grows downward, so up = -y.
@@ -225,6 +238,23 @@ void draw_wifi_glyph(Adafruit_GFX& gfx,
       }
     }
   }
+}
+
+// WiFi RSSI → strength bucket for the header glyph + label. dBm is
+// negative; closer to 0 is stronger. Thresholds follow the common
+// consumer convention. rssi == 0 is the "not sampled / unknown"
+// sentinel the firmware leaves on any non-connected path — it maps to
+// the original decorative look (all 3 arcs, no word) so frames without
+// the field (e.g. older fixtures) render byte-identically to before.
+struct WifiStrength {
+  int active_arcs;     // 1..3
+  const char* label;   // nullptr when unknown (no word drawn)
+};
+WifiStrength wifi_strength_from_rssi(int rssi) {
+  if (rssi == 0) return {3, nullptr};   // unknown
+  if (rssi >= -60) return {3, "STRONG"};
+  if (rssi >= -75) return {2, "OK"};
+  return {1, "WEAK"};
 }
 
 // Battery glyph — outlined rectangle body + small "nub" on the right
@@ -361,16 +391,31 @@ void draw_header(Adafruit_GFX& gfx,
   uint16_t pw, ph;
   gfx.getTextBounds(prefix, 0, 0, &x1, &y1, &pw, &ph);
 
-  // Wifi glyph centered vertically in the bar, just after the prefix
+  // Wifi glyph centered vertically in the bar, just after the prefix.
+  // Arc count + label come from the live RSSI bucket (unknown → 3 arcs,
+  // no word, matching the original decorative glyph).
+  const WifiStrength wifi = wifi_strength_from_rssi(env.wifi_rssi);
   const int16_t wifi_cx = CHROME_PAD + static_cast<int16_t>(pw) +
                           WIFI_R;  // leftmost arc col is at cx - r
-  draw_wifi_glyph(gfx, wifi_cx, wifi_dot_y, WIFI_R, COLOR_WHITE);
+  draw_wifi_glyph(gfx, wifi_cx, wifi_dot_y, WIFI_R, COLOR_WHITE,
+                  wifi.active_arcs);
 
   // Site name to the right of the glyph
   const int16_t ssid_x =
       CHROME_PAD + static_cast<int16_t>(pw) + wifi_glyph_w + WIFI_GAP;
   set_cursor_top_left(gfx, ssid_x, text_top, kCustomFontBaseHeight);
   gfx.print(ssid_value.c_str());
+
+  // Strength word ("STRONG" | "OK" | "WEAK") just after the site name.
+  // Omitted on the unknown path so RSSI-less frames keep the old header.
+  if (wifi.label) {
+    int16_t sx1, sy1;
+    uint16_t sw, sh;
+    gfx.getTextBounds(ssid_value.c_str(), 0, 0, &sx1, &sy1, &sw, &sh);
+    const int16_t label_x = ssid_x + static_cast<int16_t>(sw) + WIFI_GAP;
+    set_cursor_top_left(gfx, label_x, text_top, kCustomFontBaseHeight);
+    gfx.print(wifi.label);
+  }
 
   // --- Right: battery indicator (glyph + voltage) ---
   // Critical battery has its own takeover screen; this draws for the

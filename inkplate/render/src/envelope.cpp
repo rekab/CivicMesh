@@ -16,6 +16,7 @@ bool parse_envelope(JsonObjectConst obj, Envelope& out, std::string& err) {
   out.status = str_or_empty(obj["status"]);
   out.radio_state = str_or_empty(obj["radio_state"]);
   out.portal_state = str_or_empty(obj["portal_state"]);
+  out.wifi_rssi = obj["wifi_rssi"].as<int>();  // 0 when absent/null
   out.battery_volts = obj["battery_volts"].as<float>();
   out.seconds_since_last_update = obj["seconds_since_last_update"].as<uint32_t>();
   out.active_channel_index = obj["active_channel_index"].as<int16_t>();

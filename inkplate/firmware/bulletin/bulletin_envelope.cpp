@@ -115,6 +115,7 @@ String build_combined_ok_json(const JsonDocument& server_doc,
                               const JsonDocument* status_doc,
                               uint16_t active_channel_index,
                               float battery_volts,
+                              int wifi_rssi,
                               uint32_t seconds_since_last_update,
                               int expected_api_version,
                               const char* firmware_version) {
@@ -123,6 +124,10 @@ String build_combined_ok_json(const JsonDocument& server_doc,
   fill_envelope(env, "ok", "ok", "ok", nullptr, active_channel_index,
                 battery_volts, seconds_since_last_update,
                 expected_api_version, firmware_version);
+  // Only the OK path carries a live RSSI; the failure / critical-battery /
+  // api_mismatch builders don't render the bulletin header, so they omit
+  // the field and the renderer falls back to "unknown".
+  env["wifi_rssi"] = wifi_rssi;
   // Shallow attach: out["payload"] references server_doc's tree. Caller
   // must hold server_doc alive until the returned String is built.
   out["payload"] = server_doc.as<JsonVariantConst>();

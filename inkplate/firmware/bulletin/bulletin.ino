@@ -212,9 +212,14 @@ static void render_combined_ok(const JsonDocument& server_doc,
       g_has_last_stats_doc ? &g_last_stats_doc : nullptr;
   const JsonDocument* status_p =
       g_has_last_status_doc ? &g_last_status_doc : nullptr;
+  // RSSI is read live here (unlike battery, which is sampled with WiFi
+  // off via SUCCESS_PATH_BATTERY_PLACEHOLDER): on every caller of this
+  // function — poll and channel rotation alike — WiFi is connected, so
+  // WiFi.RSSI() returns the current link strength in dBm.
+  const int wifi_rssi = WiFi.RSSI();
   String s = civicmesh::bulletin::build_combined_ok_json(
       server_doc, stats_p, status_p,
-      active_channel_index, SUCCESS_PATH_BATTERY_PLACEHOLDER,
+      active_channel_index, SUCCESS_PATH_BATTERY_PLACEHOLDER, wifi_rssi,
       /*seconds_since_last_update=*/0, EXPECTED_API_VERSION,
       CIVICMESH_FW_VERSION);
   push_to_panel(s, reason);

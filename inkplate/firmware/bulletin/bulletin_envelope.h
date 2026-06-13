@@ -65,11 +65,16 @@ int16_t select_activity_channel(const JsonDocument& server_doc,
 // additive — if either is absent, the footer falls back to the legacy
 // firmware-version banner — so passing nullptr is the right move when
 // a best-effort telemetry fetch failed.
+// `wifi_rssi` is the live WiFi.RSSI() reading in dBm (negative when
+// connected) sampled at render time; the renderer buckets it into the
+// header's signal-strength glyph + word. Pass 0 for "unknown" (the
+// renderer then draws the original decorative glyph with no word).
 String build_combined_ok_json(const JsonDocument& server_doc,
                               const JsonDocument* stats_doc,
                               const JsonDocument* status_doc,
                               uint16_t active_channel_index,
                               float battery_volts,
+                              int wifi_rssi,
                               uint32_t seconds_since_last_update,
                               int expected_api_version,
                               const char* firmware_version);

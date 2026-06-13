@@ -13,6 +13,7 @@ struct Envelope {
   std::string status;          // "ok" | "stale" | "starting" | "error"
   std::string radio_state;     // "ok" | "degraded" | "down" | "needs_human" | "unknown"
   std::string portal_state;    // "ok" | "down" | "unknown"
+  int wifi_rssi = 0;           // dBm (negative) when connected; 0 = not sampled/unknown
   float battery_volts = 0.0f;
   uint32_t seconds_since_last_update = 0;
   int16_t active_channel_index = 0;
