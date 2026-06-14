@@ -253,7 +253,8 @@ def _feedback_ctx(db_path):
     return ctx
 
 
-def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) -> None:
+def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any,
+          cache_control: Optional[str] = None) -> None:
     if status >= 400:
         try:
             _record_telemetry_event(
@@ -266,6 +267,12 @@ def _json(handler: http.server.BaseHTTPRequestHandler, status: int, obj: Any) ->
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    # Default (None): no cache header, preserving existing behavior for the
+    # many static-ish JSON endpoints. Live endpoints that the SPA polls (e.g.
+    # /api/stats) pass "no-store" so a browser never serves a pre-deploy
+    # payload whose shape the new app.js no longer matches.
+    if cache_control is not None:
+        handler.send_header("Cache-Control", cache_control)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -1172,12 +1179,12 @@ class CivicMeshHandler(http.server.SimpleHTTPRequestHandler):
             # cache to nothing or extend its life beyond the 20s window.
             now_mono = time.monotonic()
             if _stats_cache["data"] is not None and now_mono - _stats_cache["ts"] < 20:
-                _json(self, 200, _stats_cache["data"])
+                _json(self, 200, _stats_cache["data"], cache_control="no-store")
                 return
             data = compute_stats(self.server.db_cfg, wall_now(self.server.db_cfg), log=log)
             _stats_cache["ts"] = now_mono
             _stats_cache["data"] = data
-            _json(self, 200, data)
+            _json(self, 200, data, cache_control="no-store")
             return
 
         if path == "/api/votes":
