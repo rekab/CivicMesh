@@ -106,7 +106,7 @@ _STATS = {
 class BuildStatsReplyTest(unittest.TestCase):
     def test_includes_uptime_cpu_load(self) -> None:
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=_STATS,
+            stats=_STATS,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("12h32m", reply)
@@ -115,7 +115,7 @@ class BuildStatsReplyTest(unittest.TestCase):
 
     def test_includes_disk_free(self) -> None:
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=_STATS,
+            stats=_STATS,
             dm_remaining=3, dm_per_hour=6,
         )
         # 24/30 GB free → 80% free.
@@ -125,14 +125,14 @@ class BuildStatsReplyTest(unittest.TestCase):
         # free_kb == 0 is the exact alarm condition; must not collapse to '?'.
         stats = dict(_STATS, disk_free_kb=0)
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=stats,
+            stats=stats,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("disk 0% free", reply)
 
     def test_includes_msg_and_session_windows(self) -> None:
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=_STATS,
+            stats=_STATS,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("msg 1h:5 24h:42 7d:280", reply)
@@ -140,11 +140,21 @@ class BuildStatsReplyTest(unittest.TestCase):
 
     def test_includes_per_user_quota(self) -> None:
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=_STATS,
+            stats=_STATS,
             dm_remaining=4, dm_per_hour=6,
         )
         self.assertIn("4/6", reply)
         self.assertIn("dms/hr", reply)
+
+    def test_omits_node_name_header(self) -> None:
+        # The DM recipient already knows which node they messaged, so the
+        # software/site name header was dropped to save airtime. First line
+        # is now the system line.
+        reply = dm_bot.build_stats_reply(
+            stats=_STATS, dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertNotIn("CivicMesh", reply)
+        self.assertTrue(reply.startswith("up "))
 
     def test_handles_missing_telemetry_gracefully(self) -> None:
         empty_stats = {
@@ -153,7 +163,7 @@ class BuildStatsReplyTest(unittest.TestCase):
             "wifi_sessions": {"1h": 0, "24h": 0, "7d": 0},
         }
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=empty_stats,
+            stats=empty_stats,
             dm_remaining=6, dm_per_hour=6,
         )
         # Should not raise; missing values render as '?'.
@@ -165,14 +175,14 @@ class BuildStatsReplyTest(unittest.TestCase):
     def test_uptime_days_format(self) -> None:
         stats = dict(_STATS, uptime_s=3 * 86400 + 5 * 3600)
         reply = dm_bot.build_stats_reply(
-            site_name="X", stats=stats, dm_remaining=1, dm_per_hour=6,
+            stats=stats, dm_remaining=1, dm_per_hour=6,
         )
         self.assertIn("3d5h", reply)
 
     def test_includes_rts_reset_line(self) -> None:
         stats = dict(_STATS, rts_resets={"1h": 0, "24h": 1, "7d": 2})
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=stats,
+            stats=stats,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("rts 1h:0 24h:1 7d:2", reply)
@@ -183,7 +193,7 @@ class BuildStatsReplyTest(unittest.TestCase):
             "noise_floor": -115, "uptime_s": 5 * 86400,
         })
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=stats,
+            stats=stats,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("rf rssi-92 snr6.0 q0 nf-115", reply)
@@ -192,7 +202,7 @@ class BuildStatsReplyTest(unittest.TestCase):
         # _STATS carries neither key (mirrors a node with no radio samples
         # yet); the formatter must default to zero counts and '?' fields.
         reply = dm_bot.build_stats_reply(
-            site_name="TestNode", stats=_STATS,
+            stats=_STATS,
             dm_remaining=3, dm_per_hour=6,
         )
         self.assertIn("rts 1h:0 24h:0 7d:0", reply)
@@ -207,7 +217,6 @@ class BuildStatsReplyTest(unittest.TestCase):
             rts_resets={"1h": 0, "24h": 1, "7d": 2},
         )
         reply = dm_bot.build_stats_reply(
-            site_name="CivicMesh-TestSite",
             stats=stats, dm_remaining=3, dm_per_hour=6,
         )
         # Target ~150 chars; relaxed cap at 200 keeps multi-packet

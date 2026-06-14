@@ -134,24 +134,24 @@ def build_help_reply(site_name: str) -> str:
 
 def build_stats_reply(
     *,
-    site_name: str,
     stats: dict[str, Any],
     dm_remaining: int,
     dm_per_hour: int,
 ) -> str:
     """Reply to `stats`. `stats` is the compute_dm_stats() result.
 
-    The `rts` line (radio hard-resets from failed health checks) is the
-    highest-priority addition; the `rf` radio line follows. This pushes the
-    reply past the ~150-char/1-packet target — the firmware chunks it into
-    ~2 packets, which is an accepted cost for surfacing radio health over DM.
+    No node-name header: the user already knows which node they DM'd, so a
+    "CivicMesh @ <site>" line would just cost airtime. Dropping it also keeps
+    the reply short enough that the trailing dms-left line survives instead of
+    being chunked off the end. The `rts` line (radio hard-resets from failed
+    health checks) and the `rf` radio line still push past the ~150-char
+    single-packet target; the firmware chunks the rest.
     """
     msgs = stats.get("msgs_sent") or {}
     sess = stats.get("wifi_sessions") or {}
     rts = stats.get("rts_resets") or {}
     radio = stats.get("radio") or {}
     return (
-        f"CivicMesh @ {site_name}\n"
         f"up {_fmt_uptime(stats.get('uptime_s'))} "
         f"cpu {_fmt_temp(stats.get('cpu_temp_c'))} "
         f"load {_fmt_load(stats.get('load_1m'))} "
@@ -192,7 +192,7 @@ def dispatch_command(token: str, ctx: dict[str, Any]) -> str:
 
     `ctx` shape:
       {
-        "site_name": str,
+        "site_name": str,                        # only used by help
         "stats": dict (from compute_dm_stats),  # only used by stats
         "dm_remaining": int,                     # only used by stats
         "dm_per_hour": int,                      # only used by stats
@@ -202,7 +202,6 @@ def dispatch_command(token: str, ctx: dict[str, Any]) -> str:
         return build_help_reply(ctx["site_name"])
     if token == "stats":
         return build_stats_reply(
-            site_name=ctx["site_name"],
             stats=ctx["stats"],
             dm_remaining=ctx["dm_remaining"],
             dm_per_hour=ctx["dm_per_hour"],
