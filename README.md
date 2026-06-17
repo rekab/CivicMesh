@@ -304,6 +304,7 @@ AP configuration, package install, and the systemd unit's serial-device access.
 - weatherproof enclosure
 - USB ethernet adapter
 - battery/solar system
+- Victron BMV-712 battery monitor (for true battery-SoC telemetry over BLE — see [docs/victron-ble-setup.md](docs/victron-ble-setup.md))
 - Inkplate 6 e-paper display (for the external bulletin — see [`inkplate/`](inkplate/))
 
 ## Deployment
@@ -463,6 +464,7 @@ Radio / hardware:
 - [Recovery implementation](docs/recovery.md) — state machine, ladder, observability
 - [Heltec V3 recovery hardware reference](docs/heltec-recovery.md)
 - [Radio-debugging deep dive](docs/radio-debugging/README.md) — failure modes, boot, reset domains, test plan
+- [Victron BMV-712 battery monitor (BLE) setup](docs/victron-ble-setup.md) — key extraction, Pi BLE bring-up, smoke test, troubleshooting
 
 </details>
 

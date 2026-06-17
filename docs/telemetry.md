@@ -137,11 +137,59 @@ and boot-history (bits 16–19):
    first sample after process start, no event is emitted (no prior
    state to diff against).
 
+## Battery monitor (Victron BMV-712 over BLE)
+
+Optional. `power_monitor.py` passively listens to the BMV's encrypted BLE
+Instant Readout advertisements (~1/s, **no pairing or GATT connection**) and
+samples true battery state into `power_samples`. This SoC is the source of
+truth for battery state — distinct from `radio_samples.battery_mv`, which is the
+Heltec companion's coarse coil voltage. Surfaced on the DM `stats` reply (`bat`
+line) and `/api/stats` (`system.power`, with SoC/voltage sparklines).
+
+```sql
+CREATE TABLE IF NOT EXISTS power_samples (
+    ts INTEGER PRIMARY KEY,
+    soc REAL,             -- percent, e.g. 99.7
+    voltage_mv INTEGER,
+    current_ma INTEGER,   -- signed: negative = discharge
+    power_w REAL
+);
+```
+
+Every column except `ts` is nullable: the BMV reports fields as unavailable in
+normal operation (e.g. SoC before the shunt syncs after a reset), so a row may
+carry a valid voltage with a `NULL` soc. All surfaces render each field
+independently.
+
+**Source seam.** `PowerSource` (`power_monitor.py`) is the swappable transport
+contract — `read()` returns the latest normalized `Reading`. `BLESource` is the
+only implementation; a future wired `VEDirectSource` (VE.Direct serial, the
+`transport = "vedirect"` config value) can replace it without touching the
+sampler or schema. Normalization to mV/mA/percent lives in the source.
+
+**Sampling lifecycle.** When `[power_monitor] enabled = true`, `mesh_bot.py`
+adds `power_monitor.power_monitor_loop()` to its `asyncio.gather`. The loop runs
+two cooperating coroutines: a **scanner supervisor** (owns the BLE scanner,
+restarts on error/stall with capped backoff) and a **periodic sampler** (every
+`sample_interval_sec`, writes one row **only if the latest reading is fresh**;
+otherwise logs `power:gap` and skips). Skipping when stale means the latest
+`power_samples.ts` always marks the last good sample, so staleness is visible as
+`now − ts`. A **no-data watchdog** logs `power:no_adverts` if the scanner runs
+but decodes nothing within ~2 sample intervals — catching a wrong key/MAC/adapter
+that would otherwise look identical to "no signal".
+
+**Setup.** Device bring-up — extracting the key from VictronConnect, the Pi
+Bluetooth prerequisites (`rfkill`, `bluetooth.service`), installing the optional
+`[power]` extra, the `scripts/ble_smoke.py` bench test, and troubleshooting — is
+covered step-by-step in [`docs/victron-ble-setup.md`](victron-ble-setup.md). The
+`[power_monitor]` config block is documented in `config.toml.example`.
+
 ## Retention
 
 Pruning runs hourly in `_retention_task` (mesh_bot.py):
 
 - `telemetry_samples`: rows older than **7 days** are deleted
+- `radio_samples`, `power_samples`: rows older than **7 days** are deleted
 - `telemetry_events`: rows older than **30 days** are deleted
 
 ## `/api/stats` response shape

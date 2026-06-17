@@ -214,6 +214,37 @@ _DIAGNOSTICS_KNOWN_KEYS = frozenset({"enabled"})
 
 
 @dataclass(frozen=True)
+class PowerMonitorConfig:
+    """Victron BMV-712 battery monitor sampling (see power_monitor.py).
+
+    Default disabled so an absent [power_monitor] section = zero cost on the
+    majority of nodes that have no battery monitor (and don't install the
+    optional `[power]` dependency extra).
+    """
+    enabled: bool = False
+    # Source transport. "ble" (passive Victron Instant Readout) is the only
+    # implemented source; "vedirect" (wired serial) is the reserved future seam.
+    transport: str = "ble"
+    # BLE MAC of the BMV, e.g. "aa:bb:cc:dd:ee:ff".
+    mac: str = ""
+    # Per-device advertisement encryption key (hex), extracted from the
+    # VictronConnect app. Re-extract if the BMV is ever swapped.
+    encryption_key: str = ""
+    # How often a sample is written to power_samples. The BMV advertises ~1/s;
+    # we persist at this coarser cadence to avoid DB bloat.
+    sample_interval_sec: int = 60
+    # A reading older than this is treated as stale: the sampler logs a gap and
+    # skips the write (so the latest row's ts marks the last good sample).
+    # ~3 missed intervals.
+    stale_after_sec: int = 180
+
+
+_POWER_MONITOR_KNOWN_KEYS = frozenset(
+    {"enabled", "transport", "mac", "encryption_key", "sample_interval_sec", "stale_after_sec"}
+)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     node: NodeConfig
     network: NetworkConfig
@@ -228,6 +259,7 @@ class AppConfig:
     recovery: RecoveryConfig
     external_display: ExternalDisplayConfig
     diagnostics: DiagnosticsConfig
+    power_monitor: PowerMonitorConfig
     clock: ClockConfig
     # Required, no default. The previous "civic_mesh.db" fallback resolved
     # against cwd and silently landed on whatever sat in the working
@@ -429,6 +461,14 @@ def to_serializable_dict(cfg: AppConfig) -> dict[str, Any]:
         "debug": {"allow_eth0": cfg.debug.allow_eth0},
         "external_display": {"enabled": cfg.external_display.enabled},
         "diagnostics": {"enabled": cfg.diagnostics.enabled},
+        "power_monitor": {
+            "enabled": cfg.power_monitor.enabled,
+            "transport": cfg.power_monitor.transport,
+            "mac": cfg.power_monitor.mac,
+            "encryption_key": cfg.power_monitor.encryption_key,
+            "sample_interval_sec": cfg.power_monitor.sample_interval_sec,
+            "stale_after_sec": cfg.power_monitor.stale_after_sec,
+        },
         "clock": {
             "eval_interval_sec": cfg.clock.eval_interval_sec,
             "quorum_min_cookies": cfg.clock.quorum_min_cookies,
@@ -507,6 +547,7 @@ def load_config(path: str) -> AppConfig:
     recovery_raw = raw.get("recovery", {})
     external_display_raw = raw.get("external_display", {})
     diagnostics_raw = raw.get("diagnostics", {})
+    power_monitor_raw = raw.get("power_monitor", {})
     clock_raw = raw.get("clock", {})
 
     # Strict: unknown keys in [diagnostics] are rejected loudly. This is
@@ -522,6 +563,19 @@ def load_config(path: str) -> AppConfig:
             raise ValueError(
                 f"config: [diagnostics] has unknown key(s): {bad}. "
                 f"Known keys: {sorted(_DIAGNOSTICS_KNOWN_KEYS)}."
+            )
+
+    # Strict, same rationale as [diagnostics]: a typo'd key (e.g. `key` for
+    # `encryption_key`, or `address` for `mac`) would silently default and the
+    # monitor would scan nothing / decrypt nothing — a silent misconfiguration
+    # the operator was actively trying to make.
+    if isinstance(power_monitor_raw, dict):
+        unknown_pm = set(power_monitor_raw) - _POWER_MONITOR_KNOWN_KEYS
+        if unknown_pm:
+            bad = ", ".join(sorted(unknown_pm))
+            raise ValueError(
+                f"config: [power_monitor] has unknown key(s): {bad}. "
+                f"Known keys: {sorted(_POWER_MONITOR_KNOWN_KEYS)}."
             )
 
     db_path = raw.get("db_path") or raw.get("db", {}).get("path")
@@ -705,6 +759,14 @@ def load_config(path: str) -> AppConfig:
         ),
         diagnostics=DiagnosticsConfig(
             enabled=bool(diagnostics_raw.get("enabled", False)),
+        ),
+        power_monitor=PowerMonitorConfig(
+            enabled=bool(power_monitor_raw.get("enabled", False)),
+            transport=str(power_monitor_raw.get("transport", "ble")),
+            mac=str(power_monitor_raw.get("mac", "")),
+            encryption_key=str(power_monitor_raw.get("encryption_key", "")),
+            sample_interval_sec=int(power_monitor_raw.get("sample_interval_sec", 60)),
+            stale_after_sec=int(power_monitor_raw.get("stale_after_sec", 180)),
         ),
         clock=ClockConfig(
             eval_interval_sec=int(clock_raw.get("eval_interval_sec", 60)),

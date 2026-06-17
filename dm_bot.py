@@ -123,6 +123,23 @@ def _fmt_radio(radio: dict[str, Any]) -> str:
     return f"rf rssi{rssi_s} snr{snr_s} q{q_s} nf{nf_s}"
 
 
+def _fmt_power(power: dict[str, Any]) -> str:
+    """Compact battery line, e.g. 'bat 99.7% 13.2V -2.1A' (Victron BMV SoC).
+
+    Each field shows '?' independently when its sample is missing — the BMV
+    reports SoC as unavailable in normal operation (before the shunt syncs),
+    so soc can be null while voltage/current are valid. Current is signed:
+    negative = discharge. Bare numbers so it stays parseable.
+    """
+    soc = power.get("soc")
+    voltage_mv = power.get("voltage_mv")
+    current_ma = power.get("current_ma")
+    soc_s = "?" if soc is None else f"{soc:.1f}"
+    v_s = "?" if voltage_mv is None else f"{voltage_mv / 1000:.1f}"
+    a_s = "?" if current_ma is None else f"{current_ma / 1000:.1f}"
+    return f"bat {soc_s}% {v_s}V {a_s}A"
+
+
 def build_help_reply(site_name: str) -> str:
     """Reply to `help`. Short enough for one packet."""
     return (
@@ -144,13 +161,16 @@ def build_stats_reply(
     "CivicMesh @ <site>" line would just cost airtime. Dropping it also keeps
     the reply short enough that the trailing dms-left line survives instead of
     being chunked off the end. The `rts` line (radio hard-resets from failed
-    health checks) and the `rf` radio line still push past the ~150-char
-    single-packet target; the firmware chunks the rest.
+    health checks), the `bat` line (Victron BMV battery state), and the `rf`
+    radio line push past the ~150-char single-packet target; the firmware
+    chunks the rest. The `bat` line is always present; its fields read `?`
+    when no power_samples row exists yet (e.g. no BMV configured).
     """
     msgs = stats.get("msgs_sent") or {}
     sess = stats.get("wifi_sessions") or {}
     rts = stats.get("rts_resets") or {}
     radio = stats.get("radio") or {}
+    power = stats.get("power") or {}
     return (
         f"up {_fmt_uptime(stats.get('uptime_s'))} "
         f"cpu {_fmt_temp(stats.get('cpu_temp_c'))} "
@@ -158,6 +178,7 @@ def build_stats_reply(
         f"disk {_fmt_disk(stats.get('disk_free_kb'), stats.get('disk_total_kb'))}\n"
         f"rts 1h:{rts.get('1h', 0)} 24h:{rts.get('24h', 0)} "
         f"7d:{rts.get('7d', 0)}\n"
+        f"{_fmt_power(power)}\n"
         f"{_fmt_radio(radio)}\n"
         f"msg 1h:{msgs.get('1h', 0)} 24h:{msgs.get('24h', 0)} "
         f"7d:{msgs.get('7d', 0)}\n"

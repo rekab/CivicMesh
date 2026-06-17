@@ -265,6 +265,19 @@ CREATE TABLE IF NOT EXISTS radio_samples (
     rx_air_secs INTEGER
 );
 
+-- Battery state from the Victron BMV-712 (BLE Instant Readout). Distinct from
+-- radio_samples.battery_mv, which is the Heltec's coarse coil voltage; this is
+-- true pack state of charge / voltage / signed current sampled by power_monitor.
+-- soc is percent (e.g. 99.7); any field may be NULL when the BMV reports it
+-- unavailable (e.g. SoC before the shunt syncs).
+CREATE TABLE IF NOT EXISTS power_samples (
+    ts INTEGER PRIMARY KEY,
+    soc REAL,
+    voltage_mv INTEGER,
+    current_ma INTEGER,
+    power_w REAL
+);
+
 """
 
 
@@ -1489,6 +1502,12 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
         ).fetchone()
         radio_row = dict(radio) if radio else {}
 
+        power = conn.execute(
+            "SELECT soc, voltage_mv, current_ma, power_w "
+            "FROM power_samples ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        power_row = dict(power) if power else {}
+
         windows = [("1h", 3600), ("24h", 86400), ("7d", 604800)]
         msgs_sent: dict[str, int] = {}
         wifi_sessions: dict[str, int] = {}
@@ -1525,6 +1544,12 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
                 "tx_queue_len": radio_row.get("tx_queue_len"),
                 "noise_floor": radio_row.get("noise_floor"),
                 "uptime_s": radio_row.get("radio_uptime_s"),
+            },
+            "power": {
+                "soc": power_row.get("soc"),
+                "voltage_mv": power_row.get("voltage_mv"),
+                "current_ma": power_row.get("current_ma"),
+                "power_w": power_row.get("power_w"),
             },
             "rts_resets": rts_resets,
             "msgs_sent": msgs_sent,
@@ -2553,6 +2578,43 @@ def insert_radio_sample(
         conn.close()
 
 
+def insert_power_sample(
+    cfg: DBConfig,
+    *,
+    soc: Optional[float],
+    voltage_mv: Optional[int],
+    current_ma: Optional[int],
+    power_w: Optional[float],
+    log=None,
+    _ts_for_test: Optional[int] = None,
+) -> None:
+    """Insert a Victron BMV-712 battery sample. CIV-99: ts stamped inside the txn.
+
+    Any field may be None — the BMV reports SoC (and others) as unavailable in
+    normal operation (e.g. before the shunt syncs). Production callers MUST NOT
+    pass `_ts_for_test`.
+    """
+    conn = _connect(cfg)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ts = int(_ts_for_test) if _ts_for_test is not None else _wall_ts_in_txn(conn)
+            conn.execute(
+                "INSERT INTO power_samples (ts, soc, voltage_mv, current_ma, power_w) "
+                "VALUES (?,?,?,?,?)",
+                (ts, soc, voltage_mv, current_ma, power_w),
+            )
+            conn.execute("COMMIT")
+        except:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
 def insert_telemetry_event(
     cfg: DBConfig,
     *,
@@ -2668,6 +2730,7 @@ def prune_telemetry(
     try:
         conn.execute("DELETE FROM telemetry_samples WHERE ts < ?", (samples_cutoff_ts,))
         conn.execute("DELETE FROM radio_samples WHERE ts < ?", (samples_cutoff_ts,))
+        conn.execute("DELETE FROM power_samples WHERE ts < ?", (samples_cutoff_ts,))
         conn.execute("DELETE FROM telemetry_events WHERE ts < ?", (events_cutoff_ts,))
     finally:
         conn.close()
@@ -2726,6 +2789,21 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
             (now_ts - 3600,),
         ).fetchall()
         radio_1h = [dict(r) for r in radio_rows_1h]
+
+        # 8. Battery (Victron BMV) 1h samples for sparklines, plus a dedicated
+        # latest-row read. We deliberately do NOT derive the latest scalars from
+        # power_1h[-1] (the way radio does): the BMV can go stale > 1h, and a
+        # stale-but-real last value is more useful here than a blank tile.
+        power_rows_1h = conn.execute(
+            "SELECT ts, soc, voltage_mv FROM power_samples WHERE ts > ? ORDER BY ts",
+            (now_ts - 3600,),
+        ).fetchall()
+        power_1h = [dict(r) for r in power_rows_1h]
+        power_latest_row = conn.execute(
+            "SELECT ts, soc, voltage_mv, current_ma, power_w "
+            "FROM power_samples ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        power_latest = dict(power_latest_row) if power_latest_row else {}
     finally:
         conn.close()
 
@@ -2852,6 +2930,14 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
     noise_1h_values = [s["noise_floor"] for s in radio_1h if s.get("noise_floor") is not None]
     queue_1h_values = [s["tx_queue_len"] for s in radio_1h if s.get("tx_queue_len") is not None]
 
+    # Battery (Victron BMV): latest scalars from the dedicated LIMIT 1 read (so a
+    # stale-but-real value survives), 1h series for the chartable fields. Each
+    # field is independent — soc can be NULL while voltage is valid.
+    power_soc_1h_values = [s["soc"] for s in power_1h if s.get("soc") is not None]
+    power_voltage_1h_values = [s["voltage_mv"] for s in power_1h if s.get("voltage_mv") is not None]
+    power_latest_ts = power_latest.get("ts")
+    power_last_sample_age_s = (now_ts - power_latest_ts) if power_latest_ts is not None else None
+
     return {
         "now_ts": now_ts,
         "uptime_s": latest.get("uptime_s"),
@@ -2895,6 +2981,15 @@ def _build_system_telemetry(cfg: DBConfig, now_ts: int, log=None) -> dict:
             "snr_1h_series": {"sample_sec": 60, "values": snr_1h_values},
             "noise_1h_series": {"sample_sec": 60, "values": noise_1h_values},
             "queue_1h_series": {"sample_sec": 60, "values": queue_1h_values},
+        },
+        "power": {
+            "soc": power_latest.get("soc"),
+            "voltage_mv": power_latest.get("voltage_mv"),
+            "current_ma": power_latest.get("current_ma"),
+            "power_w": power_latest.get("power_w"),
+            "last_sample_age_s": power_last_sample_age_s,
+            "soc_1h_series": {"sample_sec": 60, "values": power_soc_1h_values},
+            "voltage_1h_series": {"sample_sec": 60, "values": power_voltage_1h_values},
         },
         "throttle_events_24h": throttle_events_24h,
         "events_24h": {

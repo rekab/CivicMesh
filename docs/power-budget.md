@@ -81,6 +81,13 @@ done | tee -a overnight.log
 | Pi reboots | 0 |
 | Pings dropped (from the Mac) | 0 |
 
+> Note (added later): this characterization inferred battery state from inline
+> USB meters and the UGREEN charge-% (Test 2). Nodes fitted with a **Victron
+> BMV-712** now sample true battery State of Charge / voltage / current into the
+> `power_samples` table — a more direct signal than `vcgencmd measure_volts` for
+> future runtime measurements. See [victron-ble-setup.md](victron-ble-setup.md)
+> and [telemetry.md](telemetry.md) § "Battery monitor".
+
 ### Key finding: CPU is not the bottleneck
 
 The load average distribution during sustained 3-client serving stayed near zero. 78 samples at 0.00, 51 at 0.01, tapering down. This means the Pi Zero 2W handled the SQLite queries and JSON serialization for 3 concurrent clients with trivial CPU cost. The ~0.85 W delta above the light-load baseline is almost certainly attributable to **WiFi radio activity** (sustained TX of 14–19 KB responses every ~20 seconds across 3 clients) and **SD card I/O**, not processing.

@@ -147,6 +147,41 @@ enabled = false
 [diagnostics]
 enabled = false
 
+# Optional Victron BMV-712 battery monitor (power_monitor.py). When
+# enabled = false (the default), the BLE sampler never starts and the
+# node needs none of the [power] dependency extra — most nodes have no
+# battery monitor. Set enabled = true ONLY on a node with a BMV, and
+# install the deps there: `uv pip install '.[power]'` (pulls bleak +
+# pycryptodome; ships aarch64 wheels for offline zero2w). Headless-Pi
+# prereq: Bluetooth must be unblocked and up — `rfkill unblock bluetooth`,
+# `bluetooth.service` running; a one-time `bluetoothctl` `scan on` may be
+# needed before passive scanning works. Full bring-up + key extraction:
+# docs/victron-ble-setup.md.
+#
+# Unknown keys here are rejected loudly (like [diagnostics]): a typo such
+# as `address` for `mac` or `key` for `encryption_key` would otherwise
+# silently scan/decrypt nothing. This file holds a secret (the key) —
+# `chmod 600`. [runtime] (consumed by mesh_bot only).
+[power_monitor]
+enabled = false
+# Source transport. "ble" (passive Victron Instant Readout) is the only
+# implemented source. "vedirect" (wired VE.Direct serial) is reserved for
+# a future source and currently raises NotImplementedError if selected.
+transport = "ble"
+# BLE MAC of the BMV (lowercase, colon-separated).
+mac = "aa:bb:cc:dd:ee:ff"
+# Per-device advertisement encryption key (hex), copied from the
+# VictronConnect app (Device > Settings > Product info > "Instant readout
+# via Bluetooth"). It is PER DEVICE: re-extract it if the BMV is ever
+# swapped, or decryption will silently fail.
+encryption_key = "0123456789abcdef0123456789abcdef"
+# How often a sample is written to power_samples. The BMV advertises ~1/s;
+# we persist at this coarser cadence to avoid DB bloat.
+sample_interval_sec = 60
+# A reading older than this is treated stale: the sampler logs a gap and
+# skips the write, so the latest row's ts marks the last good sample.
+stale_after_sec = 180
+
 # CIV-99 wall-clock-correction tuning. CivicMesh maintains its own
 # corrected message time using:
 #

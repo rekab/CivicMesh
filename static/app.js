@@ -1265,6 +1265,8 @@ function healthOf(metric, value) {
     case "radio_snr":    return value < -10 ? "crit" : value < 0 ? "warn" : "ok";
     case "radio_queue":  return value > 20 ? "crit" : value > 5 ? "warn" : "ok";
     case "rts_resets":   return value > 5 ? "crit" : value > 0 ? "warn" : "ok";
+    // Battery state of charge (Victron BMV). Lower is worse.
+    case "battery_soc":  return value < 20 ? "crit" : value < 40 ? "warn" : "ok";
   }
   return "ok";
 }
@@ -1302,6 +1304,10 @@ function renderSysHealth(sys, rtsResets) {
   h.radioRssi  = healthOf("radio_rssi", radio.last_rssi);
   h.radioSnr   = healthOf("radio_snr", radio.last_snr);
   h.radioQueue = healthOf("radio_queue", radio.tx_queue_len);
+  var power = sys.power || {};
+  // SoC drives the battery tile's status; voltage is shown neutrally. Each is
+  // independent — soc can be null (BMV not yet synced) while voltage is valid.
+  h.batterySoc = healthOf("battery_soc", power.soc);
   h.rts        = healthOf("rts_resets", rtsResets ? rtsResets.day : null);
   var throttleEvents = sys.throttle_events_24h || [];
   h.throttle = throttleEvents.length > 0 ? "warn" : "ok";
@@ -1389,6 +1395,32 @@ function renderSysHealth(sys, rtsResets) {
     sys.disk.series_24h && sys.disk.series_24h.values, sparkColor(h.disk));
   var mDiskSub = $("mDiskSub");
   if (mDiskSub && diskPct != null) mDiskSub.textContent = diskPct.toFixed(0) + "% of " + fmtMb(sys.disk.total_mb);
+
+  // Battery (Victron BMV). Per-field: SoC and voltage each render "—" when
+  // their own value is null, so a row with soc=null but valid voltage shows a
+  // blank SoC tile and a populated voltage tile.
+  applyMetric("mBatterySoc", "mBatterySocVal", "mBatterySocSpark",
+    power.soc, h.batterySoc,
+    function(v) { return v == null ? "—" : v.toFixed(1) + "%"; },
+    power.soc_1h_series && power.soc_1h_series.values, sparkColor(h.batterySoc));
+  // SoC sub: signed current + power (each independent), plus a stale note when
+  // the last sample is old (the sampler skips writes while the BMV is silent).
+  var mBatterySocSub = $("mBatterySocSub");
+  if (mBatterySocSub) {
+    var parts = [];
+    if (power.current_ma != null) parts.push((power.current_ma / 1000).toFixed(1) + " A");
+    if (power.power_w != null) parts.push(Math.round(power.power_w) + " W");
+    var sub = parts.length ? parts.join(" · ") : "—";
+    if (power.last_sample_age_s != null && power.last_sample_age_s > 300) {
+      sub += " · stale " + Math.round(power.last_sample_age_s / 60) + "m";
+    }
+    mBatterySocSub.textContent = sub;
+  }
+
+  applyMetric("mBatteryVolt", "mBatteryVoltVal", "mBatteryVoltSpark",
+    power.voltage_mv, "ok",
+    function(v) { return v == null ? "—" : (v / 1000).toFixed(2) + " V"; },
+    power.voltage_1h_series && power.voltage_1h_series.values, sparkColor("ok"));
 
   // Companion radio
   applyMetric("mRadioRssi", "mRadioRssiVal", "mRadioRssiSpark",

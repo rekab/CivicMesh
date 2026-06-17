@@ -403,6 +403,21 @@
           <div class="sys-metric__sub" id="mDiskSub">&mdash;</div>
           <div class="sys-metric__spark" id="mDiskSpark"></div>
         </div>
+        <!-- Battery (Victron BMV-712 over BLE). SoC is true state of charge,
+             distinct from the radio's coarse coil voltage. Each field renders
+             independently; '—' when its sample is missing. -->
+        <div class="sys-metric" id="mBatterySoc">
+          <div class="sys-metric__lbl">Battery SoC</div>
+          <div class="sys-metric__val" id="mBatterySocVal">&mdash;</div>
+          <div class="sys-metric__sub" id="mBatterySocSub">&mdash;</div>
+          <div class="sys-metric__spark" id="mBatterySocSpark"></div>
+        </div>
+        <div class="sys-metric" id="mBatteryVolt">
+          <div class="sys-metric__lbl">Battery voltage</div>
+          <div class="sys-metric__val" id="mBatteryVoltVal">&mdash;</div>
+          <div class="sys-metric__sub">BMV-712</div>
+          <div class="sys-metric__spark" id="mBatteryVoltSpark"></div>
+        </div>
         <!-- Companion-radio stats (get_stats_core / get_stats_radio). RSSI/SNR
              are the last-heard-packet link quality; TX queue is the radio's
              send backlog; RTS resets counts health-check-triggered hard resets. -->

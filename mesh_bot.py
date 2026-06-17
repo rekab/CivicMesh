@@ -60,6 +60,7 @@ from database import (
 )
 import dm_bot
 import telemetry
+import power_monitor
 import clock
 import process_lock
 from clock import wall_now
@@ -1467,7 +1468,7 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         info = getattr(client, "self_info", None) or {}
         return info.get("name") if isinstance(info, dict) else None
 
-    await asyncio.gather(
+    tasks = [
         _outbox_task(
             cfg, db_cfg, log, controller, channel_name_to_idx,
             active_outbox, _self_name, egress_bucket,
@@ -1483,7 +1484,13 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         ),
         liveness_task(controller, log),
         recovery_task(controller, _setup_fn, log),
-    )
+    ]
+    # Only nodes with a Victron BMV run the BLE sampler — keeps the BLE deps
+    # (the [power] extra) and radio time off every other node.
+    if cfg.power_monitor.enabled:
+        tasks.append(power_monitor.power_monitor_loop(cfg.power_monitor, db_cfg, log))
+
+    await asyncio.gather(*tasks)
 
 
 # Module-scope so the kernel holds the flock for the process lifetime.

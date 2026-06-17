@@ -20,6 +20,10 @@ TODO.md
 # exported X25519 private key. Per-run only; never source.
 /*.lo*
 
+# App runtime logs (mesh_bot / web_server / security), written under logs/
+# by the logger. Per-run operational data; never source.
+logs/
+
 # CivicMesh radio diagnostics — harness source is tracked, runs are not.
 diagnostics/radio/runs/*
 !diagnostics/radio/runs/.gitkeep
