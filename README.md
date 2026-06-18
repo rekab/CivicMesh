@@ -156,6 +156,13 @@ messages land in the same database and become readable in the
 portal. The radio link is best-effort; nothing in the local
 read/post path depends on it.
 
+Nodes run on a Pi Zero with no RTC and no internet to NTP against,
+so wall-clock time is derived from the walk-up phones themselves:
+each browser reports its clock, the mesh process takes a consensus
+(median, quorum-gated) of those votes, and stores the result as an
+offset added to every timestamped write — the OS clock is never set
+from bot code. See [docs/clock_consensus.md](docs/clock_consensus.md).
+
 ## Where this fits
 
 Emergency comms is a ladder. Each tier trades capability for
@@ -455,6 +462,7 @@ Deployment and operations:
 - [Telemetry](docs/telemetry.md)
 
 Feature designs:
+- [Wall-clock correction (CIV-99)](docs/clock_consensus.md) — offset-on-write time correction from walk-up phone consensus, for RTC-less offline nodes
 - [Message lifecycle](docs/message_lifecycle.md) — outbox state machine
 - [Heard-count / echo tracking](docs/heard_count_design.md)
 - [Reference documents](docs/hub-reference-library.md) — offline PDFs served from the captive portal; Hub Reference Library is the first content set

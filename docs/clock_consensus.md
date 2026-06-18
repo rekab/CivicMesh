@@ -182,6 +182,16 @@ per device. Cookies without ARP-resolvable MACs count independently.
 (default 3). Lower would let a single bad phone steer; higher would
 delay convergence at small sites.
 
+**Median, including the even-voter case.** `candidate_offset` is
+`round(statistics.median(votes))`. For an odd voter count this is the
+middle vote (the typical case — the default quorum of 3 makes the
+smallest accepted population odd). For an *even* count, Python's
+`statistics.median` returns the **mean of the two middle votes**, so
+the candidate can be a value no single phone reported (then rounded to
+an integer second). This is intentional — it's still robust to a
+single outlier clock — but note it means the result is not always a
+verbatim client vote. Code: `clock.evaluate_consensus`, `clock.py`.
+
 **Sanity bound.** `[sanity_floor_epoch, sanity_ceiling_epoch]`, both
 **absolute** epochs. **NOT raw-relative** — the very scenario this
 feature exists for is a stale raw clock, and a ceiling computed as
