@@ -53,10 +53,12 @@ def _err(payload=None) -> _Event:
     return _Event(type=_ET.ERROR, payload=payload or {})
 
 
-def _make_cfg(site_name="TestNode", dm_per_hour=6):
+def _make_cfg(site_name="TestNode", dm_per_hour=6, power_stale_after_sec=180):
     return types.SimpleNamespace(
         node=types.SimpleNamespace(site_name=site_name),
         limits=types.SimpleNamespace(dm_responses_per_hour=dm_per_hour),
+        # _process_dm reads stale_after_sec to gate the battery line freshness.
+        power_monitor=types.SimpleNamespace(stale_after_sec=power_stale_after_sec),
     )
 
 

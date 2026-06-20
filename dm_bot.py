@@ -161,16 +161,26 @@ def build_stats_reply(
     "CivicMesh @ <site>" line would just cost airtime. Dropping it also keeps
     the reply short enough that the trailing dms-left line survives instead of
     being chunked off the end. The `rts` line (radio hard-resets from failed
-    health checks), the `bat` line (Victron BMV battery state), and the `rf`
-    radio line push past the ~150-char single-packet target; the firmware
-    chunks the rest. The `bat` line is always present; its fields read `?`
-    when no power_samples row exists yet (e.g. no BMV configured).
+    health checks) and the `rf` radio line push past the ~150-char
+    single-packet target; the firmware chunks the rest.
+
+    The `bat` line (Victron BMV battery state) is OPTIONAL: it appears only
+    when `stats["power"]` is present with a non-null field — compute_dm_stats
+    omits that key when no monitor is configured or the latest sample is
+    stale, so a node without a (working) BMV spends no airtime on an empty
+    `bat ?% ?V ?A`. When shown, individual fields still read `?` if that one
+    field was unavailable (e.g. SoC before the shunt syncs).
     """
     msgs = stats.get("msgs_sent") or {}
     sess = stats.get("wifi_sessions") or {}
     rts = stats.get("rts_resets") or {}
     radio = stats.get("radio") or {}
     power = stats.get("power") or {}
+    has_power = any(
+        power.get(k) is not None
+        for k in ("soc", "voltage_mv", "current_ma", "power_w")
+    )
+    bat_line = f"{_fmt_power(power)}\n" if has_power else ""
     return (
         f"up {_fmt_uptime(stats.get('uptime_s'))} "
         f"cpu {_fmt_temp(stats.get('cpu_temp_c'))} "
@@ -178,7 +188,7 @@ def build_stats_reply(
         f"disk {_fmt_disk(stats.get('disk_free_kb'), stats.get('disk_total_kb'))}\n"
         f"rts 1h:{rts.get('1h', 0)} 24h:{rts.get('24h', 0)} "
         f"7d:{rts.get('7d', 0)}\n"
-        f"{_fmt_power(power)}\n"
+        f"{bat_line}"
         f"{_fmt_radio(radio)}\n"
         f"msg 1h:{msgs.get('1h', 0)} 24h:{msgs.get('24h', 0)} "
         f"7d:{msgs.get('7d', 0)}\n"

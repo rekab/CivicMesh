@@ -208,13 +208,53 @@ class BuildStatsReplyTest(unittest.TestCase):
         self.assertIn("rts 1h:0 24h:0 7d:0", reply)
         self.assertIn("rf rssi? snr? q? nf?", reply)
 
+    def test_omits_battery_line_when_no_power(self) -> None:
+        # _STATS has no "power" key (no BMV / no fresh sample): the bat line
+        # must be absent entirely, not rendered as empty `bat ?% ?V ?A`.
+        reply = dm_bot.build_stats_reply(
+            stats=_STATS, dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertNotIn("bat", reply)
+
+    def test_omits_battery_line_when_all_fields_null(self) -> None:
+        # A present-but-empty power dict (defensive; compute_dm_stats already
+        # omits it) must still drop the line rather than send all '?'.
+        stats = dict(_STATS, power={
+            "soc": None, "voltage_mv": None, "current_ma": None, "power_w": None,
+        })
+        reply = dm_bot.build_stats_reply(
+            stats=stats, dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertNotIn("bat", reply)
+
+    def test_includes_battery_line_when_present(self) -> None:
+        stats = dict(_STATS, power={
+            "soc": 99.7, "voltage_mv": 13200, "current_ma": -2100, "power_w": -27.7,
+        })
+        reply = dm_bot.build_stats_reply(
+            stats=stats, dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("bat 99.7% 13.2V -2.1A", reply)
+
+    def test_battery_line_shown_with_partial_fields(self) -> None:
+        # SoC unavailable (e.g. before the shunt syncs) but voltage/current
+        # valid: the line is still worth sending, with soc as '?'.
+        stats = dict(_STATS, power={
+            "soc": None, "voltage_mv": 13200, "current_ma": -2100, "power_w": None,
+        })
+        reply = dm_bot.build_stats_reply(
+            stats=stats, dm_remaining=3, dm_per_hour=6,
+        )
+        self.assertIn("bat ?% 13.2V -2.1A", reply)
+
     def test_compact_overall_length(self) -> None:
-        # Include the radio + rts lines so the cap is checked against the
-        # full reply, not the pre-CIV-radio-stats subset.
+        # Include the radio + rts + bat lines so the cap is checked against the
+        # longest possible reply, not a subset.
         stats = dict(
             _STATS,
             radio={"last_rssi": -92, "last_snr": 6.0, "tx_queue_len": 0, "noise_floor": -115},
             rts_resets={"1h": 0, "24h": 1, "7d": 2},
+            power={"soc": 99.7, "voltage_mv": 13200, "current_ma": -2100, "power_w": -27.7},
         )
         reply = dm_bot.build_stats_reply(
             stats=stats, dm_remaining=3, dm_per_hour=6,

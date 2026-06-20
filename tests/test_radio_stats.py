@@ -15,6 +15,7 @@ from database import (
     compute_dm_stats,
     compute_stats,
     init_db,
+    insert_power_sample,
     insert_radio_sample,
     insert_telemetry_event,
 )
@@ -106,6 +107,41 @@ class RtsResetCounterTest(_DBTestBase):
         dm = compute_dm_stats(self.cfg, _NOW)
         self.assertEqual(dm["rts_resets"], {"1h": 0, "24h": 0, "7d": 0})
         self.assertIsNone(dm["radio"]["last_rssi"])
+
+
+class PowerDmStatsTest(_DBTestBase):
+    """The optional `power` key in compute_dm_stats: present only for a fresh,
+    non-null battery sample, so the DM reply can drop the line otherwise."""
+
+    def _power(self, *, ts, **overrides) -> None:
+        fields = dict(soc=99.7, voltage_mv=13200, current_ma=-2100, power_w=-27.7)
+        fields.update(overrides)
+        insert_power_sample(self.cfg, _ts_for_test=ts, **fields)
+
+    def test_power_omitted_when_no_samples(self) -> None:
+        self.assertNotIn("power", compute_dm_stats(self.cfg, _NOW, power_max_age_sec=180))
+
+    def test_power_present_when_fresh(self) -> None:
+        self._power(ts=_NOW - 30)
+        dm = compute_dm_stats(self.cfg, _NOW, power_max_age_sec=180)
+        self.assertEqual(dm["power"]["soc"], 99.7)
+        self.assertEqual(dm["power"]["voltage_mv"], 13200)
+
+    def test_power_omitted_when_stale(self) -> None:
+        # Latest sample older than the window → omit (source down / BLE dropped).
+        self._power(ts=_NOW - 9000)
+        self.assertNotIn("power", compute_dm_stats(self.cfg, _NOW, power_max_age_sec=180))
+
+    def test_power_omitted_when_all_fields_null(self) -> None:
+        self._power(ts=_NOW - 30, soc=None, voltage_mv=None, current_ma=None, power_w=None)
+        self.assertNotIn("power", compute_dm_stats(self.cfg, _NOW, power_max_age_sec=180))
+
+    def test_power_present_with_partial_fields(self) -> None:
+        # SoC unavailable but voltage/current valid → still surfaced.
+        self._power(ts=_NOW - 30, soc=None, power_w=None)
+        dm = compute_dm_stats(self.cfg, _NOW, power_max_age_sec=180)
+        self.assertIsNone(dm["power"]["soc"])
+        self.assertEqual(dm["power"]["voltage_mv"], 13200)
 
 
 if __name__ == "__main__":

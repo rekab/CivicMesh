@@ -1050,7 +1050,11 @@ async def _process_dm(
         )
         return
     stats = await asyncio.to_thread(
-        compute_dm_stats, db_cfg, wall_now(db_cfg), log=log,
+        compute_dm_stats, db_cfg, wall_now(db_cfg),
+        # Reuse the sampler's stale gate as the DM-display freshness window:
+        # if no fresh sample has been persisted within stale_after_sec, the
+        # BLE source is effectively down, so drop the battery line.
+        power_max_age_sec=cfg.power_monitor.stale_after_sec, log=log,
     )
     ctx = {
         "site_name": cfg.node.site_name,

@@ -1474,7 +1474,9 @@ def touch_contact_last_seen(
         conn.close()
 
 
-def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
+def compute_dm_stats(
+    cfg: DBConfig, now_ts: int, power_max_age_sec: int = 180, log=None
+) -> dict[str, Any]:
     """Compact stat snapshot for the DM `stats` reply.
 
     Reads the latest telemetry_samples row for system metrics (uptime,
@@ -1484,8 +1486,14 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
     1h/24h/7d windows. Returns a flat dict so the reply formatter can
     iterate it without surprises.
 
+    The optional `power` key (Victron battery) is present ONLY when the
+    latest power_samples row is within power_max_age_sec and carries a
+    non-null field; otherwise it is omitted so the DM reply drops the
+    battery line entirely (no monitor, or source stale/down). Callers
+    pass the node's power_monitor.stale_after_sec as the window.
+
     Cheaper than compute_stats() (the /api/stats source): three windowed
-    SELECTs per window + two LIMIT 1 reads for the latest samples, versus
+    SELECTs per window + three LIMIT 1 reads for the latest samples, versus
     the nested system telemetry build plus its full series queries.
     """
     conn = _connect(cfg)
@@ -1503,7 +1511,7 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
         radio_row = dict(radio) if radio else {}
 
         power = conn.execute(
-            "SELECT soc, voltage_mv, current_ma, power_w "
+            "SELECT ts, soc, voltage_mv, current_ma, power_w "
             "FROM power_samples ORDER BY ts DESC LIMIT 1"
         ).fetchone()
         power_row = dict(power) if power else {}
@@ -1532,7 +1540,27 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
             ).fetchone()
             rts_resets[label] = row["n"] if row else 0
 
-        return {
+        # Battery: include the `power` key only when there's a *fresh* sample
+        # carrying at least one real field. A missing table, an all-NULL row,
+        # or a sample older than power_max_age_sec (BLE source down / dropped)
+        # omits the key entirely — the DM formatter then drops the line rather
+        # than spending airtime on `bat ?% ?V ?A`. The radio block above is
+        # unconditional by contrast: its `?` fields are cheap and the radio is
+        # always present, whereas a battery monitor is optional hardware.
+        power_payload = None
+        if power_row:
+            power_ts = power_row.get("ts")
+            fresh = power_ts is not None and (now_ts - power_ts) <= power_max_age_sec
+            fields = {
+                "soc": power_row.get("soc"),
+                "voltage_mv": power_row.get("voltage_mv"),
+                "current_ma": power_row.get("current_ma"),
+                "power_w": power_row.get("power_w"),
+            }
+            if fresh and any(v is not None for v in fields.values()):
+                power_payload = fields
+
+        result = {
             "uptime_s": latest_row.get("uptime_s"),
             "cpu_temp_c": latest_row.get("cpu_temp_c"),
             "load_1m": latest_row.get("load_1m"),
@@ -1545,16 +1573,13 @@ def compute_dm_stats(cfg: DBConfig, now_ts: int, log=None) -> dict[str, Any]:
                 "noise_floor": radio_row.get("noise_floor"),
                 "uptime_s": radio_row.get("radio_uptime_s"),
             },
-            "power": {
-                "soc": power_row.get("soc"),
-                "voltage_mv": power_row.get("voltage_mv"),
-                "current_ma": power_row.get("current_ma"),
-                "power_w": power_row.get("power_w"),
-            },
             "rts_resets": rts_resets,
             "msgs_sent": msgs_sent,
             "wifi_sessions": wifi_sessions,
         }
+        if power_payload is not None:
+            result["power"] = power_payload
+        return result
     finally:
         conn.close()
 

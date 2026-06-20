@@ -144,7 +144,8 @@ Instant Readout advertisements (~1/s, **no pairing or GATT connection**) and
 samples true battery state into `power_samples`. This SoC is the source of
 truth for battery state — distinct from `radio_samples.battery_mv`, which is the
 Heltec companion's coarse coil voltage. Surfaced on the DM `stats` reply (`bat`
-line) and `/api/stats` (`system.power`, with SoC/voltage sparklines).
+line — shown only when a fresh sample exists, otherwise omitted to save airtime)
+and `/api/stats` (`system.power`, with SoC/voltage sparklines).
 
 ```sql
 CREATE TABLE IF NOT EXISTS power_samples (

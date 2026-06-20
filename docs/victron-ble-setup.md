@@ -147,8 +147,12 @@ sqlite3 <db_path> \
 Values should be sane and match the app; current is **signed** (negative =
 discharging).
 
-**DM `stats`** — DM the node `stats`; the reply includes a `bat` line, e.g.
-`bat 99.7% 13.2V -2.1A`. Fields read `?` individually when a sample is missing.
+**DM `stats`** — DM the node `stats`; once a fresh sample exists the reply
+includes a `bat` line, e.g. `bat 99.7% 13.2V -2.1A`. The line is omitted
+entirely when no monitor is configured or the latest sample is stale (older than
+`stale_after_sec`), so a node without a working BMV spends no airtime on it. When
+shown, an individual field reads `?` if just that value was unavailable (e.g. SoC
+before the shunt syncs).
 
 **Web** — `curl -s http://<node>/api/stats | jq .system.power` shows the latest
 scalars, `last_sample_age_s`, and the SoC/voltage 1h series. The stats page
