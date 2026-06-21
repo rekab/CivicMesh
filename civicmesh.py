@@ -855,7 +855,21 @@ def _cmd_power_test(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    log, _ = setup_logging("civicmesh-power-test", cfg.logging)
+    # A read-only diagnostic, run interactively (often `sudo -u civicmesh`)
+    # from an arbitrary cwd — so it must NOT go through setup_logging, which
+    # creates the runtime log dir. cfg.log_dir is relative (e.g. "var/logs")
+    # and only resolves under the systemd unit's WorkingDirectory; from ~ it
+    # would try to mkdir "var/" and EACCES. Log decode/scanner errors to
+    # stderr instead, leaving stdout clean for the one result line. Mirrors
+    # scripts/ble_smoke.py, which likewise uses a console logger.
+    import logging
+
+    log = logging.getLogger("civicmesh-power-test")
+    if not log.handlers:
+        _handler = logging.StreamHandler(sys.stderr)
+        _handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        log.addHandler(_handler)
+    log.setLevel(logging.INFO)
     if not pm.enabled:
         print("note: [power_monitor].enabled=false (sampler is off); probing anyway.")
     print(f"listening for {pm.mac} for up to {args.duration:.0f}s (passive scan)…")

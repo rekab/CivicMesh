@@ -23,6 +23,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import civicmesh
 import power_monitor
@@ -170,6 +171,22 @@ class PowerTestCommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             code, _ = self._run(self._config(Path(d), dict(self._GOOD_PM)))
         self.assertEqual(code, 1)
+
+    def test_does_not_use_file_logging(self) -> None:
+        # Regression: power-test is read-only and run interactively (often
+        # `sudo -u civicmesh`) from an arbitrary cwd, so it must NOT go through
+        # setup_logging — that mkdir's the relative log_dir ("var/logs") and
+        # EACCES'd from ~. Fail if setup_logging is reached at all.
+        self._patch_probe((True, Reading(soc=50.0, voltage_mv=12800, current_ma=0, power_w=0.0)))
+
+        def _boom(*a, **k):
+            raise AssertionError("power-test must not call setup_logging")
+
+        with mock.patch("civicmesh.setup_logging", _boom):
+            with tempfile.TemporaryDirectory() as d:
+                code, out = self._run(self._config(Path(d), dict(self._GOOD_PM)))
+        self.assertEqual(code, 0)
+        self.assertIn("SoC=50.0%", out)
 
     def test_empty_mac_exit_2(self) -> None:
         # No probe patch needed: the empty-credential guard fires first.
