@@ -42,3 +42,11 @@ portal_aliases = ["civicmesh.internal"]
 [logging]
 log_dir = "var/logs"
 log_level = "WARNING"
+
+# Required by tests/test_apply_ordering.py: that suite mocks subprocess.run, so
+# the CIV-99 timesyncd-mask pre-flight in _cmd_apply reads a MagicMock state and
+# would exit 7 before reaching the systemctl sequence it means to test. Opting
+# out of the mask check here lets the ordering assertions run. No renderer reads
+# this flag, so the goldens in goldens/minimal/ stay byte-identical.
+[clock]
+require_timesync_masked = false

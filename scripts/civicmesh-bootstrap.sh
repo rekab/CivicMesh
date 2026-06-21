@@ -122,7 +122,13 @@ apt-get update -qq
 apt-get install -qq -y \
     git curl python3 python3-venv \
     hostapd dnsmasq nftables \
-    rfkill network-manager
+    rfkill network-manager \
+    bluez
+# bluez (bluetoothd + bluetoothctl) is only used by nodes with a Victron BMV
+# battery monitor, but it's small and ships on Pi OS anyway; installing it
+# unconditionally keeps `civicmesh apply`'s power-monitor branch from failing
+# on a node that later gets a BMV. The radio itself stays blocked until apply
+# enables it (see the rfkill-unblock-bluetooth unit below + _cmd_apply).
 ok "packages installed"
 
 # =============================================================================
@@ -245,8 +251,33 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
+    # Bluetooth unblock for the Victron BMV battery monitor. Installed here
+    # (host-level unit, like the WiFi one above) but left DISABLED: unlike
+    # WiFi, BT is only wanted on nodes with a battery monitor, so `civicmesh
+    # apply` enables this unit iff [power_monitor].enabled and disables +
+    # rfkill-blocks it otherwise (combo-chip coexistence + power). Ordered
+    # after bluetooth.service so `bluetoothctl power on` has a running daemon.
+    info "installing /etc/systemd/system/rfkill-unblock-bluetooth.service (disabled)..."
+    cat > /etc/systemd/system/rfkill-unblock-bluetooth.service <<'EOF'
+[Unit]
+Description=Unblock + power Bluetooth for the CivicMesh battery monitor
+After=bluetooth.service
+Wants=bluetooth.service
+Before=civicmesh-mesh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+ExecStartPost=-/usr/bin/bluetoothctl power on
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     systemctl daemon-reload
     systemctl enable rfkill-unblock-wifi.service
+    # rfkill-unblock-bluetooth is intentionally NOT enabled here; apply owns it.
     ok "rfkill unblock configured"
 else
     warn "rfkill not available; skipping (unusual on Pi OS)"

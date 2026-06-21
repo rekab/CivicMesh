@@ -57,6 +57,7 @@ class ApplyOrderingTest(unittest.TestCase):
              patch("apply.driver.plan", return_value=_stub_plan()), \
              patch("apply.driver.apply_plan"), \
              patch("apply.validate.validate_plan", return_value=[]), \
+             patch("civicmesh._migrate_logs_civ_104"), \
              patch("subprocess.run") as mock_run:
             with self.assertRaises(SystemExit) as ctx:
                 civicmesh._cmd_apply(_ns())
@@ -69,8 +70,48 @@ class ApplyOrderingTest(unittest.TestCase):
              "rfkill-unblock-wifi", "systemd-networkd"],
             ["systemctl", "disable", "wpa_supplicant.service"],
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
+            # power_monitor disabled in the fixture -> active-down branch.
+            ["systemctl", "disable", "--now",
+             "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+            ["rfkill", "block", "bluetooth"],
+            ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/civicmesh.conf"],
             ["systemctl", "restart", "civicmesh-web", "civicmesh-mesh"],
         ])
+
+    def test_power_monitor_enabled_unblocks_bluetooth(self) -> None:
+        """With [power_monitor].enabled, apply enables (not blocks) the BT
+        unblock unit + bluetoothd, and skips the active-down teardown."""
+        import dataclasses
+
+        base = civicmesh.load_config(str(_MINIMAL_CONFIG))
+        cfg = dataclasses.replace(
+            base,
+            power_monitor=dataclasses.replace(base.power_monitor, enabled=True),
+        )
+        with patch("civicmesh._MODE", "prod"), \
+             patch("civicmesh.os.geteuid", return_value=0), \
+             patch("config.load_config", return_value=cfg), \
+             patch("apply.driver.plan", return_value=_stub_plan()), \
+             patch("apply.driver.apply_plan"), \
+             patch("apply.validate.validate_plan", return_value=[]), \
+             patch("civicmesh._migrate_logs_civ_104"), \
+             patch("subprocess.run") as mock_run:
+            with self.assertRaises(SystemExit) as ctx:
+                civicmesh._cmd_apply(_ns())
+        self.assertEqual(ctx.exception.code, 0)
+        argvs = [c[0][0] for c in mock_run.call_args_list]
+        self.assertIn(
+            ["systemctl", "enable", "--now",
+             "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+            argvs,
+        )
+        # Active-down must NOT run while the monitor is enabled.
+        self.assertNotIn(["rfkill", "block", "bluetooth"], argvs)
+        self.assertNotIn(
+            ["systemctl", "disable", "--now",
+             "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+            argvs,
+        )
 
     def test_skips_app_restart_when_no_civicmesh_unit_changed(self) -> None:
         """If no civicmesh-*.service file changed, the app restart is
@@ -85,6 +126,7 @@ class ApplyOrderingTest(unittest.TestCase):
              patch("apply.driver.plan", return_value=plan), \
              patch("apply.driver.apply_plan"), \
              patch("apply.validate.validate_plan", return_value=[]), \
+             patch("civicmesh._migrate_logs_civ_104"), \
              patch("subprocess.run") as mock_run:
             with self.assertRaises(SystemExit) as ctx:
                 civicmesh._cmd_apply(_ns())
@@ -97,6 +139,10 @@ class ApplyOrderingTest(unittest.TestCase):
              "rfkill-unblock-wifi", "systemd-networkd"],
             ["systemctl", "disable", "wpa_supplicant.service"],
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
+            ["systemctl", "disable", "--now",
+             "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+            ["rfkill", "block", "bluetooth"],
+            ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/civicmesh.conf"],
         ])
 
     def test_short_circuits_on_validation_failure(self) -> None:

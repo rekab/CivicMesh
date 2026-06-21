@@ -1157,6 +1157,31 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             ["systemctl", "enable", "civicmesh-web", "civicmesh-mesh"],
             check=True,
         )
+        # Bluetooth for the Victron BMV monitor (power_monitor). The BLE
+        # adapter shares the Pi's combo chip with WiFi, so it stays OFF on
+        # nodes without a battery monitor (coexistence + power) — gated on
+        # config, unlike the unconditional rfkill-unblock-wifi above. The unit
+        # is laid down disabled by bootstrap; apply owns the enable/disable
+        # decision. check=False so a node bootstrapped before the unit existed
+        # (or one missing bluez) warns to stderr rather than aborting the whole
+        # apply over an optional feature.
+        if cfg.power_monitor.enabled:
+            _sub.run(
+                ["systemctl", "enable", "--now",
+                 "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+                check=False,
+            )
+        else:
+            # Active-down: a node that previously ran a BMV is returned to the
+            # BT-off default — stop persisting the unblock and soft-block the
+            # radio now, so toggling power_monitor off actually powers BT down
+            # instead of leaving the radio on forever.
+            _sub.run(
+                ["systemctl", "disable", "--now",
+                 "rfkill-unblock-bluetooth.service", "bluetooth.service"],
+                check=False,
+            )
+            _sub.run(["rfkill", "block", "bluetooth"], check=False)
         # CIV-80: create the civicmesh-mesh startup lock file at
         # /run/lock/civicmesh-mesh.lock now (don't wait for reboot).
         # Idempotent — re-runs on subsequent applies just no-op.
