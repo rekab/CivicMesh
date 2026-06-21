@@ -4,11 +4,15 @@
 # uses), so it also catches a victron-ble version whose Scanner.callback
 # signature no longer matches our override — the silent "no data" failure mode.
 #
-# Needs the optional [power] extra (bleak + victron_ble): `uv pip install '.[power]'`.
-# Run from the repo root:
+# bleak + victron_ble are base dependencies (installed by `uv sync`); no extra
+# to install. Run from the repo root:
 #
 #   uv run python scripts/ble_smoke.py --mac AA:BB:CC:DD:EE:FF --key 0123...ef
 #   uv run python scripts/ble_smoke.py --config config.toml      # read mac/key from [power_monitor]
+#
+# On a deployed node, prefer `civicmesh power-test` (same BLESource path, reads
+# [power_monitor] from the node's own config). This script stays the verbose
+# bench variant — periodic reads + a troubleshooting ladder.
 #
 # Cross-check against the app: the printed SoC / voltage / current should match
 # VictronConnect live. See docs/victron-ble-setup.md for setup + troubleshooting.
@@ -36,7 +40,11 @@ def _parse_args():
 
 def _resolve_mac_key(args):
     if args.mac and args.key:
-        return args.mac, args.key
+        # Canonicalize so the printed hints and BLESource's device_keys lookup
+        # match bleak's address even if --mac was pasted colon-less/upper-cased.
+        # The --config path already gets this via config.load_config.
+        import config
+        return config.normalize_mac(args.mac), args.key
     if args.config:
         import config
         pm = config.load_config(args.config).power_monitor
@@ -52,8 +60,9 @@ async def _run(mac, key, duration, interval, log):
         await source.start()
     except ImportError:
         sys.exit(
-            "victron_ble / bleak not installed. Install the extra:\n"
-            "  uv pip install '.[power]'"
+            "victron_ble / bleak not importable (they are base dependencies — "
+            "the install is broken). Run:\n"
+            "  uv sync"
         )
     print(f"scanning for {mac} for {duration:.0f}s "
           f"(scanning is passive — no pairing/connection)…\n")

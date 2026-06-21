@@ -33,15 +33,13 @@ source = { editable = "." }
 dependencies = [
     { name = "meshcore" },
     { name = "tomli-w" },
+    { name = "victron-ble" },
 ]
 
 [package.optional-dependencies]
 diagnostics = [
     { name = "psutil" },
     { name = "pyusb" },
-]
-power = [
-    { name = "victron-ble" },
 ]
 
 [package.metadata]
@@ -51,9 +49,9 @@ requires-dist = [
     { name = "pyusb", marker = "extra == 'diagnostics'" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "victron-ble", marker = "extra == 'power'", specifier = "==0.9.3" },
+    { name = "victron-ble", specifier = "==0.9.3" },
 ]
-provides-extras = ["diagnostics", "power"]
+provides-extras = ["diagnostics"]
 
 [[package]]
 name = "click"

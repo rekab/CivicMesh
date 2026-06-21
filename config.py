@@ -29,6 +29,31 @@ _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _CALLSIGN_RE = re.compile(r"^[a-z0-9_-]{1,9}$")  # post-lowercase
 _NON_OVERLAPPING_CHANNELS = frozenset({1, 6, 11})
 
+_MAC_SEP_RE = re.compile(r"[:\-\s]")
+
+
+def normalize_mac(raw: str) -> str:
+    """Canonicalize a BLE MAC to lowercase colon-separated form, e.g.
+    "D6:8E:54:50:53:E2" / "d68e545053e2" / "d6-8e-54-50-53-e2" -> "d6:8e:54:50:53:e2".
+
+    Why lowercase-colon specifically: bleak/BlueZ reports advert addresses
+    colon-separated, and victron_ble's `device_keys` lookup lowercases but does
+    NOT strip separators — so a colon-less MAC never matches the BMV's own
+    advert and the source silently goes dark (only the power:no_adverts watchdog
+    fires). The single canonical form lets operators paste any common format.
+    If a victron_ble bump ever breaks matching, the fallback is to canonicalize
+    to bleak's reported uppercase instead.
+
+    Empty input -> "". A non-empty value that doesn't clean to exactly 12 hex
+    digits (an operator typo) is passed through stripped+lowercased rather than
+    raising: it simply won't match, the watchdog surfaces it, and the node's
+    mesh/web still start (blast radius contained to the optional battery feature).
+    """
+    cleaned = _MAC_SEP_RE.sub("", raw or "").lower()
+    if len(cleaned) == 12 and all(c in "0123456789abcdef" for c in cleaned):
+        return ":".join(cleaned[i:i + 2] for i in range(0, 12, 2))
+    return cleaned
+
 
 @dataclass(frozen=True)
 class NodeConfig:
@@ -218,8 +243,8 @@ class PowerMonitorConfig:
     """Victron BMV-712 battery monitor sampling (see power_monitor.py).
 
     Default disabled so an absent [power_monitor] section = zero cost on the
-    majority of nodes that have no battery monitor (and don't install the
-    optional `[power]` dependency extra).
+    majority of nodes that have no battery monitor (victron_ble is a base
+    dependency but its import is deferred until the sampler actually runs).
     """
     enabled: bool = False
     # Source transport. "ble" (passive Victron Instant Readout) is the only
@@ -763,7 +788,7 @@ def load_config(path: str) -> AppConfig:
         power_monitor=PowerMonitorConfig(
             enabled=bool(power_monitor_raw.get("enabled", False)),
             transport=str(power_monitor_raw.get("transport", "ble")),
-            mac=str(power_monitor_raw.get("mac", "")),
+            mac=normalize_mac(str(power_monitor_raw.get("mac", ""))),
             encryption_key=str(power_monitor_raw.get("encryption_key", "")),
             sample_interval_sec=int(power_monitor_raw.get("sample_interval_sec", 60)),
             stale_after_sec=int(power_monitor_raw.get("stale_after_sec", 180)),

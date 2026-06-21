@@ -20,6 +20,7 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+import power_monitor
 from config import load_config
 
 if TYPE_CHECKING:
@@ -818,6 +819,69 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     sys.exit(0)
 
 
+def _format_power_reading(r: "power_monitor.Reading") -> str:
+    def _v(mv: int | None) -> str:
+        return "—" if mv is None else f"{mv / 1000:.2f}"
+
+    soc = "—" if r.soc is None else f"{r.soc:.1f}%"
+    watt = "—" if r.power_w is None else f"{r.power_w:.1f}"
+    return f"OK  SoC={soc} V={_v(r.voltage_mv)} A={_v(r.current_ma)} W={watt}"
+
+
+def _cmd_power_test(args: argparse.Namespace) -> None:
+    """Decode one BLE advert from the configured BMV and print it.
+
+    Read-only diagnostic: builds the same BLESource the sampler uses, listens
+    up to --duration seconds, prints SoC/V/A/W on the first decode (exit 0), or
+    a no-data message (exit 1). Works regardless of [power_monitor].enabled —
+    it's the on-node pre-enable bench check, reading the node's own config.
+    Mirrors scripts/ble_smoke.py, but ships to prod (ble_smoke lives in
+    scripts/, not in py-modules) and reads mac/key from config rather than argv.
+    """
+    import asyncio
+
+    from config import load_config
+
+    try:
+        cfg = load_config(str(_resolve_config_path(args)))
+    except (ValueError, KeyError, OSError) as e:
+        print(f"civicmesh: power-test: {e}", file=sys.stderr)
+        sys.exit(2)
+    pm = cfg.power_monitor
+    if not pm.mac or not pm.encryption_key:
+        print(
+            "civicmesh: power-test: [power_monitor] mac/encryption_key are empty "
+            "in config; populate them (see docs/victron-ble-setup.md)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    log, _ = setup_logging("civicmesh-power-test", cfg.logging)
+    if not pm.enabled:
+        print("note: [power_monitor].enabled=false (sampler is off); probing anyway.")
+    print(f"listening for {pm.mac} for up to {args.duration:.0f}s (passive scan)…")
+    try:
+        decoded, reading = asyncio.run(
+            power_monitor.probe(pm, log, duration_sec=args.duration)
+        )
+    except ImportError:
+        print(
+            "civicmesh: power-test: victron-ble not importable (base dependency — "
+            "install is broken); run `uv sync` (on prod, re-run `civicmesh promote`)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if decoded and reading is not None:
+        print(_format_power_reading(reading))
+        sys.exit(0)
+    print(
+        f"civicmesh: power-test: no advert decoded from {pm.mac} within "
+        f"{args.duration:.0f}s; check mac/key/adapter (rfkill, bluetooth.service). "
+        "See docs/victron-ble-setup.md § Troubleshooting.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _migrate_logs_civ_104() -> None:
     """CIV-104: rewrite legacy [logging].log_dir = "logs" to "var/logs".
 
@@ -1527,6 +1591,11 @@ def main():
     # root over SSH; refuses unless geteuid()==0. See _cmd_set_clock.
     sub.add_parser("set-clock")
 
+    # Read-only BLE bench check: decode one advert from the configured BMV and
+    # print SoC/V/A/W. On-node equivalent of scripts/ble_smoke.py.
+    p_power_test = sub.add_parser("power-test")
+    p_power_test.add_argument("--duration", type=float, default=30.0)
+
     args = ap.parse_args()
 
     _check_refusals(mode=mode, project_root=project_root, args=args)
@@ -1570,6 +1639,7 @@ def main():
         "install-hub-docs": _cmd_install_hub_docs,
         "rollback-hub-docs": _cmd_rollback_hub_docs,
         "set-clock": _cmd_set_clock,
+        "power-test": _cmd_power_test,
     }[args.cmd](args)
 
 

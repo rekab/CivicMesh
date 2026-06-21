@@ -70,16 +70,20 @@ range and advertising. You do **not** pair or connect — the node only listens.
 
 ## Step 3 — Install the BLE dependencies
 
-The BLE libraries (`bleak` + `pycryptodome`) are an **optional extra**, installed
-only on nodes that have a BMV:
+The BLE library `victron-ble` is a **base dependency**, installed by a plain
+`uv sync` (and by `civicmesh promote`, which runs `uv sync --frozen` on the
+target). It was formerly behind a `[power]` extra, but `uv sync --frozen`
+installs base deps only — not extras — so the extra left it absent on promoted
+nodes. There is nothing extra to install:
 
 ```sh
-uv pip install '.[power]'
+uv sync
 ```
 
-This pins `victron-ble==0.9.3` (see the comment in `pyproject.toml` for why it's
-pinned exact). The wheels include aarch64 builds, so this works on an offline Pi
-Zero 2W that has the wheels cached.
+`bleak` + `pycryptodome` arrive transitively (via `meshcore` and `victron-ble`).
+`victron-ble==0.9.3` is pinned exact (see the comment in `pyproject.toml` for
+why). The wheels include aarch64 builds, so this works on an offline Pi Zero 2W
+that has the wheels cached.
 
 ---
 
@@ -91,6 +95,12 @@ failure points at one layer, not the whole integration. From the repo root:
 ```sh
 uv run python scripts/ble_smoke.py --mac AA:BB:CC:DD:EE:FF --key 0123…ef
 ```
+
+On a node that already has its `config.toml` populated, the equivalent on-node
+check is `civicmesh power-test` — same `BLESource` path, reads the MAC/key from
+`[power_monitor]`, decodes one advert (default ~30s) and prints SoC/V/A/W, exit
+0 on decode / non-zero on no-data (it works regardless of `enabled`, so it's the
+pre-flip check). `ble_smoke.py` stays the verbose bench variant below.
 
 It listens for ~30s and prints decoded readings. **Good** output ends with
 `RESULT: OK` and SoC/voltage/current that match VictronConnect live. If it prints
@@ -168,7 +178,7 @@ renders Battery SoC and voltage tiles with sparklines.
 | Smoke test: `NO DATA`, no decode ever | Wrong MAC, or adapter not scanning | Re-check `mac`; confirm `bluetoothctl show` → Powered: yes |
 | Smoke test sees nothing, but `victron-ble read` also fails | Wrong/rotated encryption key | Re-copy the key from VictronConnect (it changes on BMV reset/swap) |
 | `power:no_adverts` in the log, no rows | Scanner runs but decodes nothing — wrong key/MAC, **or** a victron-ble whose `Scanner.callback` signature changed | Verify the key; then verify the override (below) |
-| `power:deps_missing` | `[power]` extra not installed on this node | `uv pip install '.[power]'` |
+| `power:deps_missing` | victron-ble/bleak (base deps) failed to import — broken install | `uv sync` (on prod, re-run `civicmesh promote`) |
 | Samples flow, then `power:gap` / stale tile | BMV powered off, out of range, or radio contention | Restore power/range; on Pi Zero 2W see the contention note below |
 | `power:scanner_stalled … restarting` | Stream went quiet long enough to trigger a scanner restart | Self-healing; if it loops, check BT/adapter health |
 

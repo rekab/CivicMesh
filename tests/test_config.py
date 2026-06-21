@@ -4,7 +4,7 @@ import unittest
 from ipaddress import IPv4Address
 from pathlib import Path
 
-from config import load_config
+from config import load_config, normalize_mac
 
 
 _BASE_NETWORK = {
@@ -339,6 +339,43 @@ class LoggingDefaultsTest(unittest.TestCase):
             cfg_path = _write(tmp, sections)
             cfg = load_config(str(cfg_path))
             self.assertEqual(cfg.logging.log_dir, "var/logs")
+
+
+class NormalizeMacTest(unittest.TestCase):
+    """normalize_mac canonicalizes any common paste to lowercase-colon form so
+    the device_keys lookup matches bleak's reported address. A colon-less MAC
+    otherwise never matches and the BMV goes silently dark."""
+
+    def test_canonical_forms_all_collapse(self) -> None:
+        for raw in ("D6:8E:54:50:53:E2", "d68e545053e2",
+                    "d6-8e-54-50-53-e2", "D6 8E 54 50 53 E2"):
+            self.assertEqual(normalize_mac(raw), "d6:8e:54:50:53:e2", raw)
+
+    def test_empty_stays_empty(self) -> None:
+        # Disabled-node default; don't try to colonize nothing.
+        self.assertEqual(normalize_mac(""), "")
+
+    def test_malformed_passes_through_without_raising(self) -> None:
+        # An operator typo (not 12 hex digits) is stripped+lowercased, not
+        # raised: it won't match, the power:no_adverts watchdog surfaces it, and
+        # the node's mesh/web still start.
+        self.assertEqual(normalize_mac("DE:AD:BE:EF"), "deadbeef")   # too short
+        self.assertEqual(normalize_mac("nope!"), "nope!")           # non-hex
+
+
+class PowerMonitorMacNormalizedAtLoadTest(unittest.TestCase):
+    def test_colonless_mac_normalized_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            sections = _good_sections(tmp)
+            sections["power_monitor"] = {
+                "enabled": True, "mac": "D68E545053E2",
+                "encryption_key": "0123456789abcdef0123456789abcdef",
+            }
+            cfg_path = _write(tmp, sections)
+            cfg = load_config(str(cfg_path))
+            self.assertEqual(cfg.power_monitor.mac, "d6:8e:54:50:53:e2")
 
 
 if __name__ == "__main__":

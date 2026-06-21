@@ -13,8 +13,9 @@ so the Reading contract is uniform across transports — BLE hands us
 volts/amps/percent (already normalized by victron_ble), while VE.Direct text
 would hand us raw mV/mA/0.1% to normalize there.
 
-bleak + victron_ble are imported lazily (the optional `[power]` dependency
-extra), so web_server and nodes without a battery monitor never need them.
+bleak + victron_ble are imported lazily so web_server and nodes without a
+battery monitor never pay the import cost (they are base dependencies, but the
+import is still deferred to the point of use).
 
 Two processes, one DB: mesh_bot runs this sampler; web_server only reads. The
 in-memory holder below is therefore only an in-process convenience — the
@@ -29,15 +30,16 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from config import PowerMonitorConfig
+from config import PowerMonitorConfig, normalize_mac
 from database import DBConfig, insert_power_sample
 
 # Scanner liveness is polled this often; cheap, just reads cached state.
 _HEALTH_INTERVAL_SEC = 10
 # Cap on the restart backoff after a scanner error.
 _BACKOFF_CAP_SEC = 60
-# Backoff when the [power] extra isn't installed — a redeploy fixes it, so
-# retrying fast is pointless; just keep the failure visible in the log.
+# Backoff when victron_ble/bleak can't be imported — they are base
+# dependencies, so this means a broken install; a redeploy (`uv sync`) fixes
+# it, so retrying fast is pointless. Just keep the failure visible in the log.
 _DEPS_MISSING_BACKOFF_SEC = 300
 
 
@@ -92,7 +94,10 @@ class BLESource(PowerSource):
     """
 
     def __init__(self, mac: str, encryption_key: str, log):
-        self._mac = mac
+        # Canonical lowercase-colon form so the device_keys lookup below and the
+        # callback address compare both match bleak's reported address regardless
+        # of how the operator formatted the MAC (config or ble_smoke --mac).
+        self._mac = normalize_mac(mac)
         self._key = encryption_key
         self._log = log
         self._scanner = None
@@ -100,8 +105,9 @@ class BLESource(PowerSource):
         self._last_success_monotonic: Optional[float] = None
 
     async def start(self) -> None:
-        # Lazy import of the [power] extra. ImportError propagates to the
-        # supervisor, which logs it and backs off.
+        # Lazy import of victron_ble (a base dependency, deferred so non-battery
+        # nodes never load it). ImportError — only if the install is broken —
+        # propagates to the supervisor, which logs it and backs off.
         from victron_ble.scanner import Scanner
 
         source = self  # captured by the inner subclass' callback
@@ -121,6 +127,15 @@ class BLESource(PowerSource):
             # + parser(key).parse(raw) directly — the README-documented
             # low-level path. Keep any such change inside this class.
             def callback(self, ble_device, raw_data, advertisement):
+                # Other Victron devices (e.g. a SmartSolar MPPT) advertise on the
+                # same manufacturer ID and reach this callback, but we only hold a
+                # key for our BMV. Drop foreign addresses before get_device() —
+                # otherwise each foreign advert raises AdvertisementKeyMissingError
+                # (~1/s per device) and the except below logs a full traceback,
+                # burying real signal. source._mac is canonical lowercase-colon
+                # (normalize_mac); bleak reports uppercase, hence the .lower().
+                if ble_device.address.lower() != source._mac:
+                    return
                 try:
                     device = self.get_device(ble_device, raw_data)
                     parsed = device.parse(raw_data)
@@ -183,6 +198,35 @@ def make_source(cfg_pm: PowerMonitorConfig, log) -> PowerSource:
     )
 
 
+async def probe(
+    cfg_pm: PowerMonitorConfig,
+    log,
+    *,
+    duration_sec: float = 30.0,
+    interval_sec: float = 2.0,
+) -> tuple[bool, Optional[Reading]]:
+    """Listen for one decodable advert from the configured BMV, for diagnostics.
+
+    Returns (decoded_any, latest_reading): the first decode short-circuits,
+    otherwise (False, None) after duration_sec. Read-only — owns a scanner for
+    the call and stops it before returning. Drives the same BLESource path the
+    sampler uses (via make_source), so it exercises the version-fragile callback
+    override. Used by `civicmesh power-test`; the supervisor/sampler loops are
+    bypassed. ImportError (broken victron_ble install) propagates to the caller.
+    """
+    source = make_source(cfg_pm, log)
+    await source.start()
+    start = time.monotonic()
+    try:
+        while time.monotonic() - start < duration_sec:
+            await asyncio.sleep(interval_sec)
+            if source.last_success_monotonic() is not None:
+                return True, source.read()
+        return False, None
+    finally:
+        await source.stop()
+
+
 # In-process snapshot of the most recently *persisted* reading and the wall ts
 # it was stored at. Lives only in the mesh_bot process that runs the sampler;
 # cross-process consumers (web_server) read the power_samples table instead.
@@ -234,8 +278,9 @@ async def _scan_supervisor(source: PowerSource, cfg_pm: PowerMonitorConfig, log)
         except ImportError:
             deps_missing = True
             log.error(
-                "power:deps_missing the [power] extra (victron-ble) is not installed; "
-                "backing off %ds", _DEPS_MISSING_BACKOFF_SEC,
+                "power:deps_missing victron-ble/bleak failed to import (base "
+                "dependency — install is broken; run `uv sync`); backing off %ds",
+                _DEPS_MISSING_BACKOFF_SEC,
             )
         except Exception:
             log.warning("power:scanner_error restarting", exc_info=True)

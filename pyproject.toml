@@ -28,17 +28,23 @@ dependencies = [
   "meshcore==2.3.6",
   "tomli-w>=1.2.0",
   "tomli; python_version < '3.11'",
+  # Victron BMV-712 battery monitor (power_monitor.py). A base dependency, not
+  # an extra: `promote` deploys via `uv sync --frozen`, which installs base
+  # deps but NOT optional extras — gating victron-ble behind an extra left it
+  # uninstalled on prod nodes, so the sampler and `civicmesh power-test` failed
+  # with an import error there. meshcore already pulls bleak + pycryptodome, so
+  # this is the only marginal package; [power_monitor].enabled still gates
+  # whether the sampler actually runs. Pinned EXACT, not ranged:
+  # victron_ble.scanner.Scanner's callback signature has shifted across
+  # 0.5.x -> 0.6.0 -> 0.9.x, and a wrong signature makes the override silently
+  # stop firing (no error, no data) — the worst failure mode here. Same
+  # rationale as the meshcore pin above. On bump, re-verify BLESource.callback
+  # against the new version. Ships aarch64 wheels.
+  "victron-ble==0.9.3",
 ]
 
 [project.optional-dependencies]
 diagnostics = ["psutil", "pyusb"]
-# Victron BMV-712 battery monitor (power_monitor.py). BLE-only nodes; pulls in
-# bleak + pycryptodome. Pinned EXACT, not ranged: victron_ble.scanner.Scanner's
-# callback signature has shifted across 0.5.x -> 0.6.0 -> 0.9.x, and a wrong
-# signature makes the override silently stop firing (no error, no data) — the
-# worst failure mode here. Same rationale as the meshcore pin above. On bump,
-# re-verify BLESource.callback against the new version. ships aarch64 wheels.
-power = ["victron-ble==0.9.3"]
 
 [project.scripts]
 civicmesh-web = "web_server:run"

@@ -180,10 +180,11 @@ but decodes nothing within ~2 sample intervals — catching a wrong key/MAC/adap
 that would otherwise look identical to "no signal".
 
 **Setup.** Device bring-up — extracting the key from VictronConnect, the Pi
-Bluetooth prerequisites (`rfkill`, `bluetooth.service`), installing the optional
-`[power]` extra, the `scripts/ble_smoke.py` bench test, and troubleshooting — is
-covered step-by-step in [`docs/victron-ble-setup.md`](victron-ble-setup.md). The
-`[power_monitor]` config block is documented in `config.toml.example`.
+Bluetooth prerequisites (`rfkill`, `bluetooth.service`), the `scripts/ble_smoke.py`
+bench test (or the on-node `civicmesh power-test`), and troubleshooting — is
+covered step-by-step in [`docs/victron-ble-setup.md`](victron-ble-setup.md).
+`victron-ble` is a base dependency (installed by `uv sync` / `civicmesh promote`).
+The `[power_monitor]` config block is documented in `config.toml.example`.
 
 ## Retention
 

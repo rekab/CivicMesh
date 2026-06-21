@@ -1489,8 +1489,8 @@ async def main_async(config_path: str, *, meshcore_debug: bool = False):
         liveness_task(controller, log),
         recovery_task(controller, _setup_fn, log),
     ]
-    # Only nodes with a Victron BMV run the BLE sampler — keeps the BLE deps
-    # (the [power] extra) and radio time off every other node.
+    # Only nodes with a Victron BMV run the BLE sampler — keeps the BLE radio
+    # time (and the deferred bleak/victron-ble import) off every other node.
     if cfg.power_monitor.enabled:
         tasks.append(power_monitor.power_monitor_loop(cfg.power_monitor, db_cfg, log))
 

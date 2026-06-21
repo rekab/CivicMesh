@@ -284,6 +284,7 @@ Operations (runtime):
   contact pin/unpin   Pin or unpin a contact (LRU eviction protection).    [IMPL]
   contact remove      Remove a contact from the DB.                        [IMPL]
   set-clock           Promote corrected display time into the OS clock.    [IMPL]
+  power-test          Decode one BLE advert from the configured BMV.        [IMPL]
 ```
 
 ---
@@ -1361,6 +1362,35 @@ operator notices and re-runs after fixing fake-hwclock.
 
 Requires root; refuses otherwise (exit 1). SSH-only by design — there
 is no sudoers rule and no setuid helper.
+
+---
+
+### power-test                                                           [IMPL]
+
+```
+civicmesh power-test [--duration SECONDS]
+```
+
+Decode one BLE advertisement from the Victron BMV configured in
+`[power_monitor]` and print it. Read-only bench check — builds the same
+`BLESource` the sampler uses, listens up to `--duration` seconds (default
+30), and short-circuits on the first decode:
+
+```
+OK  SoC=99.7% V=13.20 A=-2.10 W=-27.7
+```
+
+Exit 0 on a decode, exit 1 if nothing decoded within the window, exit 2 on a
+config/setup problem (empty `mac`/`encryption_key`, or a broken `victron-ble`
+install). It does **not** require `[power_monitor].enabled=true` — this is the
+pre-flip check, so you can confirm the link before turning the sampler on. It
+writes nothing to the DB.
+
+This is the on-node equivalent of `scripts/ble_smoke.py` (which lives in
+`scripts/`, isn't shipped to prod, and takes `--mac`/`--key` on argv);
+`power-test` reads mac/key from the node's own config instead. See
+[`docs/victron-ble-setup.md`](victron-ble-setup.md) for bring-up and
+troubleshooting.
 
 ---
 
