@@ -29,6 +29,7 @@ from config import (
     _validate_callsign,
     _validate_ssid,
     load_config,
+    normalize_mac,
 )
 
 
@@ -205,6 +206,36 @@ def _validate_country(raw: str) -> str:
     return canonical
 
 
+_CANONICAL_MAC_RE = re.compile(r"\A[0-9a-f]{2}(:[0-9a-f]{2}){5}\Z")
+_POWER_KEY_RE = re.compile(r"\A[0-9a-fA-F]{32}\Z")
+
+
+def _normalize_power_mac(raw: str) -> str:
+    """Canonicalize the BMV MAC to the SAME form config.load_config produces
+    (lowercase, colon-separated), so the value written here is already what
+    load re-normalizes to — one canonical form, idempotent on reload. Lenient
+    like normalize_mac (a malformed paste passes through, only warns) so a typo
+    can't wedge the walk; load's watchdog surfaces a bad MAC at runtime."""
+    mac = normalize_mac(raw)
+    if not _CANONICAL_MAC_RE.match(mac):
+        print(f"  warning: {raw!r} doesn't look like a 6-byte MAC; storing {mac!r} as-is.")
+    return mac
+
+
+def _validate_power_key(raw: str) -> str:
+    """Victron advertisement key: exactly 32 hex chars (16-byte AES-128). Reject
+    anything else so a truncated/space-padded paste doesn't silently decrypt to
+    garbage. Stored lowercase for a single canonical form (victron_ble's
+    bytes.fromhex is case-insensitive, so this is cosmetic-but-consistent)."""
+    key = raw.strip()
+    if not _POWER_KEY_RE.match(key):
+        raise ValueError(
+            "encryption_key must be 32 hex characters (the 16-byte key from "
+            "VictronConnect > Product info > Instant readout via Bluetooth)"
+        )
+    return key.lower()
+
+
 def _warn_iface_not_present(name: str) -> None:
     if not Path(f"/sys/class/net/{name}").exists():
         print(f"  warning: iface {name!r} is not currently present on this host.")
@@ -227,6 +258,7 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
     channels = baseline.get("channels", {})
     debug = baseline.get("debug", {})
     external_display = baseline.get("external_display", {})
+    power_monitor = baseline.get("power_monitor", {})
     clock = baseline.get("clock", {})
 
     print("Configuring CivicMesh node. Press Enter to accept defaults shown in brackets.\n")
@@ -277,6 +309,38 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "Does this node have an Inkplate display attached?",
         bool(external_display.get("enabled", False)),
     )
+    print("\npower_monitor.enabled — optional Victron BMV-712 battery monitor "
+          "read passively over BLE for true battery state-of-charge. Most nodes "
+          "don't have one. Enable only if this node physically has a BMV; "
+          "otherwise the BLE sampler never starts and the feature imposes no "
+          "runtime cost.")
+    power_monitor_enabled = _prompt_bool(
+        "Does this node have a Victron BMV battery monitor attached?",
+        bool(power_monitor.get("enabled", False)),
+    )
+    # mac/key are prompted only on "yes" (mirrors the external_display gate:
+    # the no path writes just enabled=false and round-trips any existing
+    # mac/key untouched). Collected into a dict so _apply_tier1 only writes
+    # them when present.
+    power_monitor_extra: dict[str, Any] = {}
+    if power_monitor_enabled:
+        print("\npower_monitor.mac — BLE MAC of the BMV. Paste it in any form "
+              "(colon-less or mixed-case is fine, e.g. d68e545053e2); it is "
+              "normalized to lowercase aa:bb:cc:dd:ee:ff.")
+        power_monitor_extra["power_monitor.mac"] = _prompt_string(
+            "power_monitor.mac",
+            str(power_monitor.get("mac") or "") or None,
+            _normalize_power_mac,
+        )
+        print("\npower_monitor.encryption_key — the per-device advertisement key "
+              "(32 hex chars) from VictronConnect > Product info > Instant "
+              "readout via Bluetooth. It is PER DEVICE — re-extract it if the "
+              "BMV is ever swapped.")
+        power_monitor_extra["power_monitor.encryption_key"] = _prompt_string(
+            "power_monitor.encryption_key",
+            str(power_monitor.get("encryption_key") or "") or None,
+            _validate_power_key,
+        )
     print("\ndebug.allow_eth0 — DEV ONLY. When true, traffic on eth0 "
           "bypasses MAC validation and auto-creates portal sessions. "
           "Leave false for any deployed node.")
@@ -311,6 +375,8 @@ def _walk_prompts(baseline: dict[str, Any]) -> dict[str, Any]:
         "network.iface": iface,
         "network.country_code": country,
         "external_display.enabled": external_display_enabled,
+        "power_monitor.enabled": power_monitor_enabled,
+        **power_monitor_extra,
         "debug.allow_eth0": allow_eth0,
         "clock.require_timesync_masked": require_timesync_masked,
     }
@@ -391,6 +457,14 @@ def _apply_tier1(baseline: dict[str, Any], tier1: dict[str, Any]) -> None:
     baseline["network"]["country_code"] = tier1["network.country_code"]
     baseline.setdefault("debug", {})["allow_eth0"] = tier1["debug.allow_eth0"]
     baseline.setdefault("external_display", {})["enabled"] = tier1["external_display.enabled"]
+    pm = baseline.setdefault("power_monitor", {})
+    pm["enabled"] = tier1["power_monitor.enabled"]
+    # mac/key present only when the gate was answered yes; the no path leaves
+    # any round-tripped values untouched (they're unused while enabled=false).
+    if "power_monitor.mac" in tier1:
+        pm["mac"] = tier1["power_monitor.mac"]
+    if "power_monitor.encryption_key" in tier1:
+        pm["encryption_key"] = tier1["power_monitor.encryption_key"]
     baseline.setdefault("clock", {})["require_timesync_masked"] = tier1["clock.require_timesync_masked"]
 
     # Bake an absolute db_path. config.py refuses any other shape.

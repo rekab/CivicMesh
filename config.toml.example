@@ -148,20 +148,25 @@ enabled = false
 enabled = false
 
 # Optional Victron BMV-712 battery monitor (power_monitor.py). When
-# enabled = false (the default), the BLE sampler never starts and the
-# node needs none of the [power] dependency extra — most nodes have no
-# battery monitor. Set enabled = true ONLY on a node with a BMV, and
-# install the deps there: `uv pip install '.[power]'` (pulls bleak +
-# pycryptodome; ships aarch64 wheels for offline zero2w). Headless-Pi
-# prereq: Bluetooth must be unblocked and up — `rfkill unblock bluetooth`,
-# `bluetooth.service` running; a one-time `bluetoothctl` `scan on` may be
-# needed before passive scanning works. Full bring-up + key extraction:
-# docs/victron-ble-setup.md.
+# enabled = false (the default), the BLE sampler never starts — most nodes
+# have no battery monitor, and victron_ble's import is deferred until the
+# sampler actually runs. victron-ble is a base dependency (installed by
+# `uv sync` / `civicmesh promote`; pulls bleak + pycryptodome, ships aarch64
+# wheels for offline zero2w), so there is no separate extra to install. Set
+# enabled = true ONLY on a node with a BMV. The easiest way to fill in mac /
+# encryption_key is `civicmesh configure`, which prompts for them and
+# normalizes the MAC. Headless-Pi prereq: Bluetooth must be unblocked and up
+# — `rfkill unblock bluetooth`, `bluetooth.service` running; a one-time
+# `bluetoothctl` `scan on` may be needed before passive scanning works. Verify
+# the link on-node with `civicmesh power-test`. Full bring-up + key
+# extraction: docs/victron-ble-setup.md.
 #
 # Unknown keys here are rejected loudly (like [diagnostics]): a typo such
 # as `address` for `mac` or `key` for `encryption_key` would otherwise
-# silently scan/decrypt nothing. This file holds a secret (the key) —
-# `chmod 600`. [runtime] (consumed by mesh_bot only).
+# silently scan/decrypt nothing. This file holds a secret (the key); when
+# written by `civicmesh configure` it is mode 600 already (atomic temp-file
+# write), so chmod 600 it too if you hand-edit. [runtime] (consumed by
+# mesh_bot only).
 [power_monitor]
 enabled = false
 # Source transport. "ble" (passive Victron Instant Readout) is the only

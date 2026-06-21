@@ -84,6 +84,7 @@ _ENTER_THROUGH_WALK = [
     "",   # network.iface (no detection -> just prompt)
     "",   # network.country_code
     "",   # external_display.enabled (default False -> Enter accepts)
+    "",   # power_monitor.enabled (default False -> Enter accepts, no mac/key)
     "",   # debug.allow_eth0 (default False -> Enter accepts)
     "",   # "keep NTP running?" (default N -> require_timesync_masked stays True)
     "y",  # confirm write
@@ -141,6 +142,7 @@ class ConfigureRoundTripTest(unittest.TestCase):
                 "",   # network.iface
                 "",   # network.country_code
                 "y",  # external_display.enabled -> attached
+                "",   # power_monitor.enabled -> default N
                 "",   # debug.allow_eth0
                 "",   # "keep NTP running?" -> default N -> require_timesync_masked stays True
                 "y",  # confirm write
@@ -152,6 +154,92 @@ class ConfigureRoundTripTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             cfg = load_config(str(cfg_path))
             self.assertTrue(cfg.external_display.enabled)
+
+    def test_power_monitor_prompt_enables_and_normalizes(self) -> None:
+        """Answering "y" at the BMV prompt enables the sampler and writes the
+        mac (normalized to lowercase-colon from a colon-less/upper paste) and
+        the 32-hex key (lowercased)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(_good_config_text(
+                log_dir=tmp / "logs",
+                db_path=tmp / "test.db",
+            ))
+            walk = [
+                "",   # node.site_name
+                "",   # node.callsign
+                "d",  # channels: done
+                "",   # radio.serial_port
+                "",   # ap.ssid
+                "",   # ap.channel
+                "",   # network.iface
+                "",   # network.country_code
+                "",   # external_display.enabled -> N
+                "y",  # power_monitor.enabled -> attached
+                "D68E545053E2",                      # mac: colon-less, uppercase
+                "0123456789ABCDEF0123456789abcdef",  # key: mixed case, 32 hex
+                "",   # debug.allow_eth0
+                "",   # "keep NTP running?" -> default N
+                "y",  # confirm write
+            ]
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=walk):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+            cfg = load_config(str(cfg_path))
+            self.assertTrue(cfg.power_monitor.enabled)
+            # Same canonical form load_config produces — normalized once, in
+            # configure, then idempotent on reload.
+            self.assertEqual(cfg.power_monitor.mac, "d6:8e:54:50:53:e2")
+            self.assertEqual(
+                cfg.power_monitor.encryption_key,
+                "0123456789abcdef0123456789abcdef",
+            )
+
+    def test_power_monitor_prompt_no_disables_and_keeps_existing(self) -> None:
+        """Answering "n" flips a previously-enabled BMV off and leaves the
+        round-tripped mac/key untouched (they're unused while disabled)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "logs").mkdir()
+            cfg_path = tmp / "config.toml"
+            cfg_path.write_text(
+                _good_config_text(log_dir=tmp / "logs", db_path=tmp / "test.db")
+                + '\n[power_monitor]\nenabled = true\n'
+                  'mac = "d6:8e:54:50:53:e2"\n'
+                  'encryption_key = "0123456789abcdef0123456789abcdef"\n'
+            )
+            walk = [
+                "",   # node.site_name
+                "",   # node.callsign
+                "d",  # channels: done
+                "",   # radio.serial_port
+                "",   # ap.ssid
+                "",   # ap.channel
+                "",   # network.iface
+                "",   # network.country_code
+                "",   # external_display.enabled -> N
+                "n",  # power_monitor.enabled -> NOT attached (baseline was true)
+                "",   # debug.allow_eth0
+                "",   # "keep NTP running?" -> default N
+                "y",  # confirm write
+            ]
+            with patch("configure._detect_serial_port", return_value=[]), \
+                 patch("configure._detect_iface", return_value=[]), \
+                 patch("builtins.input", side_effect=walk):
+                rc = configure.run_configure(cfg_path, "dev")
+            self.assertEqual(rc, 0)
+            cfg = load_config(str(cfg_path))
+            self.assertFalse(cfg.power_monitor.enabled)
+            # The no path doesn't prompt for / clear mac+key; they round-trip.
+            self.assertEqual(cfg.power_monitor.mac, "d6:8e:54:50:53:e2")
+            self.assertEqual(
+                cfg.power_monitor.encryption_key,
+                "0123456789abcdef0123456789abcdef",
+            )
 
     def test_legacy_node_shape_migrates_through_walk(self) -> None:
         """A pre-CIV-11 config with [node] name + location migrates to the
@@ -214,6 +302,7 @@ log_level = "WARNING"
                 "",          # network.iface
                 "",          # network.country_code
                 "",          # external_display.enabled
+                "",          # power_monitor.enabled -> default N
                 "",          # debug.allow_eth0
                 "",          # "keep NTP running?" -> default N
                 "y",         # confirm write
@@ -279,6 +368,7 @@ log_level = "WARNING"
                 "",   # network.iface
                 "",   # network.country_code
                 "",   # external_display.enabled
+                "",   # power_monitor.enabled -> default N
                 "",   # debug.allow_eth0
                 "y",  # "keep NTP running?" -> yes -> require_timesync_masked = false
                 "y",  # confirm write
@@ -414,6 +504,31 @@ class ConfigurePromptTest(unittest.TestCase):
                 "node.callsign", None, configure._validate_callsign,
             )
         self.assertEqual(result, "fremont1")
+
+    def test_normalize_power_mac_canonicalizes(self) -> None:
+        # Same lowercase-colon form config.normalize_mac (load) produces.
+        self.assertEqual(configure._normalize_power_mac("D68E545053E2"), "d6:8e:54:50:53:e2")
+        self.assertEqual(configure._normalize_power_mac("d6-8e-54-50-53-e2"), "d6:8e:54:50:53:e2")
+
+    def test_validate_power_key_accepts_and_lowercases(self) -> None:
+        self.assertEqual(
+            configure._validate_power_key("0123456789ABCDEF0123456789abcdef"),
+            "0123456789abcdef0123456789abcdef",
+        )
+
+    def test_validate_power_key_rejects_bad(self) -> None:
+        for bad in ("0123", "g" * 32, "0123456789abcdef0123456789abcde"):  # short, non-hex, 31
+            with self.assertRaises(ValueError):
+                configure._validate_power_key(bad)
+
+    def test_power_key_invalid_then_valid(self) -> None:
+        """The key validator is wired into _prompt_string: a bad paste is
+        rejected and a valid 32-hex key is accepted next."""
+        with patch("builtins.input", side_effect=["nothex", "0123456789abcdef0123456789abcdef"]):
+            result = configure._prompt_string(
+                "power_monitor.encryption_key", None, configure._validate_power_key,
+            )
+        self.assertEqual(result, "0123456789abcdef0123456789abcdef")
 
 
 # ------------------------------------- subprocess tests for the CLI
