@@ -1396,9 +1396,20 @@ function renderSysHealth(sys, rtsResets) {
   var mDiskSub = $("mDiskSub");
   if (mDiskSub && diskPct != null) mDiskSub.textContent = diskPct.toFixed(0) + "% of " + fmtMb(sys.disk.total_mb);
 
-  // Battery (Victron BMV). Per-field: SoC and voltage each render "—" when
-  // their own value is null, so a row with soc=null but valid voltage shows a
-  // blank SoC tile and a populated voltage tile.
+  // Battery (Victron BMV). The two tiles are hidden by default (most nodes
+  // have no monitor); reveal them only once this node has produced a power
+  // sample. last_sample_age_s is null iff power_samples is empty — so a
+  // configured-but-stale monitor keeps its tiles (with the "stale" note),
+  // while an unconfigured node shows nothing rather than two dead "—" tiles.
+  var hasBattery = power.last_sample_age_s != null;
+  ["mBatterySoc", "mBatteryVolt"].forEach(function(id) {
+    var el = $(id);
+    if (el) el.style.display = hasBattery ? "" : "none";
+  });
+
+  // Per-field: SoC and voltage each render "—" when their own value is null,
+  // so a row with soc=null but valid voltage shows a blank SoC tile and a
+  // populated voltage tile.
   applyMetric("mBatterySoc", "mBatterySocVal", "mBatterySocSpark",
     power.soc, h.batterySoc,
     function(v) { return v == null ? "—" : v.toFixed(1) + "%"; },

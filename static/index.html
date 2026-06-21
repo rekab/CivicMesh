@@ -405,14 +405,17 @@
         </div>
         <!-- Battery (Victron BMV-712 over BLE). SoC is true state of charge,
              distinct from the radio's coarse coil voltage. Each field renders
-             independently; '—' when its sample is missing. -->
-        <div class="sys-metric" id="mBatterySoc">
+             independently; '—' when its sample is missing. Hidden by default:
+             most nodes have no battery monitor, so app.js reveals these two
+             tiles only when power_samples has ever produced a row (a
+             configured-but-stale monitor stays visible). -->
+        <div class="sys-metric" id="mBatterySoc" style="display:none">
           <div class="sys-metric__lbl">Battery SoC</div>
           <div class="sys-metric__val" id="mBatterySocVal">&mdash;</div>
           <div class="sys-metric__sub" id="mBatterySocSub">&mdash;</div>
           <div class="sys-metric__spark" id="mBatterySocSpark"></div>
         </div>
-        <div class="sys-metric" id="mBatteryVolt">
+        <div class="sys-metric" id="mBatteryVolt" style="display:none">
           <div class="sys-metric__lbl">Battery voltage</div>
           <div class="sys-metric__val" id="mBatteryVoltVal">&mdash;</div>
           <div class="sys-metric__sub">BMV-712</div>
