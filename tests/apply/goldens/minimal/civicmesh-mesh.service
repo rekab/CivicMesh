@@ -1,5 +1,7 @@
 [Unit]
 Description=CivicMesh mesh bot (radio relay)
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,8 +12,6 @@ WorkingDirectory=/usr/local/civicmesh
 ExecStart=/usr/local/bin/civicmesh-mesh --config /usr/local/civicmesh/etc/config.toml
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target

@@ -261,11 +261,17 @@ def render_systemd_unit_web(cfg: AppConfig) -> bytes:
     # CIV-104: WorkingDirectory is the tree root, not app/. Relative paths
     # in config (log_dir = "var/logs") resolve under /usr/local/civicmesh/
     # so runtime state lives in var/ next to the DB, not under app/.
+    # StartLimitIntervalSec / StartLimitBurst gate the Restart=on-failure loop,
+    # but they are [Unit] keys — systemd ignores them in [Service] ("Unknown key
+    # 'StartLimitIntervalSec' in section [Service]"), which left the start rate
+    # limit silently inert. They must precede [Service].
     return b"""\
 [Unit]
 Description=CivicMesh web server (captive portal)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -275,8 +281,6 @@ WorkingDirectory=/usr/local/civicmesh
 ExecStart=/usr/local/bin/civicmesh-web --config /usr/local/civicmesh/etc/config.toml
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -285,9 +289,12 @@ WantedBy=multi-user.target
 
 def render_systemd_unit_mesh(cfg: AppConfig) -> bytes:
     # CIV-104: see render_systemd_unit_web for WorkingDirectory rationale.
+    # StartLimit* are [Unit] keys, not [Service] — see render_systemd_unit_web.
     return b"""\
 [Unit]
 Description=CivicMesh mesh bot (radio relay)
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -298,8 +305,6 @@ WorkingDirectory=/usr/local/civicmesh
 ExecStart=/usr/local/bin/civicmesh-mesh --config /usr/local/civicmesh/etc/config.toml
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
